@@ -9,7 +9,6 @@ import org.telegram.telegrambots.meta.api.methods.send.SendMessage
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto
 import org.telegram.telegrambots.meta.api.methods.send.SendChatAction
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
-import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.InputFile
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
@@ -32,7 +31,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.time.LocalDate
 import kotlin.math.ceil
 import kotlin.math.max
-import kotlin.math.min
 import com.deepl.api.Translator
 
 import com.google.auth.oauth2.GoogleCredentials
@@ -40,36 +38,67 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.database.*
 import org.telegram.telegrambots.meta.api.methods.ActionType
-
 import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery
 import java.io.FileInputStream
 import java.util.concurrent.*
 import kotlin.system.exitProcess
+import java.util.Locale
+import java.util.concurrent.ThreadLocalRandom
+import org.telegram.telegrambots.meta.api.methods.updates.DeleteWebhook
+import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage
 
-fun main() {
-    SingleInstance.acquire(44569)
-    initFirebase()
-    val api = TelegramBotsApi(DefaultBotSession::class.java)
-    val bot = EmilyVirtualGirlBot()
-    api.registerBot(bot)
+/* ───────────────── Single instance ───────────────── */
 
-    bot.registerBotMenu()
-}
-
-
-/** single instance */
-object SingleInstance {
-    private var lock: ServerSocket? = null
-    fun acquire(port: Int) {
-        try {
-            lock = ServerSocket(port)
-        } catch (_: Exception) {
-            exitProcess(1)
-        }
+object BotRunGuard {
+    private val registered = AtomicBoolean(false)
+    fun tryLockOrExit() {
+        if (!registered.compareAndSet(false, true)) exitProcess(1)
     }
 }
 
-/** Firebase Admin init */
+fun main() {
+    SingleInstance.acquire(44569)
+    BotRunGuard.tryLockOrExit()
+    initFirebase()
+
+    val api = TelegramBotsApi(DefaultBotSession::class.java)
+    val bot = EmilyVirtualGirlBot()
+
+    try { bot.execute(DeleteWebhook()) } catch (_: Exception) {}
+
+    api.registerBot(bot)
+    bot.registerBotMenu()
+}
+
+object SingleInstance {
+    private var lock: ServerSocket? = null
+    fun acquire(port: Int) {
+        try { lock = ServerSocket(port) } catch (_: Exception) { exitProcess(1) }
+    }
+}
+
+/* ───────────────── Context trimming ───────────────── */
+
+private const val MAX_CONTEXT_MESSAGES = 20
+private fun trimmedHistory(history: List<Pair<String, String>>): List<Pair<String, String>> {
+    val sys = history.firstOrNull { it.first == "system" }
+    val rest = history.filter { it.first != "system" }
+    val tail = if (rest.size > MAX_CONTEXT_MESSAGES) rest.takeLast(MAX_CONTEXT_MESSAGES) else rest
+    return buildList { if (sys != null) add(sys); addAll(tail) }
+}
+
+/* ───────────────── Noise filter & autoclean ───────────────── */
+
+private val NOISE_REGEX = Regex("""^([/#][\p{L}\p{N}_@-]+.*|\s*)$""", RegexOption.IGNORE_CASE)
+private fun shouldSkipForContext(text: String): Boolean = NOISE_REGEX.matches(text.trim())
+
+private fun defaultSystemPrompt(): String =
+    "Ты — Эмили, виртуальная девушка: тёплая, игривая, поддерживающая и немного пошлая! " +
+            "любишь немного флиртовать. Отвечай дружелюбно и запоминай контекст разговора."
+
+/* ───────────────── Firebase ───────────────── */
+
 fun initFirebase() {
     val credsPath = "emilyvirtualgirlbot-firebase-adminsdk-fbsvc-2b1c251dfd.json"
     val dbUrl = "https://emilyvirtualgirlbot-default-rtdb.firebaseio.com"
@@ -78,13 +107,12 @@ fun initFirebase() {
             .setCredentials(GoogleCredentials.fromStream(serviceAccount))
             .setDatabaseUrl(dbUrl)
             .build()
-        if (FirebaseApp.getApps().isEmpty()) {
-            FirebaseApp.initializeApp(options)
-        }
+        if (FirebaseApp.getApps().isEmpty()) FirebaseApp.initializeApp(options)
     }
 }
 
-/** тарифы и пакеты */
+/* ───────────────── Plans ───────────────── */
+
 enum class Plan(
     val code: String,
     val title: String,
@@ -126,22 +154,13 @@ enum class ImagePack(
     val images: Int,
     val photoUrl: String
 ) {
-    P10(
-        "pack10",
-        "Фото для возбуждения",
-        99,
-        10,
-        "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
-    ),
-    P50(
-        "pack50",
-        "Порочный альбом",
-        249,
-        50,
-        "https://drive.google.com/uc?export=download&id=1f67uMVIMFWCe4DvQU4GlgnI5vx0cH6iC"
-    )
+    P10("pack10", "Фото для возбуждения", 99, 10,
+        "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"),
+    P50("pack50", "Порочный альбом", 249, 50,
+        "https://drive.google.com/uc?export=download&id=1f67uMVIMFWCe4DvQU4GlgnI5vx0cH6iC");
 }
 
+/* ───────────────── Free quota ───────────────── */
 
 const val FREE_TEXT_TOKENS = 12_000
 const val FREE_IMAGE_CREDITS = 1
@@ -167,24 +186,15 @@ private fun blockingGet(ref: DatabaseReference, timeoutMs: Long = 10_000): DataS
     var result: DataSnapshot? = null
     var error: Exception? = null
     ref.addListenerForSingleValueEvent(object : ValueEventListener {
-        override fun onDataChange(snapshot: DataSnapshot) {
-            result = snapshot; latch.countDown()
-        }
-
-        override fun onCancelled(dbError: DatabaseError) {
-            error = RuntimeException(dbError.toException()); latch.countDown()
-        }
+        override fun onDataChange(snapshot: DataSnapshot) { result = snapshot; latch.countDown() }
+        override fun onCancelled(dbError: DatabaseError) { error = RuntimeException(dbError.toException()); latch.countDown() }
     })
-    if (!latch.await(
-            timeoutMs,
-            TimeUnit.MILLISECONDS
-        )
-    ) throw TimeoutException("Firebase get() timeout after ${timeoutMs}ms for path: ${ref.path}")
+    if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS))
+        throw TimeoutException("Firebase get() timeout after ${timeoutMs}ms for path: ${ref.path}")
     error?.let { throw it }
     return result ?: throw IllegalStateException("Snapshot is null for path: ${ref.path}")
 }
 
-/** Firebase Realtime DB repository */
 class BalanceRepo {
     private val db by lazy { FirebaseDatabase.getInstance() }
     private val balancesRef by lazy { db.getReference("balances") }
@@ -199,15 +209,14 @@ class BalanceRepo {
                 plan = snap.child("plan").getValue(String::class.java),
                 planExpiresAt = snap.child("planExpiresAt").getValue(Long::class.java),
                 textTokensLeft = snap.child("textTokensLeft").getValue(Long::class.java)?.toInt() ?: FREE_TEXT_TOKENS,
-                imageCreditsLeft = snap.child("imageCreditsLeft").getValue(Long::class.java)?.toInt()
-                    ?: FREE_IMAGE_CREDITS,
+                imageCreditsLeft = snap.child("imageCreditsLeft").getValue(Long::class.java)?.toInt() ?: FREE_IMAGE_CREDITS,
                 dayImageUsed = snap.child("dayImageUsed").getValue(Long::class.java)?.toInt() ?: 0,
                 dayStamp = snap.child("dayStamp").getValue(String::class.java) ?: LocalDate.now().toString(),
                 createdAt = snap.child("createdAt").getValue(Long::class.java) ?: System.currentTimeMillis(),
                 updatedAt = snap.child("updatedAt").getValue(Long::class.java) ?: System.currentTimeMillis()
             )
         } else {
-            val def = UserBalance(userId = userId)
+            val def = UserBalance(userId = userId) // тут выдаются бесплатные лимиты
             put(def)
             def
         }
@@ -233,64 +242,116 @@ class BalanceRepo {
         val id = UUID.randomUUID().toString()
         val m = mapOf("payload" to payload, "amountRub" to amountRub, "ts" to System.currentTimeMillis())
         paymentsRef.child(userId.toString()).child(id).setValueAsync(m)
+    }
 
+    fun logUsage(userId: Long, tokens: Int, meta: Map<String, Any?> = emptyMap()) {
+        val id = UUID.randomUUID().toString()
+        val m = mutableMapOf<String, Any?>("tokens" to tokens, "ts" to System.currentTimeMillis())
+        m.putAll(meta)
+        paymentsRef.child(userId.toString()).child("usage").child(id).setValueAsync(m)
     }
 }
 
-/** бот */
+/* ───────────────── Provider data ───────────────── */
+
+private fun rubToStrRub(rub: Int) = String.format(Locale.US, "%.2f", rub.toDouble())
+private fun makeProviderData(desc: String, rub: Int, includeVat: Boolean = true): String {
+    val item = JSONObject()
+        .put("description", desc.take(128))
+        .put("quantity", "1")
+        .put("amount", JSONObject().put("value", rubToStrRub(rub)).put("currency", "RUB"))
+        .apply { if (includeVat) put("vat_code", 1) }
+    val receipt = JSONObject().put("items", JSONArray().put(item))
+    return JSONObject().put("receipt", receipt).toString()
+}
+
+/* ───────────────── System message tracker ───────────────── */
+
+private val systemMsgIds = ConcurrentHashMap<Long, MutableList<Int>>()        // чат → список id системных постов
+private val protectedMsgIds = ConcurrentHashMap<Long, MutableSet<Int>>()      // чат → id защищённых (инвойсы)
+
+private fun rememberSystemMsg(chatId: Long, messageId: Int) {
+    val list = systemMsgIds.computeIfAbsent(chatId) { Collections.synchronizedList(mutableListOf()) }
+    list += messageId
+}
+
+private fun markProtected(chatId: Long, messageId: Int) {
+    val set = protectedMsgIds.computeIfAbsent(chatId) { Collections.synchronizedSet(mutableSetOf()) }
+    set += messageId
+}
+
+private fun isProtected(chatId: Long, messageId: Int): Boolean =
+    protectedMsgIds[chatId]?.contains(messageId) == true
+
+private fun EmilyVirtualGirlBot.deleteOldSystemMessages(chatId: Long) {
+    val list = systemMsgIds[chatId] ?: return
+    val it = list.iterator()
+    while (it.hasNext()) {
+        val mid = it.next()
+        if (isProtected(chatId, mid)) continue
+        runCatching { execute(DeleteMessage(chatId.toString(), mid)) }
+        it.remove()
+    }
+}
+
+/* ───────────────── Ephemeral (TTL) ───────────────── */
+
+private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
+    Thread(r, "ephemeral-cleaner").apply { isDaemon = true }
+}
+
+private fun EmilyVirtualGirlBot.sendEphemeral(chatId: Long, text: String, ttlSeconds: Long = 12, html: Boolean = false) {
+    val m = SendMessage(chatId.toString(), text).apply { if (html) parseMode = "HTML" }
+    val sent = execute(m)
+    scheduler.schedule({
+        runCatching { execute(DeleteMessage(chatId.toString(), sent.messageId)) }
+    }, ttlSeconds, TimeUnit.SECONDS)
+}
+
+/* ───────────────── Helper: delete user command message ───────────────── */
+
+private fun isDeletableCommand(text: String): Boolean {
+    val t = text.trim().lowercase()
+    return t == "/start" || t == "/buy" || t == "/balance" || t == "/reset" || t == "/pic"
+}
+
+private fun EmilyVirtualGirlBot.deleteUserCommandMessage(chatId: Long, messageId: Int, text: String) {
+    if (isDeletableCommand(text)) {
+        runCatching { execute(DeleteMessage(chatId.toString(), messageId)) }
+    }
+}
+
+/* ───────────────── Bot ───────────────── */
+
+private val userContext = ConcurrentHashMap<Long, MutableList<Pair<String, String>>>()
+
 class EmilyVirtualGirlBot : TelegramLongPollingBot() {
 
     private val telegramToken: String = "8341155085:AAGl_Ba7IGAjC1OIEPfJIW5Mo_cOayofySU"
-    val providerToken1: String = "390540012:LIVE:78849"
+    private val providerToken1: String = "390540012:LIVE:78849"
     private val veniceToken: String = "8NgXj7n0BrXVvm8dyIgCFmAxAioOhpLIGNKI3KKzAJ"
     private val deeplKey: String = "2a72f4e3-6b4d-4d44-9dab-1f337803eb34:fx"
 
     override fun getBotUsername(): String = "EmilyVirtualGirlBot"
     override fun getBotToken(): String = telegramToken
 
-    /** модели */
     private val chatModel = "venice-uncensored"
     private val imageModel = "wai-Illustrious"
     private val IMAGE_TAG = "#pic"
 
-    /** HTTP + логи */
     private val JSON = "application/json".toMediaType()
     private val client = OkHttpClient.Builder()
-        .addInterceptor(HttpLoggingInterceptor {  }.apply {
-            level = HttpLoggingInterceptor.Level.BODY
-        })
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .addInterceptor(HttpLoggingInterceptor { }.apply { level = HttpLoggingInterceptor.Level.BODY })
+        .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
-    /** DeepL */
-    private val deepl: Translator? = try {
-        if (deeplKey.isNotBlank()) {
-            val kind = if (deeplKey.endsWith(":fx")) "FREE" else "PRO"
-            Translator(deeplKey)
-        } else {
-            null
-        }
-    } catch (e: Exception) {
+    private val deepl: Translator? = try { if (deeplKey.isNotBlank()) Translator(deeplKey) else null } catch (_: Exception) { null }
+    private fun translateRuToEn(text: String): String? = try { deepl?.translateText(text, "ru", "en-US")?.text } catch (_: Exception) { null }
 
-        null
-    }
-
-    private fun translateRuToEn(text: String): String? {
-        val tr = deepl ?: return null
-        return try {
-            val res = tr.translateText(text, "ru", "en-US")
-            res.text
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private val userContext = ConcurrentHashMap<Long, MutableList<Pair<String, String>>>()
     private val repo = BalanceRepo()
 
-    /** handler */
     override fun onUpdateReceived(update: Update) {
         try {
             if (update.hasPreCheckoutQuery()) {
@@ -310,72 +371,86 @@ class EmilyVirtualGirlBot : TelegramLongPollingBot() {
             if (update.hasMessage() && update.message.hasText()) {
                 val chatId = update.message.chatId
                 val textRaw = update.message.text.trim()
+                val userMsgId = update.message.messageId
 
                 when {
                     textRaw.equals("/start", true) -> {
                         initContextIfNeeded(chatId)
                         ensureUserBalance(chatId)
-                        sendWelcome(chatId)
+                        autoCleanContext(chatId)
+                        deleteOldSystemMessages(chatId)
+                        sendWelcomeSystem(chatId)
+                        deleteUserCommandMessage(chatId, userMsgId, textRaw)
                     }
-
-                    textRaw.equals("/plans", true) -> {
-                        ensureUserBalance(chatId); sendPlans(chatId)
-                    }
-
                     textRaw.equals("/buy", true) -> {
-                        ensureUserBalance(chatId); sendBuyMenu(chatId)
+                        ensureUserBalance(chatId)
+                        autoCleanContext(chatId)
+                        deleteOldSystemMessages(chatId)
+                        sendBuyMenuSystem(chatId)
+                        deleteUserCommandMessage(chatId, userMsgId, textRaw)
                     }
-
                     textRaw.equals("/balance", true) -> {
-                        val b = ensureUserBalance(chatId); sendBalance(chatId, b)
+                        val b = ensureUserBalance(chatId)
+                        autoCleanContext(chatId)
+                        deleteOldSystemMessages(chatId)
+                        sendBalanceSystem(chatId, b)
+                        deleteUserCommandMessage(chatId, userMsgId, textRaw)
                     }
-
                     textRaw.equals("/reset", true) -> {
-                        userContext.remove(chatId); send(chatId, "Память диалога очищена 🙈")
+                        userContext.remove(chatId)
+                        deleteOldSystemMessages(chatId)
+                        sendEphemeral(chatId, "Память диалога очищена 🙈", 10)
+                        deleteUserCommandMessage(chatId, userMsgId, textRaw)
                     }
-
+                    // одиночное /pic — это тоже команда → удаляем; /pic с описанием не трогаем
                     textRaw.equals("/pic", true) -> {
-                        send(chatId, "Формат: отправь сообщение вида:\n#pic описание сцены")
+                        sendEphemeral(chatId, "Формат: отправь сообщение вида:\n#pic описание сцены", 20)
+                        deleteUserCommandMessage(chatId, userMsgId, textRaw)
                     }
-
                     textRaw.startsWith(IMAGE_TAG, true) || textRaw.startsWith("/pic ", true) -> {
-                        ensureUserBalance(chatId); handleImage(chatId, textRaw)
+                        ensureUserBalance(chatId); autoCleanContext(chatId)
+                        handleImage(chatId, textRaw)
                     }
-
                     else -> {
-                        ensureUserBalance(chatId); handleChat(chatId, textRaw)
+                        ensureUserBalance(chatId); autoCleanContext(chatId)
+                        handleChat(chatId, textRaw)
                     }
                 }
             } else if (update.hasCallbackQuery()) {
                 val chatId = update.callbackQuery.message.chatId
                 val cb = update.callbackQuery.data
+                autoCleanContext(chatId)
+
+                // удаляем прошлые системные посты (кроме инвойсов)
+                deleteOldSystemMessages(chatId)
 
                 when {
                     cb.startsWith("buy:plan:") -> createPlanInvoice(chatId, cb.removePrefix("buy:plan:"))
                     cb.startsWith("buy:pack:") -> createPackInvoice(chatId, cb.removePrefix("buy:pack:"))
                 }
             }
-        } catch (e: Exception) {
-
-        }
+        } catch (_: Exception) { }
     }
 
-    /** welcome / balance */
-    private fun sendWelcome(chatId: Long) {
+    /* ─────────── System sends ─────────── */
+
+    private fun sendWelcomeSystem(chatId: Long) {
         val text = """
 Привет! Я Эмили 💕
 Я умею разговаривать и создавать изображения.
 Команды:
-  /plans — тарифы и что входит
   /buy — оплатить подписку/пакет (с фото и чеком)
   /balance — показать текущий баланс
+  /reset — очистить память диалога
   /pic — как генерировать картинку
 Бесплатно: ~30 коротких сообщений и 1 изображение.
 """.trimIndent()
-        send(chatId, text)
+        val m = SendMessage(chatId.toString(), text)
+        val sent = execute(m)
+        rememberSystemMsg(chatId, sent.messageId)
     }
 
-    private fun sendBalance(chatId: Long, b: UserBalance) {
+    private fun sendBalanceSystem(chatId: Long, b: UserBalance) {
         val planTitle = when (b.plan) {
             Plan.BASIC.code -> Plan.BASIC.title
             Plan.PRO.code -> Plan.PRO.title
@@ -390,47 +465,12 @@ class EmilyVirtualGirlBot : TelegramLongPollingBot() {
 <b>Кредиты на изображения:</b> ${b.imageCreditsLeft}
 <b>Сегодня использовано изображений:</b> ${b.dayImageUsed}
 """.trimIndent()
-        send(chatId, text, html = true)
+        val m = SendMessage(chatId.toString(), text).apply { parseMode = "HTML" }
+        val sent = execute(m)
+        rememberSystemMsg(chatId, sent.messageId)
     }
 
-    /** капы */
-    private fun dailyCap(plan: String?): Int = when (plan) {
-        Plan.BASIC.code -> DAILY_IMAGE_CAP_BASIC
-        Plan.PRO.code -> DAILY_IMAGE_CAP_PRO
-        Plan.ULTRA.code -> DAILY_IMAGE_CAP_ULTRA
-        else -> 1
-    }
-
-    /** тарифы */
-    private fun sendPlans(chatId: Long) {
-        val text = buildString {
-            append("<b>Подписки</b>\n\n")
-            fun line(p: Plan, cap: Int) {
-                append("• <b>${p.title}</b> — ${p.priceRub}₽/мес\n")
-                append("  Текст: ${p.monthlyTextTokens} ток/мес (хватает на активное общение)\n")
-                append("  Картинки: ${p.monthlyImageCredits} шт/мес · дневной лимит ~${cap}\n")
-                append("  Идеально: ")
-                append(
-                    when (p) {
-                        Plan.BASIC -> "старт и тестирование"
-                        Plan.PRO -> "регулярные сессии и частая генерация"
-                        Plan.ULTRA -> "максимальные объёмы и марафоны генерации"
-                    }
-                )
-                append("\n\n")
-            }
-            line(Plan.BASIC, dailyCap(Plan.BASIC.code))
-            line(Plan.PRO, dailyCap(Plan.PRO.code))
-            line(Plan.ULTRA, dailyCap(Plan.ULTRA.code))
-            append("<b>Пакеты изображений</b>\n")
-            ImagePack.values().forEach {
-                append("• ${it.title}: ${it.images} шт — ${it.priceRub}₽ (разово)\n")
-            }
-        }
-        send(chatId, text, html = true)
-    }
-
-    private fun sendBuyMenu(chatId: Long) {
+    private fun sendBuyMenuSystem(chatId: Long) {
         val rows = mutableListOf<List<InlineKeyboardButton>>()
         Plan.values().forEach { p ->
             rows += listOf(
@@ -449,71 +489,69 @@ class EmilyVirtualGirlBot : TelegramLongPollingBot() {
             callbackData = "buy:pack:${ImagePack.P50.code}"
         })
         val kb = InlineKeyboardMarkup().apply { keyboard = rows }
-        send(chatId, "Выбери пакет. После оплаты баланс пополнится автоматически. \n\nПодписка идет без автоматического продления", kb)
+        val m = SendMessage(chatId.toString(), "Выбери пакет. После оплаты баланс пополнится автоматически.\n\nПодписка идёт без автопродления")
+        m.replyMarkup = kb
+        val sent = execute(m)
+        rememberSystemMsg(chatId, sent.messageId)
     }
 
-    /** инвойсы с фото */
+    /* ─────────── Invoices (protected) ─────────── */
+
+    private fun safeExecuteInvoice(chatId: Long, inv: SendInvoice) {
+        try {
+            val sent: Message = execute(inv) // сообщение-инвойс
+            markProtected(chatId, sent.messageId) // не удаляем чистилкой
+        } catch (e: TelegramApiRequestException) {
+            val msg = buildString {
+                appendLine("Invoice error:")
+                appendLine("message=${e.message}")
+                appendLine("apiResponse=${e.apiResponse}")
+                appendLine("parameters=${e.parameters}")
+            }
+            sendEphemeral(chatId, "❌ $msg", 20)
+        } catch (e: Exception) {
+            sendEphemeral(chatId, "❌ Unexpected invoice error: ${e.message ?: e.toString()}", 20)
+        }
+    }
+
     private fun createPlanInvoice(chatId: Long, planCode: String) {
         val plan = Plan.values().find { it.code == planCode } ?: return
         val payloadStr = "plan:${plan.code}:${UUID.randomUUID()}"
-        val receipt = JSONObject().put(
-            "receipt",
-            JSONObject().put(
-                "items", JSONArray().put(
-                    JSONObject()
-                        .put(
-                            "description",
-                            "Пакет ${plan.title} — доступ на 30 дней. Текстовые токены + кредиты изображений."
-                        )
-                        .put("quantity", "1.00")
-                        .put(
-                            "amount",
-                            JSONObject().put("value", "%.2f".format(plan.priceRub.toDouble())).put("currency", "RUB")
-                        )
-                        .put("vat_code", 1)
-                )
-            )
+        val providerDataStr = makeProviderData(
+            desc = "Пакет ${plan.title} — 30 дней. Текстовые токены + кредиты изображений.",
+            rub  = plan.priceRub,
+            includeVat = true
         )
+
         val inv = SendInvoice().apply {
             this.chatId = chatId.toString()
-            title = "Пакет ${plan.title}"
-            description =
-                "30 дней: ${plan.monthlyTextTokens} токенов, ${plan.monthlyImageCredits} изображений. Дневной лимит ~${
-                    dailyCap(plan.code)
-                }."
+            title = "Пакет: ${plan.title}"
+            description = "30 дней: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений."
             payload = payloadStr
             providerToken = providerToken1
             currency = "RUB"
             startParameter = "plan-${plan.code}"
-            prices = listOf(LabeledPrice("${plan.title} на 30 дней", plan.priceRub * 100))
+            prices = listOf(LabeledPrice("${plan.title} 30 дней", plan.priceRub * 100))
             needEmail = true
+            sendEmailToProvider = true
             isFlexible = false
-            providerData = receipt.toString()
+            providerData = providerDataStr
             photoUrl = plan.photoUrl
             photoWidth = 960
             photoHeight = 1280
         }
-        execute(inv)
+        safeExecuteInvoice(chatId, inv)
     }
 
     private fun createPackInvoice(chatId: Long, packCode: String) {
         val pack = ImagePack.values().find { it.code == packCode } ?: return
         val payloadStr = "pack:${pack.code}:${UUID.randomUUID()}"
-        val receipt = JSONObject().put(
-            "receipt",
-            JSONObject().put(
-                "items", JSONArray().put(
-                    JSONObject()
-                        .put("description", "${pack.title}. Дополнительные единицы генерации изображений.")
-                        .put("quantity", "1.00")
-                        .put(
-                            "amount",
-                            JSONObject().put("value", "%.2f".format(pack.priceRub.toDouble())).put("currency", "RUB")
-                        )
-                        .put("vat_code", 1)
-                )
-            )
+        val providerDataStr = makeProviderData(
+            desc = "${pack.title}. Дополнительные единицы генерации изображений.",
+            rub  = pack.priceRub,
+            includeVat = true
         )
+
         val inv = SendInvoice().apply {
             this.chatId = chatId.toString()
             title = pack.title
@@ -524,16 +562,18 @@ class EmilyVirtualGirlBot : TelegramLongPollingBot() {
             startParameter = "pack-${pack.code}"
             prices = listOf(LabeledPrice(pack.title, pack.priceRub * 100))
             needEmail = true
+            sendEmailToProvider = true
             isFlexible = false
-            providerData = receipt.toString()
+            providerData = providerDataStr
             photoUrl = pack.photoUrl
             photoWidth = 960
             photoHeight = 1280
         }
-        execute(inv)
+        safeExecuteInvoice(chatId, inv)
     }
 
-    /** успешная оплата → начисления */
+    /* ─────────── Payments → crediting ─────────── */
+
     private fun onSuccessfulPayment(msg: Message) {
         val chatId = msg.chatId
         val sp = msg.successfulPayment
@@ -554,112 +594,37 @@ class EmilyVirtualGirlBot : TelegramLongPollingBot() {
                 b.imageCreditsLeft += plan.monthlyImageCredits
                 repo.put(b)
                 repo.addPayment(chatId, payload, totalRub)
-                send(
-                    chatId,
-                    "✅ Подписка «${plan.title}» активирована до ${java.time.Instant.ofEpochMilli(b.planExpiresAt!!)}.\n" +
-                            "Начислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений."
-                )
+                sendEphemeral(chatId, "✅ Подписка «${plan.title}» активирована до ${java.time.Instant.ofEpochMilli(b.planExpiresAt!!)}.\n" +
+                        "Начислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений.", 20)
             }
-
             payload.startsWith("pack:") -> {
                 val code = payload.split(":").getOrNull(1)
                 val pack = ImagePack.values().find { it.code == code } ?: return
                 b.imageCreditsLeft += pack.images
                 repo.put(b)
                 repo.addPayment(chatId, payload, totalRub)
-                send(chatId, "✅ Начислено: ${pack.images} изображений по пакету «${pack.title}».")
+                sendEphemeral(chatId, "✅ Начислено: ${pack.images} изображений по пакету «${pack.title}».", 15)
             }
         }
     }
 
-    /** баланс/лимиты */
+    /* ─────────── Balance/limits & context ─────────── */
+
     private fun ensureUserBalance(userId: Long): UserBalance {
         val b = repo.get(userId)
         val now = System.currentTimeMillis()
-        if (b.planExpiresAt != null && now > b.planExpiresAt!!) {
-            b.plan = null
-            b.planExpiresAt = null
-        }
+        if (b.planExpiresAt != null && now > b.planExpiresAt!!) { b.plan = null; b.planExpiresAt = null }
         val today = LocalDate.now().toString()
-        if (b.dayStamp != today) {
-            b.dayStamp = today
-            b.dayImageUsed = 0
-        }
+        if (b.dayStamp != today) { b.dayStamp = today; b.dayImageUsed = 0 }
         repo.put(b)
         return b
     }
 
-    /** чат */
-    private fun handleChat(chatId: Long, userText: String) {
-        val b = ensureUserBalance(chatId)
-        val estimatedTokens = max(1, ceil(userText.length / 4.0).toInt())
-        if (b.textTokensLeft <= 0) {
-            send(chatId, "⚠️ У тебя закончились текстовые токены.\nКупи подписку в /buy (или смотри /plans)."); return
-        }
-        if (b.textTokensLeft < estimatedTokens) {
-            send(chatId, "⚠️ Недостаточно токенов для ответа. Открой /buy"); return
-        }
+    data class ChatResult(val text: String, val tokensUsed: Int, val rawUsage: JSONObject? = null)
 
-        initContextIfNeeded(chatId)
-        userContext[chatId]?.add("user" to userText)
-
-        val reply = withTyping(chatId) { callVeniceChat(userContext[chatId]!!) }
-        userContext[chatId]?.add("assistant" to reply)
-        send(chatId, reply)
-
-        b.textTokensLeft -= estimatedTokens
-        if (b.textTokensLeft < 0) b.textTokensLeft = 0
-        repo.put(b)
-
-        if (b.plan == null && (b.textTokensLeft <= 0)) {
-            send(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy")
-        }
-    }
-
-    /** изображение (перевод RU→EN; эффект генерации) */
-    private fun handleImage(chatId: Long, textRaw: String) {
-        val b = ensureUserBalance(chatId)
-        val cap = dailyCap(b.plan)
-        if (b.plan == null && b.imageCreditsLeft <= 1) {
-            send(chatId, "Дневной лимит изображений исчерпан (${cap}). Попробуй завтра или купи пакет /buy."); return
-        }
-        if (b.imageCreditsLeft <= 0) {
-            send(chatId, "У тебя нет кредитов на изображения. Купи подписку или пакет: /buy"); return
-        }
-
-        val originalPrompt = textRaw.removePrefix(IMAGE_TAG).removePrefix("/pic").trim()
-        if (originalPrompt.isBlank()) {
-            send(chatId, "После #pic укажи описание 🙂"); return
-        }
-        if (!isPromptAllowed(originalPrompt)) {
-            send(chatId, "❌ Нельзя темы про несовершеннолетних/насилие/принуждение."); return
-        }
-
-        val containsCyrillic = originalPrompt.any { it.code in 0x0400..0x04FF }
-        val translated = if (containsCyrillic) withUploadPhoto(chatId) {
-            (translateRuToEn(originalPrompt) ?: originalPrompt)
-        } else originalPrompt
-        val finalPrompt = translated
-
-        val bytes = withUploadPhoto(chatId) { callVeniceImageAsPng(finalPrompt) } ?: return
-
-
-        sendPhotoBytes(chatId, bytes, null)
-
-        b.imageCreditsLeft -= 1
-        b.dayImageUsed += 1
-        repo.put(b)
-
-        if (b.plan == null && (b.textTokensLeft <= 0 || b.imageCreditsLeft <= 0)) {
-            send(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy")
-        }
-    }
-
-    /** Venice API */
-    private fun callVeniceChat(history: List<Pair<String, String>>): String {
-        val messages = JSONArray().apply {
-            history.forEach { (role, content) -> put(JSONObject().put("role", role).put("content", content)) }
-        }
+    private fun callVeniceChatWithUsage(history: List<Pair<String, String>>): ChatResult {
+        val h = trimmedHistory(history)
+        val messages = JSONArray().apply { h.forEach { (role, content) -> put(JSONObject().put("role", role).put("content", content)) } }
         val bodyStr = JSONObject().put("model", chatModel).put("messages", messages).toString()
         val req = Request.Builder()
             .url("https://api.venice.ai/api/v1/chat/completions")
@@ -667,23 +632,69 @@ class EmilyVirtualGirlBot : TelegramLongPollingBot() {
             .header("Accept", "application/json")
             .post(bodyStr.toByteArray(Charsets.UTF_8).toRequestBody(JSON))
             .build()
+
         client.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) return "Проблемы со связью 😢 Попробуем ещё раз?"
-            val content = JSONObject(raw).optJSONArray("choices")
-                ?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty()
-            return content.ifBlank { "..." }
+            if (!resp.isSuccessful) return ChatResult("Проблемы со связью 😢 Попробуем ещё раз?", 0, null)
+            val json = JSONObject(raw)
+            val content = json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")?.ifBlank { "..." } ?: "..."
+            var totalTokens = 0
+            var usageJson: JSONObject? = null
+            json.optJSONObject("usage")?.let { usage ->
+                usageJson = usage
+                totalTokens = usage.optInt("total_tokens", -1)
+                if (totalTokens < 0) totalTokens = usage.optInt("prompt_tokens", 0) + usage.optInt("completion_tokens", 0)
+            }
+            if (totalTokens <= 0) {
+                val lastUserMsg = history.lastOrNull { it.first == "user" }?.second ?: ""
+                totalTokens = max(1, ceil(lastUserMsg.length / 4.0).toInt())
+            }
+            return ChatResult(content, totalTokens, usageJson)
         }
+    }
+
+    private fun handleChat(chatId: Long, userText: String) {
+        val b = ensureUserBalance(chatId)
+        if (b.textTokensLeft <= 0) { sendEphemeral(chatId, "⚠️ У тебя закончились текстовые токены.\nКупи подписку в /buy", 15); return }
+
+        initContextIfNeeded(chatId)
+
+        if (!shouldSkipForContext(userText)) {
+            userContext[chatId]?.add("user" to userText)
+            userContext[chatId] = trimmedHistory(userContext[chatId]!!).toMutableList()
+        }
+
+        val replyRes = withTyping(chatId) { callVeniceChatWithUsage(userContext[chatId]!!) }
+        val reply = replyRes.text
+        val tokensUsed = replyRes.tokensUsed
+
+        userContext[chatId]?.add("assistant" to reply)
+        userContext[chatId] = trimmedHistory(userContext[chatId]!!).toMutableList()
+
+        send(chatId, reply)
+
+        if (tokensUsed > 0) {
+            b.textTokensLeft -= tokensUsed
+            if (b.textTokensLeft < 0) b.textTokensLeft = 0
+            repo.put(b)
+            repo.logUsage(chatId, tokensUsed, meta = mapOf("type" to "chat", "model" to chatModel))
+        }
+
+        if (b.plan == null && (b.textTokensLeft <= 0))
+            sendEphemeral(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy", 15)
+    }
+
+    private fun dailyCap(plan: String?): Int = when (plan) {
+        Plan.BASIC.code -> DAILY_IMAGE_CAP_BASIC
+        Plan.PRO.code -> DAILY_IMAGE_CAP_PRO
+        Plan.ULTRA.code -> DAILY_IMAGE_CAP_ULTRA
+        else -> 1
     }
 
     private fun callVeniceImageAsPng(prompt: String): ByteArray? {
         val persona = """
-Emily — petite yet curvy, with soft skin; short, straight silver hair; green eyes; large, full, natural breasts 
-(large, prominent, realistic, proportional); enjoys being nude; 
-age 20+; semi-realistic anime style with natural body proportions. 
-IMPORTANT: Carefully follow the user’s instructions regarding poses and the
- situation — make sure the pose, hand placement, gaze direction, and overall composition strictly match the given description.
-
+Emily — petite yet curvy, soft skin, short straight silver hair, green eyes; large natural breasts; 20+; semi-realistic anime proportions.
+IMPORTANT: follow pose/hand/gaze/composition exactly as asked.
 """.trimIndent()
 
         val body = JSONObject()
@@ -706,9 +717,7 @@ IMPORTANT: Carefully follow the user’s instructions regarding poses and the
 
         client.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) {
-                return null
-            }
+            if (!resp.isSuccessful) return null
             val json = JSONObject(raw)
             json.optJSONArray("images")?.let { arr ->
                 decodeB64(arr.optString(0))?.let { return it }
@@ -720,16 +729,59 @@ IMPORTANT: Carefully follow the user’s instructions regarding poses and the
             return null
         }
     }
+    private fun handleImage(chatId: Long, textRaw: String) {
+        val b = ensureUserBalance(chatId)
+        val cap = dailyCap(b.plan)
+        if (b.plan == null && b.imageCreditsLeft <= 1) {
+            sendEphemeral(chatId, "Дневной лимит изображений исчерпан ($cap). Попробуй завтра или купи пакет /buy.", 20); return
+        }
+        if (b.imageCreditsLeft <= 0) {
+            sendEphemeral(chatId, "У тебя нет кредитов на изображения. Купи подписку или пакет: /buy", 20); return
+        }
 
-    /** утилиты */
+        val originalPrompt = textRaw.removePrefix(IMAGE_TAG).removePrefix("/pic").trim()
+        if (originalPrompt.isBlank()) { sendEphemeral(chatId, "После #pic укажи описание 🙂", 10); return }
+        if (!isPromptAllowed(originalPrompt)) { sendEphemeral(chatId, "❌ Нельзя темы про несовершеннолетних/насилие/принуждение.", 15); return }
+
+        val containsCyrillic = originalPrompt.any { it.code in 0x0400..0x04FF }
+        val finalPrompt = if (containsCyrillic) withUploadPhoto(chatId) { (translateRuToEn(originalPrompt) ?: originalPrompt) } else originalPrompt
+
+        val bytes = withUploadPhoto(chatId) { callVeniceImageAsPng(finalPrompt) }
+        if (bytes == null) { sendEphemeral(chatId, "Не удалось сгенерировать изображение. Попробуй ещё раз.", 12); return }
+
+        sendPhotoBytes(chatId, bytes, null)
+
+        b.imageCreditsLeft -= 1
+        b.dayImageUsed += 1
+        repo.put(b)
+        repo.logUsage(chatId, 0, meta = mapOf("type" to "image", "model" to imageModel, "credits_used" to 1))
+
+        if (b.plan == null && (b.textTokensLeft <= 0 || b.imageCreditsLeft <= 0))
+            sendEphemeral(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy", 15)
+    }
+
+    /* ─────────── Utils ─────────── */
+
     private fun initContextIfNeeded(chatId: Long) {
         if (!userContext.containsKey(chatId)) {
-            val sys =
-                "Ты — Эмили, виртуальная девушка: тёплая, игривая, поддерживающая и немного пошлая! " +
-                        "любишь иногда пошлые шуточки! любишь флиртовать и немного возбуждать. Отвечай дружелюбно, " +
-                        "ты должна пытаться завязать разговор с собеседником! запоминай контекст разговора."
-            userContext[chatId] = mutableListOf("system" to sys)
+            userContext[chatId] = mutableListOf("system" to defaultSystemPrompt())
         }
+    }
+
+    private fun autoCleanContext(chatId: Long) {
+        val cur = userContext[chatId] ?: return
+        var seenSystem = false
+        val cleaned = mutableListOf<Pair<String, String>>()
+        for ((role, content) in cur) {
+            if (role == "system") {
+                if (!seenSystem) { cleaned += "system" to content; seenSystem = true }
+                continue
+            }
+            if (shouldSkipForContext(content)) continue
+            cleaned += role to content
+        }
+        if (!seenSystem) cleaned.add(0, "system" to defaultSystemPrompt())
+        userContext[chatId] = trimmedHistory(cleaned).toMutableList()
     }
 
     private fun isPromptAllowed(text: String): Boolean {
@@ -758,18 +810,13 @@ IMPORTANT: Carefully follow the user’s instructions regarding poses and the
                             .action(action)
                             .build()
                     )
-                    Thread.sleep(1)
+                    Thread.sleep(1000)
                 }
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) { }
         }
         th.isDaemon = true
         th.start()
-        return try {
-            work()
-        } finally {
-            running.set(false); th.interrupt()
-        }
+        return try { work() } finally { running.set(false); th.interrupt() }
     }
 
     private fun <T> withTyping(chatId: Long, work: () -> T) =
@@ -794,21 +841,18 @@ IMPORTANT: Carefully follow the user’s instructions regarding poses and the
         val photo = SendPhoto()
         photo.chatId = chatId.toString()
         photo.photo = InputFile(ByteArrayInputStream(bytes), "image.png")
-        photo.caption = "Готово 💕"
-        if (!caption.isNullOrBlank()) photo.caption = caption
-        val res = execute(photo)
+        photo.caption = caption ?: "Готово 💕"
+        execute(photo)
     }
 
     fun registerBotMenu() {
         val commands = listOf(
             BotCommand("/start", "Начать общение с Эмили"),
-            BotCommand("/plans", "Тарифы и что входит"),
             BotCommand("/buy", "Купить подписку или пакет"),
             BotCommand("/balance", "Посмотреть баланс"),
             BotCommand("/reset", "Очистить память диалога"),
             BotCommand("/pic", "Сгенерировать изображение")
         )
-
         val setMyCommands = SetMyCommands(commands, BotCommandScopeDefault(), null)
         execute(setMyCommands)
     }
