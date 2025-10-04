@@ -24,6 +24,7 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("com.deepl.api:deepl-java:1.8.0")
     implementation("com.google.firebase:firebase-admin:9.1.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     testImplementation(kotlin("test"))
 }
 
@@ -36,5 +37,5 @@ kotlin {
 }
 
 application {
-    mainClass.set("MainKt")
+    mainClass.set("emily.app.AppKt")
 }
