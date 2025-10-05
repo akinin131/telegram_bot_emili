@@ -64,10 +64,11 @@ class EmilyVirtualGirlBot(
     private val imageTag = "#pic"
     private val chatModel = "venice-uncensored"
     private val imageModel = "wai-Illustrious"
-    private val persona = """
-Emily — petite yet curvy, soft skin, short straight silver hair, green eyes; large natural breasts; 20+; semi-realistic anime proportions.
-IMPORTANT: follow pose/hand/gaze/composition exactly as asked.
-""".trimIndent()
+    private val persona = """ Emily — petite yet curvy, with soft skin; short, straight silver 
+        hair; green eyes; large, full, natural breasts (large, prominent, realistic, proportional); 
+        enjoys being nude; age 20+; semi-realistic anime style with natural body proportions. IMPORTANT: 
+        Carefully follow the user’s instructions regarding poses and the situation — make sure the pose, 
+        hand placement, gaze direction, and overall composition strictly match the given description. """.trimIndent()
 
     override fun getBotUsername(): String = "EmilyVirtualGirlBot"
     override fun getBotToken(): String = config.telegramToken
