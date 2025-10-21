@@ -86,3 +86,15 @@ data class UserBalance(
     var createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis()
 )
+
+data class StorySelection(
+    val userId: Long,
+    val characterName: String,
+    val characterAppearance: String?,
+    val characterPersonality: String?,
+    val storyTitle: String,
+    val storyDescription: String?,
+    val storyText: String?,
+    val style: String?,
+    val updatedAt: Long = System.currentTimeMillis()
+)

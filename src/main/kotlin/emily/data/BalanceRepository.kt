@@ -1,20 +1,11 @@
 package emily.data
 
 import com.google.firebase.database.DataSnapshot
-import com.google.firebase.database.DatabaseError
-import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.FirebaseDatabase
-import com.google.firebase.database.ValueEventListener
 import java.time.LocalDate
 import java.util.UUID
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
-
-private const val DB_TIMEOUT_MS = 10_000L
+import kotlinx.coroutines.withContext
 
 class BalanceRepository(
     private val database: FirebaseDatabase = FirebaseDatabase.getInstance()
@@ -81,20 +72,4 @@ class BalanceRepository(
         updatedAt = child("updatedAt").getValue(Long::class.java) ?: System.currentTimeMillis()
     )
 
-    private suspend fun DatabaseReference.awaitSingle(): DataSnapshot =
-        withTimeout(DB_TIMEOUT_MS) {
-            suspendCancellableCoroutine { cont ->
-                val listener = object : ValueEventListener {
-                    override fun onDataChange(snapshot: DataSnapshot) {
-                        cont.resume(snapshot)
-                    }
-
-                    override fun onCancelled(error: DatabaseError) {
-                        cont.resumeWithException(error.toException())
-                    }
-                }
-                addListenerForSingleValueEvent(listener)
-                cont.invokeOnCancellation { removeEventListener(listener) }
-            }
-        }
 }

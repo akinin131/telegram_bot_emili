@@ -8,6 +8,8 @@ import emily.data.DAILY_IMAGE_CAP_PRO
 import emily.data.DAILY_IMAGE_CAP_ULTRA
 import emily.data.ImagePack
 import emily.data.Plan
+import emily.data.StorySelection
+import emily.data.StorySelectionRepository
 import emily.data.UserBalance
 import emily.service.ChatService
 import emily.service.ConversationMemory
@@ -28,6 +30,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlin.text.buildString
+import kotlin.text.orEmpty
 import org.json.JSONArray
 import org.json.JSONObject
 import org.telegram.telegrambots.bots.TelegramLongPollingBot
@@ -52,6 +56,7 @@ import org.telegram.telegrambots.meta.api.objects.InputFile
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
+    private val selectionRepository: StorySelectionRepository,
     private val chatService: ChatService,
     private val imageService: ImageService,
     private val memory: ConversationMemory,
@@ -107,6 +112,8 @@ class EmilyVirtualGirlBot(
                 }
                 executeSafe(answer)
             }
+            update.hasMessage() && update.message.webAppData != null ->
+                handleWebAppSelection(update)
             update.hasMessage() && update.message.successfulPayment != null ->
                 onSuccessfulPayment(update.message)
             update.hasMessage() && update.message.hasText() ->
@@ -165,6 +172,54 @@ class EmilyVirtualGirlBot(
                 handleChat(chatId, textRaw)
             }
         }
+    }
+
+    private suspend fun handleWebAppSelection(update: Update) {
+        val message = update.message
+        val chatId = message.chatId
+        val payload = message.webAppData?.data
+        if (payload.isNullOrBlank()) {
+            sendEphemeral(chatId, "Не удалось получить данные из мини-приложения 😢", ttlSeconds = 12)
+            return
+        }
+
+        val json = runCatching { JSONObject(payload) }.getOrNull()
+        if (json == null) {
+            sendEphemeral(chatId, "Не получилось разобрать ответ мини-приложения. Попробуй ещё раз 🙏", ttlSeconds = 12)
+            return
+        }
+
+        val characterJson = json.optJSONObject("character")
+        val storyJson = json.optJSONObject("story")
+
+        val characterName = characterJson?.optString("name").orEmpty()
+        val storyTitle = storyJson?.optString("title").orEmpty()
+
+        if (characterName.isBlank() || storyTitle.isBlank()) {
+            sendEphemeral(chatId, "Мини-приложение прислало неполный выбор. Повтори попытку, пожалуйста 🙏", ttlSeconds = 12)
+            return
+        }
+
+        val selection = StorySelection(
+            userId = chatId,
+            characterName = characterName,
+            characterAppearance = characterJson?.optString("appearance").nullIfBlank(),
+            characterPersonality = characterJson?.optString("personality").nullIfBlank(),
+            storyTitle = storyTitle,
+            storyDescription = storyJson?.optString("description").nullIfBlank(),
+            storyText = storyJson?.optString("full_story_text").nullIfBlank(),
+            style = json.optString("user_style").nullIfBlank()
+        )
+
+        executeSafe(DeleteMessage(chatId.toString(), message.messageId))
+        selectionRepository.save(selection)
+
+        memory.reset(chatId)
+        memory.initIfNeeded(chatId)
+        memory.append(chatId, "system", buildScenarioPrompt(selection))
+
+        deleteOldSystemMessages(chatId)
+        sendStorySelectionSummary(chatId, selection)
     }
 
     private suspend fun handleCallback(update: Update) {
@@ -239,6 +294,41 @@ class EmilyVirtualGirlBot(
             replyMarkup = markup
         }
         rememberSystemMessage(chatId, executeSafe(msg).messageId)
+    }
+
+    private fun buildScenarioPrompt(selection: StorySelection): String = buildString {
+        append("Ты играешь роль ${selection.characterName}. ")
+        selection.characterAppearance?.let { append("Внешность: $it. ") }
+        selection.characterPersonality?.let { append("Черты характера: $it. ") }
+        val plot = selection.storyText ?: selection.storyDescription
+        if (!plot.isNullOrBlank()) {
+            append("Отправная сцена: $plot. ")
+        }
+        append("Отвечай от лица персонажа, продвигай эротическую сцену и мягко уточняй желания пользователя. Уважай границы и реагируй на инициативу партнёра.")
+    }
+
+    private suspend fun sendStorySelectionSummary(chatId: Long, selection: StorySelection) {
+        val builder = buildString {
+            append("❤️ <b>Сцена готова!</b>\n")
+            append("Ты выбрал историю <b>${escapeHtml(selection.storyTitle)}</b> с <b>${escapeHtml(selection.characterName)}</b>.")
+            selection.characterAppearance?.let {
+                append("\n<b>Внешность:</b> ${escapeHtml(it)}")
+            }
+            selection.characterPersonality?.let {
+                append("\n<b>Характер:</b> ${escapeHtml(it)}")
+            }
+            val plot = selection.storyDescription ?: selection.storyText
+            plot?.let {
+                append("\n<b>Сюжет:</b> ${escapeHtml(it)}")
+            }
+            selection.style?.let {
+                append("\n<b>Стиль картинок:</b> ${escapeHtml(it)}")
+            }
+            append("\n\nНапиши первую реплику или действие — и мы начнём отыгрывать историю 😘")
+        }
+
+        val message = SendMessage(chatId.toString(), builder).apply { parseMode = "HTML" }
+        executeSafe(message)
     }
 
     private suspend fun createPlanInvoice(chatId: Long, planCode: String) {
@@ -510,6 +600,20 @@ class EmilyVirtualGirlBot(
             }
         }
     }
+
+    private fun escapeHtml(text: String): String = buildString {
+        for (ch in text) {
+            when (ch) {
+                '<' -> append("&lt;")
+                '>' -> append("&gt;")
+                '"' -> append("&quot;")
+                '&' -> append("&amp;")
+                else -> append(ch)
+            }
+        }
+    }
+
+    private fun String?.nullIfBlank(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
 
     private suspend fun sendEphemeral(chatId: Long, text: String, ttlSeconds: Long, html: Boolean = false) {
         val message = SendMessage(chatId.toString(), text).apply { if (html) parseMode = "HTML" }
