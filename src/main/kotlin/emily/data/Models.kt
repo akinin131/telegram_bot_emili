@@ -67,8 +67,8 @@ enum class ImagePack(
     }
 }
 
-const val FREE_TEXT_TOKENS = 12_000
-const val FREE_IMAGE_CREDITS = 1
+const val FREE_TEXT_TOKENS = 50_000
+const val FREE_IMAGE_CREDITS = 10
 
 const val DAILY_IMAGE_CAP_BASIC = 10
 const val DAILY_IMAGE_CAP_PRO = 25

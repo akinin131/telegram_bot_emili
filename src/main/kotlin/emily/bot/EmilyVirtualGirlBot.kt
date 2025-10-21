@@ -356,7 +356,7 @@ class EmilyVirtualGirlBot(
     private suspend fun handleImage(chatId: Long, textRaw: String) {
         val balance = ensureUserBalance(chatId)
         val cap = dailyCap(balance.plan)
-        if (balance.plan == null && balance.imageCreditsLeft <= 1) {
+        if (balance.plan == null && balance.imageCreditsLeft < 1) {
             sendEphemeral(chatId, "Дневной лимит изображений исчерпан ($cap). Попробуй завтра или купи пакет /buy.", ttlSeconds = 20)
             return
         }

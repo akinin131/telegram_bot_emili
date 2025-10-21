@@ -29,7 +29,7 @@ fun main() {
     val config = BotConfig(
         telegramToken = "8341155085:AAGl_Ba7IGAjC1OIEPfJIW5Mo_cOayofySU",
         providerToken = "390540012:LIVE:78849",
-        veniceToken = "8NgXj7n0BrXVvm8dyIgCFmAxAioOhpLIGNKI3KKzAJ",
+        veniceToken = "kK5vqPy3fU32foa_h06s04rkb6ELejHeCMr0S1_8Sq",
         deeplToken = "2a72f4e3-6b4d-4d44-9dab-1f337803eb34:fx"
     )
 
