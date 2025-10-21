@@ -3,6 +3,7 @@ package emily.app
 import com.deepl.api.Translator
 import emily.bot.EmilyVirtualGirlBot
 import emily.data.BalanceRepository
+import emily.data.StorySelectionRepository
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
@@ -45,6 +46,7 @@ fun main() {
     }.getOrNull()
 
     val repo = BalanceRepository()
+    val selectionRepository = StorySelectionRepository()
     val chatService = ChatService(okHttpClient, config.veniceToken, CHAT_MODEL)
     val imageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL)
     val memory = ConversationMemory(::defaultSystemPrompt)
@@ -52,6 +54,7 @@ fun main() {
     val bot = EmilyVirtualGirlBot(
         config = config,
         repository = repo,
+        selectionRepository = selectionRepository,
         chatService = chatService,
         imageService = imageService,
         memory = memory,
