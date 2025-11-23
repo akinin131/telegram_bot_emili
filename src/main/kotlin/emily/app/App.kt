@@ -19,7 +19,7 @@ private const val CHAT_MODEL = "venice-uncensored"
 private const val IMAGE_MODEL = "wai-Illustrious"
 
 fun main() {
-    SingleInstance.acquire(44569)
+    SingleInstance.acquire(44601)
     BotRunGuard.tryLockOrExit()
 
     FirebaseInitializer(
@@ -49,7 +49,8 @@ fun main() {
     val selectionRepository = StorySelectionRepository()
     val chatService = ChatService(okHttpClient, config.veniceToken, CHAT_MODEL)
     val imageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL)
-    val memory = ConversationMemory(::defaultSystemPrompt)
+
+    val memory = ConversationMemory { "" }
 
     val bot = EmilyVirtualGirlBot(
         config = config,

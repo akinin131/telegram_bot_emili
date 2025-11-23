@@ -2,15 +2,7 @@ package emily.bot
 
 import com.deepl.api.Translator
 import emily.app.BotConfig
-import emily.data.BalanceRepository
-import emily.data.DAILY_IMAGE_CAP_BASIC
-import emily.data.DAILY_IMAGE_CAP_PRO
-import emily.data.DAILY_IMAGE_CAP_ULTRA
-import emily.data.ImagePack
-import emily.data.Plan
-import emily.data.StorySelection
-import emily.data.StorySelectionRepository
-import emily.data.UserBalance
+import emily.data.*
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
@@ -20,29 +12,18 @@ import java.time.LocalDate
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
-import kotlin.text.buildString
-import kotlin.text.orEmpty
+import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
+import org.slf4j.LoggerFactory
 import org.telegram.telegrambots.bots.TelegramLongPollingBot
 import org.telegram.telegrambots.meta.api.methods.ActionType
 import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
-import org.telegram.telegrambots.meta.api.methods.send.SendChatAction
-import org.telegram.telegrambots.meta.api.methods.send.SendMessage
-import org.telegram.telegrambots.meta.api.methods.send.SendPhoto
+import org.telegram.telegrambots.meta.api.methods.send.*
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage
+import org.telegram.telegrambots.meta.api.objects.InputFile
 import org.telegram.telegrambots.meta.api.objects.Message
 import org.telegram.telegrambots.meta.api.objects.Update
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand
@@ -51,7 +32,8 @@ import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
-import org.telegram.telegrambots.meta.api.objects.InputFile
+import kotlin.text.buildString
+import kotlin.text.orEmpty
 
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
@@ -63,36 +45,26 @@ class EmilyVirtualGirlBot(
     private val translator: Translator?
 ) : TelegramLongPollingBot() {
 
+    private val log = LoggerFactory.getLogger(EmilyVirtualGirlBot::class.java)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val systemMessages = ConcurrentHashMap<Long, MutableList<Int>>()
     private val protectedMessages = ConcurrentHashMap<Long, MutableSet<Int>>()
     private val imageTag = "#pic"
     private val chatModel = "venice-uncensored"
     private val imageModel = "wai-Illustrious"
-    private val persona = """ Emily — petite yet curvy, with soft skin; short, straight silver 
+    private var persona = """ Emily — petite yet curvy, with soft skin; short, straight silver
         hair; green eyes; large, full, natural breasts (large, prominent, realistic, proportional); 
         enjoys being nude; age 20+; semi-realistic anime style with natural body proportions. IMPORTANT: 
-        Carefully follow the user’s instructions regarding poses and the situation — make sure the pose, 
+        Carefully follow the user's instructions regarding poses and the situation — make sure the pose, 
         hand placement, gaze direction, and overall composition strictly match the given description. """.trimIndent()
 
     override fun getBotUsername(): String = "EmilyVirtualGirlBot"
     override fun getBotToken(): String = config.telegramToken
 
-    override fun onUpdateReceived(update: Update) {
-        scope.launch {
-            try {
-                handleUpdate(update)
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    override fun onClosing() {
-        super.onClosing()
-        scope.cancel()
-    }
-
     fun registerBotMenu() = runBlocking {
+        println("🚀 registerBotMenu() - Регистрация команд бота")
+        log.info("registerBotMenu()")
         val commands = listOf(
             BotCommand("/start", "Начать общение с Эмили"),
             BotCommand("/buy", "Купить подписку или пакет"),
@@ -103,23 +75,65 @@ class EmilyVirtualGirlBot(
         executeSafe(SetMyCommands(commands, BotCommandScopeDefault(), null))
     }
 
+    override fun onUpdateReceived(update: Update) {
+        println("📥 onUpdateReceived - Новое обновление получено")
+        scope.launch {
+            try {
+                handleUpdate(update)
+            } catch (e: Exception) {
+                println("❌ Ошибка в handleUpdate: ${e.message}")
+                log.error("Exception in handleUpdate", e)
+            }
+        }
+    }
+
+    override fun onClosing() {
+        println("🔴 onClosing - Бот завершает работу")
+        super.onClosing()
+        scope.cancel()
+    }
+
     private suspend fun handleUpdate(update: Update) {
+        println("🔄 handleUpdate - Обработка обновления")
         when {
             update.hasPreCheckoutQuery() -> {
+                println("💰 handleUpdate: preCheckout id=${update.preCheckoutQuery.id}")
+                log.info("handleUpdate: preCheckout id={}", update.preCheckoutQuery.id)
                 val answer = AnswerPreCheckoutQuery().apply {
                     preCheckoutQueryId = update.preCheckoutQuery.id
                     ok = true
                 }
                 executeSafe(answer)
             }
-            update.hasMessage() && update.message.webAppData != null ->
-                handleWebAppSelection(update)
-            update.hasMessage() && update.message.successfulPayment != null ->
+             update.hasMessage() && update.message.webAppData != null ->{
+                val dataJson = update.message.webAppData.data
+                println("🌐 WebAppData: $dataJson")
+                // тут разбираешь JSON и делаешь StorySelection, как мы обсуждали
+            }
+
+            update.hasMessage() && update.message.successfulPayment != null -> {
+                println("✅ handleUpdate: successfulPayment")
+                log.info("handleUpdate: successfulPayment")
                 onSuccessfulPayment(update.message)
-            update.hasMessage() && update.message.hasText() ->
+            }
+
+            update.hasMessage() && update.message.hasText() -> {
+                val t = update.message.text
+                println("📝 handleUpdate: textMessage chatId=${update.message.chatId}, text.len=${t?.length ?: -1}")
+                log.info("handleUpdate: textMessage chatId={}, text.len={}", update.message.chatId, t?.length ?: -1)
                 handleTextMessage(update)
-            update.hasCallbackQuery() ->
+            }
+
+            update.hasCallbackQuery() -> {
+                println("🔘 handleUpdate: callback ${update.callbackQuery.data}")
+                log.info("handleUpdate: callback {}", update.callbackQuery.data)
                 handleCallback(update)
+            }
+
+            else -> {
+                println("❓ handleUpdate: unhandled update")
+                log.warn("handleUpdate: unhandled update")
+            }
         }
     }
 
@@ -128,8 +142,27 @@ class EmilyVirtualGirlBot(
         val textRaw = update.message.text.trim()
         val messageId = update.message.messageId
 
+        println("📨 handleTextMessage START: chatId=$chatId, msgId=$messageId, text='${textRaw.replace('\n', ' ')}'")
+        log.info("handleTextMessage: chatId={}, msgId={}, text='{}'", chatId, messageId, textRaw.replace('\n', ' '))
+
+        // Обработка сообщений от mini-app
+        if (textRaw.trim().startsWith("#WEBAPP", ignoreCase = true)) {
+            println("🎯 #WEBAPP DETECTED! Обработка мини-приложения")
+            log.info("handleTextMessage: detected #WEBAPP pseudo-webapp payload")
+            val handled = tryHandleWebAppFromText(chatId, textRaw)
+            if (handled) {
+                println("✅ #WEBAPP успешно обработан")
+                deleteUserCommand(chatId, messageId, textRaw)
+                return
+            } else {
+                println("❌ #WEBAPP не удалось обработать, переходим к обычному чату")
+                log.warn("#WEBAPP text could not be parsed, falling back to chat")
+            }
+        }
+
         when {
             textRaw.equals("/start", true) -> {
+                println("🔹 Обработка команды /start")
                 memory.initIfNeeded(chatId)
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
@@ -137,36 +170,48 @@ class EmilyVirtualGirlBot(
                 sendWelcome(chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
+
             textRaw.equals("/buy", true) -> {
+                println("🔹 Обработка команды /buy")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 deleteOldSystemMessages(chatId)
                 sendBuyMenu(chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
+
             textRaw.equals("/balance", true) -> {
+                println("🔹 Обработка команды /balance")
                 val balance = ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 deleteOldSystemMessages(chatId)
                 sendBalance(chatId, balance)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
+
             textRaw.equals("/reset", true) -> {
+                println("🔹 Обработка команды /reset")
                 memory.reset(chatId)
                 deleteOldSystemMessages(chatId)
                 sendEphemeral(chatId, "Память диалога очищена 🙈", ttlSeconds = 10)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
+
             textRaw.equals("/pic", true) -> {
+                println("🔹 Обработка команды /pic")
                 sendEphemeral(chatId, "Формат: отправь сообщение вида:\n#pic описание сцены", ttlSeconds = 20)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
+
             textRaw.startsWith(imageTag, true) || textRaw.startsWith("/pic ", true) -> {
+                println("🖼️ Обработка запроса изображения")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 handleImage(chatId, textRaw)
             }
+
             else -> {
+                println("💬 Обработка обычного сообщения чата")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 handleChat(chatId, textRaw)
@@ -174,66 +219,182 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    private suspend fun handleWebAppSelection(update: Update) {
-        val message = update.message
-        val chatId = message.chatId
-        val payload = message.webAppData?.data
-        if (payload.isNullOrBlank()) {
-            sendEphemeral(chatId, "Не удалось получить данные из мини-приложения 😢", ttlSeconds = 12)
-            return
+    private fun preview(s: String?, max: Int = 220): String {
+        if (s.isNullOrBlank()) return "∅"
+        val clean = s.replace("\n", "\\n").replace("\r", "\\r")
+        return if (clean.length <= max) clean else clean.take(max) + "… (len=" + clean.length + ")"
+    }
+
+    /** ✅ Упрощенный подход: извлекаем данные из текстового сообщения */
+    suspend fun tryHandleWebAppFromText(chatId: Long, text: String): Boolean {
+        println("\n🔍 WEBAPP_FROM_TEXT START ==================================")
+        println("🔍 chatId: $chatId")
+        println("🔍 raw text length: ${text.length}")
+        println("🔍 raw text preview: ${preview(text, 400)}")
+
+        // Логируем каждую строку для отладки
+        println("🔍 RAW TEXT LINES:")
+        text.lines().forEachIndexed { index, line ->
+            println("🔍 [$index]: '${line.trim()}'")
         }
 
-        val json = runCatching { JSONObject(payload) }.getOrNull()
-        if (json == null) {
-            sendEphemeral(chatId, "Не получилось разобрать ответ мини-приложения. Попробуй ещё раз 🙏", ttlSeconds = 12)
-            return
+        log.info("WEBAPP_FROM_TEXT: raw.len={}, preview={}", text.length, preview(text, 400))
+
+        // Сбрасываем память диалога перед установкой новой сцены
+        memory.reset(chatId)
+
+        // 1) Убираем HTML-теги и лишние пробелы
+        val cleanText = text.replace(Regex("<[^>]*>"), "").trim()
+        println("🔍 CLEAN TEXT: '${preview(cleanText, 300)}'")
+
+        // 2) Ищем персонажа: строка "Персонаж: Имя"
+        val characterPattern = Regex("""Персонаж:\s*(.+)""")
+        val characterMatch = characterPattern.find(cleanText)
+
+        if (characterMatch == null) {
+            println("❌ WEBAPP_FROM_TEXT: cannot find character pattern")
+            log.warn("WEBAPP_FROM_TEXT: cannot find character pattern")
+            sendEphemeral(chatId, "Не удалось распознать персонажа.", ttlSeconds = 10)
+            return true
         }
 
-        val characterJson = json.optJSONObject("character")
-        val storyJson = json.optJSONObject("story")
+        val characterName = characterMatch.groups[1]?.value?.trim()
+        println("🔍 FOUND CHARACTER: '$characterName'")
 
-        val characterName = characterJson?.optString("name").orEmpty()
-        val storyTitle = storyJson?.optString("title").orEmpty()
+        // 3) Извлекаем основной текст истории (после "История:" и имени персонажа, до ⏰/📊)
+        val storyText = cleanText
+            .substringAfter("История:", "")
+            .substringAfter(characterName ?: "", "")
+            .substringBefore("⏰")
+            .substringBefore("📊")
+            .trim()
 
-        if (characterName.isBlank() || storyTitle.isBlank()) {
-            sendEphemeral(chatId, "Мини-приложение прислало неполный выбор. Повтори попытку, пожалуйста 🙏", ttlSeconds = 12)
-            return
+        println("🔍 EXTRACTED STORY TEXT: '${preview(storyText, 200)}'")
+
+        if (characterName.isNullOrBlank() || storyText.isBlank()) {
+            println("❌ WEBAPP_FROM_TEXT: empty character name or story text")
+            log.warn("WEBAPP_FROM_TEXT: empty character name or story text")
+            sendEphemeral(chatId, "Имя персонажа или текст сюжета пустые.", ttlSeconds = 10)
+            return true
         }
 
+        // 4) Парсим блок с мета-данными после 📊
+        val metaBlock = cleanText.substringAfter("📊", "").trim()
+        println("🔍 META BLOCK: '${preview(metaBlock, 300)}'")
+
+        // style: xxx
+        val style = Regex("""style:\s*([^\n\r]+)""")
+            .find(metaBlock)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        // characterPersonality: xxx
+        val characterPersonality = Regex("""characterPersonality:\s*([^\n\r]+)""")
+            .find(metaBlock)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        // storyDescription: xxx
+        val storyDescription = Regex("""storyDescription:\s*([^\n\r]+)""")
+            .find(metaBlock)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        println("🔍 META PARSED: style='$style', characterPersonality='$characterPersonality', storyDescription='$storyDescription'")
+
+        println("✅ WEBAPP_FROM_TEXT: parsed - character='$characterName', story.len=${storyText.length}")
+        log.info(
+            "WEBAPP_FROM_TEXT: parsed - character='{}', story.len={}",
+            characterName,
+            storyText.length
+        )
+
+        // 5) Собираем выбор для бота и промта ИИ
         val selection = StorySelection(
             userId = chatId,
             characterName = characterName,
-            characterAppearance = characterJson?.optString("appearance").nullIfBlank(),
-            characterPersonality = characterJson?.optString("personality").nullIfBlank(),
-            storyTitle = storyTitle,
-            storyDescription = storyJson?.optString("description").nullIfBlank(),
-            storyText = storyJson?.optString("full_story_text").nullIfBlank(),
-            style = json.optString("user_style").nullIfBlank()
+            characterAppearance = null, // можно позже добавить из miniApp, если появится
+            characterPersonality = characterPersonality,
+            storyTitle = storyDescription ?: "История с $characterName",
+            storyDescription = storyDescription,
+            full_story_text = storyText,
+            style = style
         )
 
-        executeSafe(DeleteMessage(chatId.toString(), message.messageId))
+        applySelection(chatId, selection, source = "text:#WEBAPP")
+        println("✅ WEBAPP_FROM_TEXT COMPLETED SUCCESSFULLY")
+        return true
+    }
+
+    /** Применение выбора: сохраняем, ставим системный промт, подтверждаем */
+    suspend fun applySelection(chatId: Long, selection: StorySelection, source: String) {
+        println("🎭 applySelection: source=$source, character='${selection.characterName}', story.len=${selection.full_story_text?.length ?: 0}")
         selectionRepository.save(selection)
 
-        memory.reset(chatId)
-        memory.initIfNeeded(chatId)
-        memory.append(chatId, "system", buildScenarioPrompt(selection))
+        val scenario = buildString {
+            append("Ты играешь роль ${selection.characterName}. ")
 
-        deleteOldSystemMessages(chatId)
-        sendStorySelectionSummary(chatId, selection)
+            selection.characterPersonality?.let {
+                append("Характер персонажа: $it. ")
+            }
+
+            selection.style?.let {
+                append("Стиль повествования: $it. ")
+            }
+
+            selection.storyDescription?.let {
+                append("Краткое описание истории: $it. ")
+            }
+
+            append("Начальная сцена: ${selection.full_story_text}. ")
+            append("Отвечай от лица персонажа, развивай эротическую сцену и взаимодействуй с пользователем.")
+        }
+
+        memory.reset(chatId)
+        memory.setSystem(chatId, scenario)
+        sendStorySelectionConfirmation(chatId, selection)
+    }
+
+
+    /** Упрощенное подтверждение выбора */
+    private suspend fun sendStorySelectionConfirmation(chatId: Long, selection: StorySelection) {
+        println("📤 sendStorySelectionConfirmation: chatId=$chatId")
+        val message = """
+            🎭 <b>Сцена выбрана!</b>
+            
+            Персонаж: <b>${escapeHtml(selection.characterName)}</b>
+            
+            Теперь напиши первое сообщение — и мы начнём нашу историю! 💕
+        """.trimIndent()
+
+        executeSafe(SendMessage(chatId.toString(), message).apply { parseMode = "HTML" })
+        println("✅ Confirmation message sent")
     }
 
     private suspend fun handleCallback(update: Update) {
         val chatId = update.callbackQuery.message.chatId
         val data = update.callbackQuery.data
+        println("🔘 handleCallback chatId=$chatId, data=$data")
+        log.info("handleCallback chatId={}, data={}", chatId, data)
         memory.autoClean(chatId)
         deleteOldSystemMessages(chatId)
         when {
-            data.startsWith("buy:plan:") -> createPlanInvoice(chatId, data.removePrefix("buy:plan:"))
-            data.startsWith("buy:pack:") -> createPackInvoice(chatId, data.removePrefix("buy:pack:"))
+            data.startsWith("buy:plan:") -> {
+                println("💰 Создание инвойса для плана: ${data.removePrefix("buy:plan:")}")
+                createPlanInvoice(chatId, data.removePrefix("buy:plan:"))
+            }
+            data.startsWith("buy:pack:") -> {
+                println("💰 Создание инвойса для пакета: ${data.removePrefix("buy:pack:")}")
+                createPackInvoice(chatId, data.removePrefix("buy:pack:"))
+            }
         }
     }
 
     private suspend fun sendWelcome(chatId: Long) {
+        println("👋 sendWelcome: chatId=$chatId")
         val text = """
 Привет! Я Эмили 💕
 Я умею разговаривать и создавать изображения.
@@ -249,6 +410,7 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun sendBalance(chatId: Long, balance: UserBalance) {
+        println("💰 sendBalance: chatId=$chatId")
         val planTitle = when (balance.plan) {
             Plan.BASIC.code -> Plan.BASIC.title
             Plan.PRO.code -> Plan.PRO.title
@@ -268,6 +430,7 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun sendBuyMenu(chatId: Long) {
+        println("🛍️ sendBuyMenu: chatId=$chatId")
         val rows = mutableListOf<List<InlineKeyboardButton>>()
         Plan.values().forEach { plan ->
             rows += listOf(
@@ -290,48 +453,17 @@ class EmilyVirtualGirlBot(
             }
         )
         val markup = InlineKeyboardMarkup().apply { keyboard = rows }
-        val msg = SendMessage(chatId.toString(), "Выбери пакет. После оплаты баланс пополнится автоматически.\n\nПодписка идёт без автопродления").apply {
+        val msg = SendMessage(
+            chatId.toString(),
+            "Выбери пакет. После оплаты баланс пополнится автоматически.\n\nПодписка идёт без автопродления"
+        ).apply {
             replyMarkup = markup
         }
         rememberSystemMessage(chatId, executeSafe(msg).messageId)
     }
 
-    private fun buildScenarioPrompt(selection: StorySelection): String = buildString {
-        append("Ты играешь роль ${selection.characterName}. ")
-        selection.characterAppearance?.let { append("Внешность: $it. ") }
-        selection.characterPersonality?.let { append("Черты характера: $it. ") }
-        val plot = selection.storyText ?: selection.storyDescription
-        if (!plot.isNullOrBlank()) {
-            append("Отправная сцена: $plot. ")
-        }
-        append("Отвечай от лица персонажа, продвигай эротическую сцену и мягко уточняй желания пользователя. Уважай границы и реагируй на инициативу партнёра.")
-    }
-
-    private suspend fun sendStorySelectionSummary(chatId: Long, selection: StorySelection) {
-        val builder = buildString {
-            append("❤️ <b>Сцена готова!</b>\n")
-            append("Ты выбрал историю <b>${escapeHtml(selection.storyTitle)}</b> с <b>${escapeHtml(selection.characterName)}</b>.")
-            selection.characterAppearance?.let {
-                append("\n<b>Внешность:</b> ${escapeHtml(it)}")
-            }
-            selection.characterPersonality?.let {
-                append("\n<b>Характер:</b> ${escapeHtml(it)}")
-            }
-            val plot = selection.storyDescription ?: selection.storyText
-            plot?.let {
-                append("\n<b>Сюжет:</b> ${escapeHtml(it)}")
-            }
-            selection.style?.let {
-                append("\n<b>Стиль картинок:</b> ${escapeHtml(it)}")
-            }
-            append("\n\nНапиши первую реплику или действие — и мы начнём отыгрывать историю 😘")
-        }
-
-        val message = SendMessage(chatId.toString(), builder).apply { parseMode = "HTML" }
-        executeSafe(message)
-    }
-
     private suspend fun createPlanInvoice(chatId: Long, planCode: String) {
+        println("🧾 createPlanInvoice: chatId=$chatId, planCode=$planCode")
         val plan = Plan.byCode(planCode) ?: return
         val invoicePayload = "plan:${plan.code}:${UUID.randomUUID()}"
         val providerDataJson = makeProviderData(
@@ -360,6 +492,7 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun createPackInvoice(chatId: Long, packCode: String) {
+        println("🧾 createPackInvoice: chatId=$chatId, packCode=$packCode")
         val pack = ImagePack.byCode(packCode) ?: return
         val invoicePayload = "pack:${pack.code}:${UUID.randomUUID()}"
         val providerDataJson = makeProviderData(
@@ -388,6 +521,7 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun onSuccessfulPayment(message: Message) {
+        println("✅ onSuccessfulPayment: chatId=${message.chatId}")
         val chatId = message.chatId
         val payment = message.successfulPayment ?: return
         val payload = payment.invoicePayload ?: return
@@ -406,71 +540,105 @@ class EmilyVirtualGirlBot(
                 balance.imageCreditsLeft += plan.monthlyImageCredits
                 repository.put(balance)
                 repository.addPayment(chatId, payload, totalRub)
-                sendEphemeral(chatId, "✅ Подписка «${plan.title}» активирована до ${Instant.ofEpochMilli(balance.planExpiresAt!!)}.\n" +
-                    "Начислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений.", ttlSeconds = 20)
+                sendEphemeral(
+                    chatId,
+                    "✅ Подписка «${plan.title}» активирована до ${Instant.ofEpochMilli(balance.planExpiresAt!!)}.\n" +
+                            "Начислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений.",
+                    ttlSeconds = 20
+                )
+                println("🎉 План активирован: ${plan.title}")
             }
+
             payload.startsWith("pack:") -> {
                 val code = payload.split(":").getOrNull(1)
                 val pack = ImagePack.byCode(code) ?: return
                 balance.imageCreditsLeft += pack.images
                 repository.put(balance)
                 repository.addPayment(chatId, payload, totalRub)
-                sendEphemeral(chatId, "✅ Начислено: ${pack.images} изображений по пакету «${pack.title}».", ttlSeconds = 15)
+                sendEphemeral(
+                    chatId,
+                    "✅ Начислено: ${pack.images} изображений по пакету «${pack.title}».",
+                    ttlSeconds = 15
+                )
+                println("🎉 Пакет активирован: ${pack.title}")
             }
         }
     }
 
     private suspend fun handleChat(chatId: Long, text: String) {
+        println("💬 handleChat: chatId=$chatId, text='${preview(text, 50)}'")
         val balance = ensureUserBalance(chatId)
         if (balance.textTokensLeft <= 0) {
+            println("⚠️ Недостаточно токенов: chatId=$chatId")
             sendEphemeral(chatId, "⚠️ У тебя закончились текстовые токены.\nКупи подписку в /buy", ttlSeconds = 15)
             return
         }
         memory.initIfNeeded(chatId)
+
         memory.append(chatId, "user", text)
         val history = memory.history(chatId)
+
         val result = withTyping(chatId) { chatService.generateReply(history) }
+        println("🤖 ChatService result: text.len=${result.text.length}, tokensUsed=${result.tokensUsed}")
+        log.info("ChatService result: text.len={}, tokensUsed={}", result.text.length, result.tokensUsed)
+
         memory.append(chatId, "assistant", result.text)
         sendText(chatId, result.text)
+
         if (result.tokensUsed > 0) {
             balance.textTokensLeft -= result.tokensUsed
             if (balance.textTokensLeft < 0) balance.textTokensLeft = 0
             repository.put(balance)
             repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to chatModel))
+            println("📊 Токены обновлены: chatId=$chatId, tokensLeft=${balance.textTokensLeft}")
+            log.info("tokens updated chatId={}, tokensLeft={}", chatId, balance.textTokensLeft)
         }
         if (balance.plan == null && balance.textTokensLeft <= 0) {
+            println("⚠️ Бесплатный лимит исчерпан: chatId=$chatId")
             sendEphemeral(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy", ttlSeconds = 15)
         }
     }
 
     private suspend fun handleImage(chatId: Long, textRaw: String) {
+        println("🖼️ handleImage: chatId=$chatId, text='${preview(textRaw, 50)}'")
         val balance = ensureUserBalance(chatId)
         val cap = dailyCap(balance.plan)
         if (balance.plan == null && balance.imageCreditsLeft < 1) {
-            sendEphemeral(chatId, "Дневной лимит изображений исчерпан ($cap). Попробуй завтра или купи пакет /buy.", ttlSeconds = 20)
+            println("⚠️ Дневной лимит изображений исчерпан: chatId=$chatId")
+            sendEphemeral(
+                chatId,
+                "Дневной лимит изображений исчерпан ($cap). Попробуй завтра или купи пакет /buy.",
+                ttlSeconds = 20
+            )
             return
         }
         if (balance.imageCreditsLeft <= 0) {
+            println("⚠️ Нет кредитов на изображения: chatId=$chatId")
             sendEphemeral(chatId, "У тебя нет кредитов на изображения. Купи подписку или пакет: /buy", ttlSeconds = 20)
             return
         }
         val originalPrompt = textRaw.removePrefix(imageTag).removePrefix("/pic").trim()
         if (originalPrompt.isBlank()) {
+            println("⚠️ Пустой промпт для изображения: chatId=$chatId")
             sendEphemeral(chatId, "После #pic укажи описание 🙂", ttlSeconds = 10)
             return
         }
         if (!isPromptAllowed(originalPrompt)) {
+            println("🚫 Запрещенный промпт: chatId=$chatId")
             sendEphemeral(chatId, "❌ Нельзя темы про несовершеннолетних/насилие/принуждение.", ttlSeconds = 15)
             return
         }
         val containsCyrillic = originalPrompt.any { it.code in 0x0400..0x04FF }
         val finalPrompt = if (containsCyrillic) {
+            println("🔤 Перевод промпта с русского: chatId=$chatId")
             withUploadPhoto(chatId) { translateRuToEn(originalPrompt) ?: originalPrompt }
         } else {
             originalPrompt
         }
+        println("🎨 Генерация изображения: chatId=$chatId, prompt='${preview(finalPrompt, 50)}'")
         val bytes = withUploadPhoto(chatId) { imageService.generateImage(finalPrompt, persona) }
         if (bytes == null) {
+            println("❌ Ошибка генерации изображения: chatId=$chatId")
             sendEphemeral(chatId, "Не удалось сгенерировать изображение. Попробуй ещё раз.", ttlSeconds = 12)
             return
         }
@@ -479,13 +647,16 @@ class EmilyVirtualGirlBot(
         balance.dayImageUsed += 1
         repository.put(balance)
         repository.logUsage(chatId, 0, mapOf("type" to "image", "model" to imageModel, "credits_used" to 1))
+        println("✅ Изображение сгенерировано: chatId=$chatId, creditsLeft=${balance.imageCreditsLeft}")
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
+            println("⚠️ Бесплатный лимит исчерпан после генерации: chatId=$chatId")
             sendEphemeral(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy", ttlSeconds = 15)
         }
     }
 
     private suspend fun deleteOldSystemMessages(chatId: Long) {
         val ids = systemMessages[chatId] ?: return
+        println("🗑️ deleteOldSystemMessages: chatId=$chatId, count=${ids.size}")
         val iterator = ids.iterator()
         while (iterator.hasNext()) {
             val id = iterator.next()
@@ -499,11 +670,13 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun sendText(chatId: Long, text: String, html: Boolean = false) {
+        println("📤 sendText: chatId=$chatId, text='${preview(text, 50)}'")
         val message = SendMessage(chatId.toString(), text).apply { if (html) parseMode = "HTML" }
         executeSafe(message)
     }
 
     private suspend fun sendPhoto(chatId: Long, bytes: ByteArray, caption: String?) {
+        println("📸 sendPhoto: chatId=$chatId, bytes=${bytes.size}, caption=$caption")
         val photo = SendPhoto().apply {
             this.chatId = chatId.toString()
             this.photo = InputFile(ByteArrayInputStream(bytes), "image.png")
@@ -515,18 +688,23 @@ class EmilyVirtualGirlBot(
     private fun rememberSystemMessage(chatId: Long, messageId: Int) {
         val list = systemMessages.computeIfAbsent(chatId) { mutableListOf() }
         list += messageId
+        println("💾 rememberSystemMessage: chatId=$chatId, messageId=$messageId")
     }
 
     private fun markProtected(chatId: Long, messageId: Int) {
         val set = protectedMessages.computeIfAbsent(chatId) { mutableSetOf() }
         set += messageId
+        println("🛡️ markProtected: chatId=$chatId, messageId=$messageId")
     }
 
     private suspend fun safeExecuteInvoice(chatId: Long, invoice: SendInvoice) {
+        println("🧾 safeExecuteInvoice: chatId=$chatId")
         try {
             val message = executeSafe(invoice)
             markProtected(chatId, message.messageId)
+            println("✅ Invoice sent successfully: chatId=$chatId")
         } catch (ex: TelegramApiRequestException) {
+            println("❌ Invoice error: ${ex.message}")
             val details = buildString {
                 appendLine("Invoice error:")
                 appendLine("message=${ex.message}")
@@ -535,6 +713,7 @@ class EmilyVirtualGirlBot(
             }
             sendEphemeral(chatId, "❌ $details", ttlSeconds = 20)
         } catch (ex: Exception) {
+            println("❌ Unexpected invoice error: ${ex.message}")
             sendEphemeral(chatId, "❌ Unexpected invoice error: ${ex.message ?: ex.toString()}", ttlSeconds = 20)
         }
     }
@@ -557,11 +736,13 @@ class EmilyVirtualGirlBot(
         if (balance.planExpiresAt?.let { now > it } == true) {
             balance.plan = null
             balance.planExpiresAt = null
+            println("🔄 План истек: userId=$userId")
         }
         val today = LocalDate.now().toString()
         if (balance.dayStamp != today) {
             balance.dayStamp = today
             balance.dayImageUsed = 0
+            println("🔄 Сброс дневного лимита: userId=$userId")
         }
         repository.put(balance)
         return balance
@@ -594,6 +775,7 @@ class EmilyVirtualGirlBot(
 
     private suspend fun deleteUserCommand(chatId: Long, messageId: Int, text: String) {
         if (isDeletableCommand(text)) {
+            println("🗑️ deleteUserCommand: chatId=$chatId, messageId=$messageId")
             try {
                 executeSafe(DeleteMessage(chatId.toString(), messageId))
             } catch (_: Exception) {
@@ -613,15 +795,15 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    private fun String?.nullIfBlank(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
-
     private suspend fun sendEphemeral(chatId: Long, text: String, ttlSeconds: Long, html: Boolean = false) {
+        println("⏳ sendEphemeral: chatId=$chatId, text='${preview(text, 50)}', ttl=$ttlSeconds")
         val message = SendMessage(chatId.toString(), text).apply { if (html) parseMode = "HTML" }
         val sent = executeSafe(message)
         scope.launch {
             delay(ttlSeconds * 1000)
             try {
                 executeSafe(DeleteMessage(chatId.toString(), sent.messageId))
+                println("🗑️ Ephemeral message deleted: chatId=$chatId")
             } catch (_: Exception) {
             }
         }
@@ -654,24 +836,14 @@ class EmilyVirtualGirlBot(
     private suspend fun <T> withUploadPhoto(chatId: Long, block: suspend () -> T): T =
         withChatAction(chatId, ActionType.UPLOADPHOTO, block)
 
-    private suspend fun executeSafe(method: SendMessage): Message =
-        withContext(Dispatchers.IO) { execute(method) }
-
-    private suspend fun executeSafe(method: SendPhoto): Message =
-        withContext(Dispatchers.IO) { execute(method) }
-
-    private suspend fun executeSafe(method: DeleteMessage): Boolean =
-        withContext(Dispatchers.IO) { execute(method) }
-
-    private suspend fun executeSafe(method: SendInvoice): Message =
-        withContext(Dispatchers.IO) { execute(method) }
-
+    // --- Telegram execute wrappers
+    private suspend fun executeSafe(method: SendMessage): Message = withContext(Dispatchers.IO) { execute(method) }
+    private suspend fun executeSafe(method: SendPhoto): Message = withContext(Dispatchers.IO) { execute(method) }
+    private suspend fun executeSafe(method: DeleteMessage): Boolean = withContext(Dispatchers.IO) { execute(method) }
+    private suspend fun executeSafe(method: SendInvoice): Message = withContext(Dispatchers.IO) { execute(method) }
     private suspend fun executeSafe(method: AnswerPreCheckoutQuery): Boolean =
         withContext(Dispatchers.IO) { execute(method) }
 
-    private suspend fun executeSafe(method: SetMyCommands): Boolean =
-        withContext(Dispatchers.IO) { execute(method) }
-
-    private suspend fun executeSafe(method: SendChatAction): Boolean =
-        withContext(Dispatchers.IO) { execute(method) }
+    private suspend fun executeSafe(method: SetMyCommands): Boolean = withContext(Dispatchers.IO) { execute(method) }
+    private suspend fun executeSafe(method: SendChatAction): Boolean = withContext(Dispatchers.IO) { execute(method) }
 }

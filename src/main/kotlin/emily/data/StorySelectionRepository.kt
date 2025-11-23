@@ -18,7 +18,7 @@ class StorySelectionRepository(
             "characterPersonality" to selection.characterPersonality,
             "storyTitle" to selection.storyTitle,
             "storyDescription" to selection.storyDescription,
-            "storyText" to selection.storyText,
+            "full_story_text" to selection.full_story_text,
             "style" to selection.style,
             "updatedAt" to selection.updatedAt
         )
@@ -35,7 +35,7 @@ class StorySelectionRepository(
             characterPersonality = snapshot.child("characterPersonality").getValue(String::class.java),
             storyTitle = snapshot.child("storyTitle").getValue(String::class.java).orEmpty(),
             storyDescription = snapshot.child("storyDescription").getValue(String::class.java),
-            storyText = snapshot.child("storyText").getValue(String::class.java),
+            full_story_text = snapshot.child("full_story_text").getValue(String::class.java),
             style = snapshot.child("style").getValue(String::class.java),
             updatedAt = snapshot.child("updatedAt").getValue(Long::class.java) ?: System.currentTimeMillis()
         )

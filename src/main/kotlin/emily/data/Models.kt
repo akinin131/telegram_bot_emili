@@ -1,5 +1,6 @@
 package emily.data
 
+import com.google.gson.annotations.SerializedName
 import java.time.LocalDate
 
 enum class Plan(
@@ -94,7 +95,8 @@ data class StorySelection(
     val characterPersonality: String?,
     val storyTitle: String,
     val storyDescription: String?,
-    val storyText: String?,
+    @SerializedName("full_story_text")
+    val full_story_text: String?,
     val style: String?,
     val updatedAt: Long = System.currentTimeMillis()
 )

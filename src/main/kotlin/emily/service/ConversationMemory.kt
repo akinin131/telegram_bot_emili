@@ -3,15 +3,39 @@ package emily.service
 import java.util.concurrent.ConcurrentHashMap
 
 private const val MAX_CONTEXT_MESSAGES = 20
-private val noiseRegex = Regex("""^([/#][\p{L}\p{N}_@-]+.*|\s*)$""", RegexOption.IGNORE_CASE)
+private val noiseRegex = Regex(
+    """^([/#][\p{L}\p{N}_@-]+.*|\s*)$""",
+    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+)
 
 class ConversationMemory(
     private val systemPromptProvider: () -> String
 ) {
     private val contexts = ConcurrentHashMap<Long, MutableList<Pair<String, String>>>()
 
+    /** Полностью заменить первый system для чата */
+    fun setSystem(chatId: Long, content: String) {
+        val ctx = contexts.computeIfAbsent(chatId) { mutableListOf("system" to "") }
+        if (ctx.isEmpty() || ctx.first().first != "system") {
+            ctx.add(0, "system" to content)
+        } else {
+            ctx[0] = "system" to content
+        }
+    }
+
+    fun history(chatId: Long): List<Pair<String, String>> =
+        contexts[chatId]?.toList().orEmpty()
+
+    /** Создать system, если её нет. Уже существующую — НЕ трогаем. */
     fun initIfNeeded(chatId: Long) {
-        contexts.computeIfAbsent(chatId) { mutableListOf("system" to systemPromptProvider()) }
+        val ctx = contexts.computeIfAbsent(chatId) { mutableListOf() }
+        if (ctx.isEmpty()) {
+            ctx += "system" to systemPromptProvider().orEmpty()
+        } else if (ctx.first().first != "system") {
+            // На всякий случай, если история есть, но начинается не с system.
+            ctx.add(0, "system" to systemPromptProvider().orEmpty())
+        }
+        // Если первый элемент уже "system" — ничего не делаем.
     }
 
     fun reset(chatId: Long) {
@@ -19,14 +43,11 @@ class ConversationMemory(
     }
 
     fun append(chatId: Long, role: String, content: String) {
-        val context = contexts.computeIfAbsent(chatId) { mutableListOf("system" to systemPromptProvider()) }
+        val context = contexts.computeIfAbsent(chatId) { mutableListOf() }
         if (role == "user" && shouldSkip(content)) return
         context += role to content
         contexts[chatId] = trim(context)
     }
-
-    fun history(chatId: Long): List<Pair<String, String>> =
-        contexts[chatId]?.let { trim(it) } ?: emptyList()
 
     fun autoClean(chatId: Long) {
         contexts[chatId]?.let { existing ->
@@ -58,9 +79,13 @@ class ConversationMemory(
         }.toMutableList()
     }
 
-    private fun shouldSkip(text: String): Boolean = noiseRegex.matches(text.trim())
+    private fun shouldSkip(text: String): Boolean {
+        val t = text.trim()
+        if (t.startsWith("#WEBAPP", ignoreCase = true)) return true
+        return noiseRegex.matches(t)
+    }
 }
 
 fun defaultSystemPrompt(): String =
     "Ты — Эмили, виртуальная девушка: тёплая, игривая, поддерживающая и немного пошлая! " +
-        "любишь немного флиртовать. Отвечай дружелюбно и запоминай контекст разговора."
+            "любишь немного флиртовать. Отвечай дружелюбно и запоминай контекст разговора."
