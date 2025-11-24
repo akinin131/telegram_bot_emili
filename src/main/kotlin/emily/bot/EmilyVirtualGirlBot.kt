@@ -2,6 +2,7 @@ package emily.bot
 
 import com.deepl.api.Translator
 import emily.app.BotConfig
+import emily.app.WebAppStory
 import emily.data.*
 import emily.service.ChatService
 import emily.service.ConversationMemory
@@ -23,6 +24,7 @@ import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
 import org.telegram.telegrambots.meta.api.methods.send.*
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText
 import org.telegram.telegrambots.meta.api.objects.InputFile
 import org.telegram.telegrambots.meta.api.objects.Message
 import org.telegram.telegrambots.meta.api.objects.Update
@@ -32,6 +34,7 @@ import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
+
 import kotlin.text.buildString
 import kotlin.text.orEmpty
 
@@ -105,10 +108,11 @@ class EmilyVirtualGirlBot(
                 }
                 executeSafe(answer)
             }
-             update.hasMessage() && update.message.webAppData != null ->{
+
+            update.hasMessage() && update.message.webAppData != null -> {
                 val dataJson = update.message.webAppData.data
                 println("🌐 WebAppData: $dataJson")
-                // тут разбираешь JSON и делаешь StorySelection, как мы обсуждали
+                // тут можно разбирать JSON, если будешь использовать web_app_data
             }
 
             update.hasMessage() && update.message.successfulPayment != null -> {
@@ -138,28 +142,65 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun handleTextMessage(update: Update) {
-        val chatId = update.message.chatId
+        var chatId = update.message.chatId
         val textRaw = update.message.text.trim()
         val messageId = update.message.messageId
 
         println("📨 handleTextMessage START: chatId=$chatId, msgId=$messageId, text='${textRaw.replace('\n', ' ')}'")
         log.info("handleTextMessage: chatId={}, msgId={}, text='{}'", chatId, messageId, textRaw.replace('\n', ' '))
 
-        // Обработка сообщений от mini-app
+        // 🔻 1. Сообщение от mini-app (#WEBAPP) — ОБРАБАТЫВАЕМ, РЕДАКТИРУЕМ И НЕ ШЛЁМ ВТОРОЕ СООБЩЕНИЕ
         if (textRaw.trim().startsWith("#WEBAPP", ignoreCase = true)) {
-            println("🎯 #WEBAPP DETECTED! Обработка мини-приложения")
-            log.info("handleTextMessage: detected #WEBAPP pseudo-webapp payload")
-            val handled = tryHandleWebAppFromText(chatId, textRaw)
-            if (handled) {
-                println("✅ #WEBAPP успешно обработан")
-                deleteUserCommand(chatId, messageId, textRaw)
+            println("🎯 #WEBAPP DETECTED")
+
+            val parsed = parseWebAppMessage(textRaw)
+            if (parsed == null) {
+                sendText(chatId, "Не удалось обработать выбор истории 😔")
                 return
-            } else {
-                println("❌ #WEBAPP не удалось обработать, переходим к обычному чату")
-                log.warn("#WEBAPP text could not be parsed, falling back to chat")
             }
+
+            // Сохраняем выбор и систему, НО без отдельного подтверждающего сообщения
+            val selection = StorySelection(
+                userId = chatId,
+                characterName = parsed.characterName,
+                characterAppearance = null,
+                characterPersonality = parsed.characterPersonality,
+                storyTitle = parsed.storyTitle,
+                storyDescription = parsed.storyDescription,
+                full_story_text = parsed.fullStoryText,
+                style = parsed.style?.toString()
+            )
+            applySelection(chatId, selection, source = "webapp", sendConfirmation = false)
+
+            // Собираем ЕДИНОЕ сообщение: шапка + текст + приглашение писать
+            val finalText = buildString {
+                append("📖 <b>История выбрана</b>\n\n")
+                append("🎭 <b>Персонаж:</b> ${escapeHtml(parsed.characterName)}\n")
+                append("📚 <b>История:</b> ${escapeHtml(parsed.storyTitle)}\n\n")
+                append(escapeHtml(parsed.fullStoryText))
+                append("\n\n")
+                append("Теперь напиши первое сообщение — и мы начнём нашу историю! 💕")
+            }
+
+            // Пытаемся ОТРЕДАКТИРОВАТЬ исходное inline-сообщение
+            try {
+                val edit = EditMessageText().apply {
+                    chatId = chatId.toLong()
+                    this.messageId = messageId
+                    text = finalText
+                    parseMode = "HTML"
+                }
+                execute(edit)
+                println("✅ WEBAPP message edited successfully")
+            } catch (e: Exception) {
+                println("❌ Не удалось отредактировать сообщение: ${e.message}")
+                sendText(chatId, finalText, html = true)
+            }
+
+            return
         }
 
+        // 🔻 2. Остальные обычные сообщения/команды
         when {
             textRaw.equals("/start", true) -> {
                 println("🔹 Обработка команды /start")
@@ -232,7 +273,6 @@ class EmilyVirtualGirlBot(
         println("🔍 raw text length: ${text.length}")
         println("🔍 raw text preview: ${preview(text, 400)}")
 
-        // Логируем каждую строку для отладки
         println("🔍 RAW TEXT LINES:")
         text.lines().forEachIndexed { index, line ->
             println("🔍 [$index]: '${line.trim()}'")
@@ -240,14 +280,11 @@ class EmilyVirtualGirlBot(
 
         log.info("WEBAPP_FROM_TEXT: raw.len={}, preview={}", text.length, preview(text, 400))
 
-        // Сбрасываем память диалога перед установкой новой сцены
         memory.reset(chatId)
 
-        // 1) Убираем HTML-теги и лишние пробелы
         val cleanText = text.replace(Regex("<[^>]*>"), "").trim()
         println("🔍 CLEAN TEXT: '${preview(cleanText, 300)}'")
 
-        // 2) Ищем персонажа: строка "Персонаж: Имя"
         val characterPattern = Regex("""Персонаж:\s*(.+)""")
         val characterMatch = characterPattern.find(cleanText)
 
@@ -261,7 +298,6 @@ class EmilyVirtualGirlBot(
         val characterName = characterMatch.groups[1]?.value?.trim()
         println("🔍 FOUND CHARACTER: '$characterName'")
 
-        // 3) Извлекаем основной текст истории (после "История:" и имени персонажа, до ⏰/📊)
         val storyText = cleanText
             .substringAfter("История:", "")
             .substringAfter(characterName ?: "", "")
@@ -278,25 +314,21 @@ class EmilyVirtualGirlBot(
             return true
         }
 
-        // 4) Парсим блок с мета-данными после 📊
         val metaBlock = cleanText.substringAfter("📊", "").trim()
         println("🔍 META BLOCK: '${preview(metaBlock, 300)}'")
 
-        // style: xxx
         val style = Regex("""style:\s*([^\n\r]+)""")
             .find(metaBlock)
             ?.groupValues
             ?.getOrNull(1)
             ?.trim()
 
-        // characterPersonality: xxx
         val characterPersonality = Regex("""characterPersonality:\s*([^\n\r]+)""")
             .find(metaBlock)
             ?.groupValues
             ?.getOrNull(1)
             ?.trim()
 
-        // storyDescription: xxx
         val storyDescription = Regex("""storyDescription:\s*([^\n\r]+)""")
             .find(metaBlock)
             ?.groupValues
@@ -312,11 +344,10 @@ class EmilyVirtualGirlBot(
             storyText.length
         )
 
-        // 5) Собираем выбор для бота и промта ИИ
         val selection = StorySelection(
             userId = chatId,
             characterName = characterName,
-            characterAppearance = null, // можно позже добавить из miniApp, если появится
+            characterAppearance = null,
             characterPersonality = characterPersonality,
             storyTitle = storyDescription ?: "История с $characterName",
             storyDescription = storyDescription,
@@ -324,13 +355,19 @@ class EmilyVirtualGirlBot(
             style = style
         )
 
+        // здесь подтверждение оставляем (по умолчанию true)
         applySelection(chatId, selection, source = "text:#WEBAPP")
         println("✅ WEBAPP_FROM_TEXT COMPLETED SUCCESSFULLY")
         return true
     }
 
-    /** Применение выбора: сохраняем, ставим системный промт, подтверждаем */
-    suspend fun applySelection(chatId: Long, selection: StorySelection, source: String) {
+    /** Применение выбора: сохраняем, ставим системный промт, при необходимости шлём подтверждение */
+    suspend fun applySelection(
+        chatId: Long,
+        selection: StorySelection,
+        source: String,
+        sendConfirmation: Boolean = true
+    ) {
         println("🎭 applySelection: source=$source, character='${selection.characterName}', story.len=${selection.full_story_text?.length ?: 0}")
         selectionRepository.save(selection)
 
@@ -355,11 +392,13 @@ class EmilyVirtualGirlBot(
 
         memory.reset(chatId)
         memory.setSystem(chatId, scenario)
-        sendStorySelectionConfirmation(chatId, selection)
+
+        if (sendConfirmation) {
+            sendStorySelectionConfirmation(chatId, selection)
+        }
     }
 
-
-    /** Упрощенное подтверждение выбора */
+    /** Упрощенное подтверждение выбора (используется теперь везде, кроме inline #WEBAPP) */
     private suspend fun sendStorySelectionConfirmation(chatId: Long, selection: StorySelection) {
         println("📤 sendStorySelectionConfirmation: chatId=$chatId")
         val message = """
@@ -386,6 +425,7 @@ class EmilyVirtualGirlBot(
                 println("💰 Создание инвойса для плана: ${data.removePrefix("buy:plan:")}")
                 createPlanInvoice(chatId, data.removePrefix("buy:plan:"))
             }
+
             data.startsWith("buy:pack:") -> {
                 println("💰 Создание инвойса для пакета: ${data.removePrefix("buy:pack:")}")
                 createPackInvoice(chatId, data.removePrefix("buy:pack:"))
@@ -828,6 +868,69 @@ class EmilyVirtualGirlBot(
         } finally {
             job.cancelAndJoin()
         }
+    }
+
+    fun parseWebAppMessage(text: String): WebAppStory? {
+        val clean = text.trim()
+
+        val characterName = Regex("""Персонаж:\s*(.+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        val storyTitle = Regex("""История:\s*(.+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        if (characterName.isNullOrBlank() || storyTitle.isNullOrBlank()) {
+            println("❌ parseWebAppMessage: не нашли персонажа или историю")
+            return null
+        }
+
+        val fullStoryText = Regex("""full_story_text:\s*(.+)""", RegexOption.DOT_MATCHES_ALL)
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?: run {
+                clean.substringAfter("История:", "")
+                    .substringAfter(storyTitle, "")
+                    .substringBefore("⏰")
+                    .substringBefore("📊")
+                    .trim()
+            }
+
+        val styleStr = Regex("""style:\s*([^\n\r]+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        val style = styleStr?.toIntOrNull()
+
+        val characterPersonality = Regex("""characterPersonality:\s*([^\n\r]+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        val storyDescription = Regex("""storyDescription:\s*([^\n\r]+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        return WebAppStory(
+            characterName = characterName,
+            storyTitle = storyTitle,
+            style = style,
+            characterPersonality = characterPersonality,
+            storyDescription = storyDescription,
+            fullStoryText = fullStoryText
+        )
     }
 
     private suspend fun <T> withTyping(chatId: Long, block: suspend () -> T): T =
