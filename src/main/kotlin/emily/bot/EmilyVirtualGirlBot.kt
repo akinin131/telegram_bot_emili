@@ -62,6 +62,12 @@ class EmilyVirtualGirlBot(
         Carefully follow the user's instructions regarding poses and the situation — make sure the pose, 
         hand placement, gaze direction, and overall composition strictly match the given description. """.trimIndent()
 
+    // Невидимые символы для скрытых данных (должны совпадать с Python)
+    private val Z0: Char = '\u200B'   // 0: zero width space
+    private val Z1: Char = '\u200C'   // 1: zero width non-joiner
+    private val START_MARK: String = "\u2063\u200D" // маркер начала
+    private val END_MARK: String = "\u200D\u2063"   // маркер конца
+
     override fun getBotUsername(): String = "EmilyVirtualGirlBot"
     override fun getBotToken(): String = config.telegramToken
 
@@ -142,61 +148,41 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun handleTextMessage(update: Update) {
-        var chatId = update.message.chatId
+        val chatId = update.message.chatId
         val textRaw = update.message.text.trim()
         val messageId = update.message.messageId
 
         println("📨 handleTextMessage START: chatId=$chatId, msgId=$messageId, text='${textRaw.replace('\n', ' ')}'")
         log.info("handleTextMessage: chatId={}, msgId={}, text='{}'", chatId, messageId, textRaw.replace('\n', ' '))
 
-        // 🔻 1. Сообщение от mini-app (#WEBAPP) — ОБРАБАТЫВАЕМ, РЕДАКТИРУЕМ И НЕ ШЛЁМ ВТОРОЕ СООБЩЕНИЕ
-        if (textRaw.trim().startsWith("#WEBAPP", ignoreCase = true)) {
-            println("🎯 #WEBAPP DETECTED")
+        // 🔻 1. Пытаемся вытащить невидимые данные от WebApp
+        val hidden = decodeHiddenData(textRaw)
+        if (hidden != null) {
+            val (characterId, storyId, styleCode) = hidden
+            println("🎯 Hidden WebApp data detected: charId=$characterId, storyId=$storyId, style=$styleCode")
+            log.info("Hidden WebApp data: charId={}, storyId={}, style={}", characterId, storyId, styleCode)
 
             val parsed = parseWebAppMessage(textRaw)
             if (parsed == null) {
+                println("❌ Не удалось распарсить текст истории из сообщения")
                 sendText(chatId, "Не удалось обработать выбор истории 😔")
                 return
             }
 
-            // Сохраняем выбор и систему, НО без отдельного подтверждающего сообщения
             val selection = StorySelection(
                 userId = chatId,
                 characterName = parsed.characterName,
                 characterAppearance = null,
                 characterPersonality = parsed.characterPersonality,
                 storyTitle = parsed.storyTitle,
-                storyDescription = parsed.storyDescription,
+                storyDescription = parsed.storyDescription ?: parsed.storyTitle,
                 full_story_text = parsed.fullStoryText,
-                style = parsed.style?.toString()
+                style = styleCode.toString()
             )
-            applySelection(chatId, selection, source = "webapp", sendConfirmation = false)
 
-            // Собираем ЕДИНОЕ сообщение: шапка + текст + приглашение писать
-            val finalText = buildString {
-                append("📖 <b>История выбрана</b>\n\n")
-                append("🎭 <b>Персонаж:</b> ${escapeHtml(parsed.characterName)}\n")
-                append("📚 <b>История:</b> ${escapeHtml(parsed.storyTitle)}\n\n")
-                append(escapeHtml(parsed.fullStoryText))
-                append("\n\n")
-                append("Теперь напиши первое сообщение — и мы начнём нашу историю! 💕")
-            }
+            applySelection(chatId, selection, source = "webapp_hidden", sendConfirmation = false)
 
-            // Пытаемся ОТРЕДАКТИРОВАТЬ исходное inline-сообщение
-            try {
-                val edit = EditMessageText().apply {
-                    chatId = chatId.toLong()
-                    this.messageId = messageId
-                    text = finalText
-                    parseMode = "HTML"
-                }
-                execute(edit)
-                println("✅ WEBAPP message edited successfully")
-            } catch (e: Exception) {
-                println("❌ Не удалось отредактировать сообщение: ${e.message}")
-                sendText(chatId, finalText, html = true)
-            }
-
+            println("✅ WebApp hidden selection applied successfully")
             return
         }
 
@@ -266,7 +252,7 @@ class EmilyVirtualGirlBot(
         return if (clean.length <= max) clean else clean.take(max) + "… (len=" + clean.length + ")"
     }
 
-    /** ✅ Упрощенный подход: извлекаем данные из текстового сообщения */
+    /** ✅ Упрощенный подход: извлекаем данные из текстового сообщения (старый #WEBAPP-парсер, можно оставить про запас) */
     suspend fun tryHandleWebAppFromText(chatId: Long, text: String): Boolean {
         println("\n🔍 WEBAPP_FROM_TEXT START ==================================")
         println("🔍 chatId: $chatId")
@@ -355,10 +341,50 @@ class EmilyVirtualGirlBot(
             style = style
         )
 
-        // здесь подтверждение оставляем (по умолчанию true)
         applySelection(chatId, selection, source = "text:#WEBAPP")
         println("✅ WEBAPP_FROM_TEXT COMPLETED SUCCESSFULLY")
         return true
+    }
+
+    /** Декодируем невидимые данные из текста (совпадает по протоколу с Python) */
+    private fun decodeHiddenData(text: String): Triple<Int, Int, Int>? {
+        val startIdx = text.indexOf(START_MARK)
+        if (startIdx == -1) return null
+        val endIdx = text.indexOf(END_MARK, startIdx + START_MARK.length)
+        if (endIdx == -1) return null
+
+        val encoded = text.substring(startIdx + START_MARK.length, endIdx)
+        if (encoded.isEmpty()) return null
+
+        val bits = StringBuilder(encoded.length)
+        for (ch in encoded) {
+            when (ch) {
+                Z0 -> bits.append('0')
+                Z1 -> bits.append('1')
+                else -> return null
+            }
+        }
+
+        if (bits.length % 8 != 0) return null
+        val byteCount = bits.length / 8
+        val bytes = ByteArray(byteCount)
+        for (i in 0 until byteCount) {
+            val byteStr = bits.substring(i * 8, i * 8 + 8)
+            bytes[i] = byteStr.toInt(2).toByte()
+        }
+
+        val b64 = bytes.toString(Charsets.UTF_8)
+        val payloadBytes = java.util.Base64.getDecoder().decode(b64)
+        val payload = String(payloadBytes, Charsets.UTF_8)
+
+        val parts = payload.split("|")
+        if (parts.size != 3) return null
+
+        val charId = parts[0].toIntOrNull() ?: return null
+        val storyId = parts[1].toIntOrNull() ?: return null
+        val styleCode = parts[2].toIntOrNull() ?: return null
+
+        return Triple(charId, storyId, styleCode)
     }
 
     /** Применение выбора: сохраняем, ставим системный промт, при необходимости шлём подтверждение */
@@ -398,7 +424,7 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    /** Упрощенное подтверждение выбора (используется теперь везде, кроме inline #WEBAPP) */
+    /** Упрощенное подтверждение выбора (используется теперь везде, кроме inline hidden) */
     private suspend fun sendStorySelectionConfirmation(chatId: Long, selection: StorySelection) {
         println("📤 sendStorySelectionConfirmation: chatId=$chatId")
         val message = """
