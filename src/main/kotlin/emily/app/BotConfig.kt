@@ -4,7 +4,8 @@ data class BotConfig(
     val telegramToken: String,
     val providerToken: String,
     val veniceToken: String,
-    val deeplToken: String
+    val yandexApiKey: String,
+    val yandexFolderId: String
 )
 
 data class WebAppStory(

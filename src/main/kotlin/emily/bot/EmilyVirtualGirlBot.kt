@@ -1,12 +1,12 @@
 package emily.bot
 
-import com.deepl.api.Translator
 import emily.app.BotConfig
 import emily.app.WebAppStory
 import emily.data.*
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
+import emily.service.YandexTranslator
 import java.io.ByteArrayInputStream
 import java.time.Instant
 import java.time.LocalDate
@@ -44,7 +44,7 @@ class EmilyVirtualGirlBot(
     private val chatService: ChatService,
     private val imageService: ImageService,
     private val memory: ConversationMemory,
-    private val translator: Translator?
+    private val translator: YandexTranslator?
 ) : TelegramLongPollingBot() {
 
     private val log = LoggerFactory.getLogger(EmilyVirtualGirlBot::class.java)
@@ -1110,7 +1110,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
     private suspend fun translateRuToEn(text: String): String? = withContext(Dispatchers.IO) {
         return@withContext try {
             println("🌐 Перевод текста: '${preview(text, 30)}'")
-            val result = translator?.translateText(text, "ru", "en-US")?.text
+            val result = translator?.translate(text, "ru", "en")
             println("🌐 Результат перевода: '${preview(result, 30)}'")
             result
         } catch (e: Exception) {
