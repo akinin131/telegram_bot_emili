@@ -66,8 +66,8 @@ class EmilyVirtualGirlBot(
         match the given description.
     """.trimIndent()
 
-    // Текущая персона для генерации изображений (обновляем при выборе истории)
-    private var persona: String = defaultPersona
+    // Текущие персона для каждого пользователя
+    private val userPersonas = ConcurrentHashMap<Long, String>()
 
     // Невидимые символы (совпадают с Python)
     private val Z0: Char = '\u200B'   // 0: zero width space
@@ -83,6 +83,13 @@ class EmilyVirtualGirlBot(
 
     override fun getBotUsername(): String = "EmilyVirtualGirlBot"
     override fun getBotToken(): String = config.telegramToken
+
+    private fun getPersona(chatId: Long): String {
+        return userPersonas[chatId] ?: defaultPersona
+    }
+    private fun setPersona(chatId: Long, persona: String) {
+        userPersonas[chatId] = persona
+    }
 
     fun registerBotMenu() = runBlocking {
         println("🚀 registerBotMenu() - Регистрация команд бота")
@@ -209,9 +216,9 @@ class EmilyVirtualGirlBot(
                 storyId = hidden.storyId
             )
 
-            // Обновляем persona для генерации картинок
-            persona = personaForSelection
-            println("🎨 persona resolved for charId=${hidden.characterId}, style=${hidden.styleCode}")
+            // Обновляем persona для конкретного пользователя
+            setPersona(chatId, personaForSelection)
+            println("🎨 persona resolved for charId=${hidden.characterId}, style=${hidden.styleCode}, chatId=$chatId")
 
             val selection = StorySelection(
                 userId = chatId,
@@ -234,14 +241,14 @@ class EmilyVirtualGirlBot(
                 sendConfirmation = false
             )
 
-            println("✅ WebApp hidden selection applied successfully")
+            println("✅ WebApp hidden selection applied successfully for chatId=$chatId")
             return
         }
 
         // 2️⃣ Остальные команды / сообщения
         when {
             textRaw.equals("/start", true) -> {
-                println("🔹 Обработка команды /start")
+                println("🔹 Обработка команды /start для chatId=$chatId")
                 memory.initIfNeeded(chatId)
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
@@ -251,7 +258,7 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.equals("/buy", true) -> {
-                println("🔹 Обработка команды /buy")
+                println("🔹 Обработка команды /buy для chatId=$chatId")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 deleteOldSystemMessages(chatId)
@@ -260,7 +267,7 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.equals("/balance", true) -> {
-                println("🔹 Обработка команды /balance")
+                println("🔹 Обработка команды /balance для chatId=$chatId")
                 val balance = ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 deleteOldSystemMessages(chatId)
@@ -269,7 +276,7 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.equals("/reset", true) -> {
-                println("🔹 Обработка команды /reset")
+                println("🔹 Обработка команды /reset для chatId=$chatId")
                 memory.reset(chatId)
                 deleteOldSystemMessages(chatId)
                 sendEphemeral(chatId, "Память диалога очищена 🙈", ttlSeconds = 10)
@@ -287,14 +294,14 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.startsWith(imageTag, true) || textRaw.startsWith("/pic ", true) -> {
-                println("🖼️ Обработка запроса изображения")
+                println("🖼️ Обработка запроса изображения для chatId=$chatId")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 handleImage(chatId, textRaw)
             }
 
             else -> {
-                println("💬 Обработка обычного сообщения чата")
+                println("💬 Обработка обычного сообщения чата для chatId=$chatId")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 handleChat(chatId, textRaw)
@@ -369,11 +376,20 @@ class EmilyVirtualGirlBot(
             1 -> {
                 if (isAnime) {
                     """
-Emily — petite office girl with a soft, slightly shy presence; fair skin; shoulder-length wavy chestnut hair with a few loose strands near her face; large hazel eyes behind thin, elegant glasses; natural-looking light makeup; small, neat lips with a gentle, uncertain smile. She has a modest but noticeable bust, proportional to her petite frame, and a softly outlined waist. Semi-realistic anime style with natural body proportions and soft shading. She wears a fitted white blouse, a dark high-waisted pencil skirt, sheer tights and simple low heels. Office background with monitors and evening light. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — make sure pose, hand placement, facial expression, gaze direction and overall composition strictly match the given description.
+petite girl , fair skin;
+shoulder-length wavy brown hair, large brown eyes behind thin,
+elegant glasses; natural light makeup; . She has large breasts, proportional to her petite figure, and a slim waist. Semi-realistic anime style with natural
+body proportions and soft shading.  Office background with monitors and evening lighting. important: Carefully follow the user's instructions
+regarding poses and situations — make sure that the pose, hand position, facial expression, gaze direction, and overall
+composition strictly match this description..
                     """.trimIndent()
                 } else {
-                    """
-Emily — young Eastern European office worker in her early 20s, about 165 cm tall, slim yet softly curvy; fair skin with a natural blush on cheeks; straight light-brown hair collected in a slightly messy low ponytail; green-brown expressive eyes, realistic reflections; subtle office makeup (light eyeliner, mascara, nude lips). Realistic, natural-looking body proportions, no exaggeration: medium bust, proportional hips, slightly tense shoulders from long computer work. She wears a fitted white blouse, dark pencil skirt, thin tights and low heels. Realistic photographic style, soft diffused office lighting, neutral background with desks, monitors and paperwork. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — pose, hands, gaze, camera angle and framing must strictly follow the description.
+                    """petite girl , fair skin;
+shoulder-length wavy brown hair, large brown eyes behind thin,
+elegant glasses; natural light makeup; . She has large breasts, proportional to her petite figure, and a slim waist. realistic style with natural
+body proportions and soft shading.  Office background with monitors and evening lighting. important: Carefully follow the user's instructions
+regarding poses and situations — make sure that the pose, hand position, facial expression, gaze direction, and overall
+composition strictly match this description..
                     """.trimIndent()
                 }
             }
@@ -594,7 +610,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         sendConfirmation: Boolean = true
     ) {
         println(
-            "🎭 applySelection: source=$source, character='${selection.characterName}', " +
+            "🎭 applySelection: chatId=$chatId, source=$source, character='${selection.characterName}', " +
                     "story.len=${selection.full_story_text?.length ?: 0}"
         )
         selectionRepository.save(selection)
@@ -644,7 +660,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         """.trimIndent()
 
         executeSafe(SendMessage(chatId.toString(), message).apply { parseMode = "HTML" })
-        println("✅ Confirmation message sent")
+        println("✅ Confirmation message sent for chatId=$chatId")
     }
 
     // ================== ДАЛЬШЕ — ВСЁ КАК У ТЕБЯ БЫЛО (платежи, баланс, чат, картинки) ==================
@@ -658,12 +674,12 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         deleteOldSystemMessages(chatId)
         when {
             data.startsWith("buy:plan:") -> {
-                println("💰 Создание инвойса для плана: ${data.removePrefix("buy:plan:")}")
+                println("💰 Создание инвойса для плана: ${data.removePrefix("buy:plan:")} для chatId=$chatId")
                 createPlanInvoice(chatId, data.removePrefix("buy:plan:"))
             }
 
             data.startsWith("buy:pack:") -> {
-                println("💰 Создание инвойса для пакета: ${data.removePrefix("buy:pack:")}")
+                println("💰 Создание инвойса для пакета: ${data.removePrefix("buy:pack:")} для chatId=$chatId")
                 createPackInvoice(chatId, data.removePrefix("buy:pack:"))
             }
         }
@@ -827,7 +843,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
                             "Начислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений.",
                     ttlSeconds = 20
                 )
-                println("🎉 План активирован: ${plan.title}")
+                println("🎉 План активирован: ${plan.title} для chatId=$chatId")
             }
 
             payload.startsWith("pack:") -> {
@@ -841,7 +857,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
                     "✅ Начислено: ${pack.images} изображений по пакету «${pack.title}».",
                     ttlSeconds = 15
                 )
-                println("🎉 Пакет активирован: ${pack.title}")
+                println("🎉 Пакет активирован: ${pack.title} для chatId=$chatId")
             }
         }
     }
@@ -864,7 +880,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         val history = memory.history(chatId)
 
         val result = withTyping(chatId) { chatService.generateReply(history) }
-        println("🤖 ChatService result: text.len=${result.text.length}, tokensUsed=${result.tokensUsed}")
+        println("🤖 ChatService result: text.len=${result.text.length}, tokensUsed=${result.tokensUsed} для chatId=$chatId")
         log.info("ChatService result: text.len={}, tokensUsed={}", result.text.length, result.tokensUsed)
 
         memory.append(chatId, "assistant", result.text)
@@ -921,15 +937,30 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
             )
             return
         }
-        val containsCyrillic = originalPrompt.any { it.code in 0x0400..0x04FF }
+
+        // УЛУЧШЕННАЯ ПРОВЕРКА РУССКОГО ТЕКСТА
+        val containsCyrillic = hasCyrillic(originalPrompt)
+        println("🔤 Проверка языка: containsCyrillic=$containsCyrillic, prompt='${preview(originalPrompt, 30)}'")
+
         val finalPrompt = if (containsCyrillic) {
             println("🔤 Перевод промпта с русского: chatId=$chatId")
-            withUploadPhoto(chatId) { translateRuToEn(originalPrompt) ?: originalPrompt }
+            val translated = withUploadPhoto(chatId) { translateRuToEn(originalPrompt) }
+            if (translated != null) {
+                println("✅ Переведено: '$translated'")
+                translated
+            } else {
+                println("❌ Перевод не удался, использую оригинал")
+                originalPrompt
+            }
         } else {
+            println("🔤 Английский промпт, перевод не требуется")
             originalPrompt
         }
-        println("🎨 Генерация изображения: chatId=$chatId, prompt='${preview(finalPrompt, 50)}'")
-        val bytes = withUploadPhoto(chatId) { imageService.generateImage(finalPrompt, persona) }
+
+        println("🎨 Генерация изображения: chatId=$chatId, finalPrompt='${preview(finalPrompt, 50)}'")
+        val bytes = withUploadPhoto(chatId) {
+            imageService.generateImage(finalPrompt, getPersona(chatId))
+        }
         if (bytes == null) {
             println("❌ Ошибка генерации изображения: chatId=$chatId")
             sendEphemeral(chatId, "Не удалось сгенерировать изображение. Попробуй ещё раз.", ttlSeconds = 12)
@@ -950,6 +981,17 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
             sendEphemeral(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy", ttlSeconds = 15)
         }
     }
+
+    // УЛУЧШЕННАЯ ФУНКЦИЯ ПРОВЕРКИ КИРИЛЛИЦЫ
+    private fun hasCyrillic(text: String): Boolean {
+        val cyrillicPattern = Regex("[а-яА-ЯёЁ]")
+        val hasCyrillic = cyrillicPattern.containsMatchIn(text)
+        println("🔍 Проверка кириллицы: text='${preview(text, 20)}', hasCyrillic=$hasCyrillic")
+        return hasCyrillic
+    }
+
+    // УЛУЧШЕННАЯ ФУНКЦИЯ ПЕРЕВОДА
+
 
     private suspend fun deleteOldSystemMessages(chatId: Long) {
         val ids = systemMessages[chatId] ?: return
@@ -1066,7 +1108,15 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
     }
 
     private suspend fun translateRuToEn(text: String): String? = withContext(Dispatchers.IO) {
-        runCatching { translator?.translateText(text, "ru", "en-US")?.text }.getOrNull()
+        return@withContext try {
+            println("🌐 Перевод текста: '${preview(text, 30)}'")
+            val result = translator?.translateText(text, "ru", "en-US")?.text
+            println("🌐 Результат перевода: '${preview(result, 30)}'")
+            result
+        } catch (e: Exception) {
+            println("❌ Ошибка перевода: ${e.message}")
+            null
+        }
     }
 
     private fun isDeletableCommand(text: String): Boolean {
