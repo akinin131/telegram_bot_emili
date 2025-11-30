@@ -13,6 +13,7 @@ import java.time.LocalDate
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.Base64
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,7 +25,6 @@ import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
 import org.telegram.telegrambots.meta.api.methods.send.*
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage
-import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText
 import org.telegram.telegrambots.meta.api.objects.InputFile
 import org.telegram.telegrambots.meta.api.objects.Message
 import org.telegram.telegrambots.meta.api.objects.Update
@@ -34,7 +34,6 @@ import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
-
 import kotlin.text.buildString
 import kotlin.text.orEmpty
 
@@ -56,17 +55,31 @@ class EmilyVirtualGirlBot(
     private val imageTag = "#pic"
     private val chatModel = "venice-uncensored"
     private val imageModel = "wai-Illustrious"
-    private var persona = """ Emily — petite yet curvy, with soft skin; short, straight silver
-        hair; green eyes; large, full, natural breasts (large, prominent, realistic, proportional); 
-        enjoys being nude; age 20+; semi-realistic anime style with natural body proportions. IMPORTANT: 
-        Carefully follow the user's instructions regarding poses and the situation — make sure the pose, 
-        hand placement, gaze direction, and overall composition strictly match the given description. """.trimIndent()
 
-    // Невидимые символы для скрытых данных (должны совпадать с Python)
+    // БАЗОВАЯ ПЕРСОНА ПО УМОЛЧАНИЮ (если что-то пошло не так)
+    private val defaultPersona = """
+        Emily — petite yet curvy, with soft skin; short, straight silver hair; green eyes;
+        large, full, natural breasts (large, prominent, realistic, proportional);
+        enjoys being nude; age 20+; semi-realistic anime style with natural body proportions.
+        IMPORTANT: Carefully follow the user's instructions regarding poses and the situation —
+        make sure the pose, hand placement, gaze direction, and overall composition strictly
+        match the given description.
+    """.trimIndent()
+
+    // Текущая персона для генерации изображений (обновляем при выборе истории)
+    private var persona: String = defaultPersona
+
+    // Невидимые символы (совпадают с Python)
     private val Z0: Char = '\u200B'   // 0: zero width space
     private val Z1: Char = '\u200C'   // 1: zero width non-joiner
     private val START_MARK: String = "\u2063\u200D" // маркер начала
     private val END_MARK: String = "\u200D\u2063"   // маркер конца
+
+    data class HiddenWebAppData(
+        val characterId: Int,
+        val storyId: Int,
+        val styleCode: Int
+    )
 
     override fun getBotUsername(): String = "EmilyVirtualGirlBot"
     override fun getBotToken(): String = config.telegramToken
@@ -118,7 +131,6 @@ class EmilyVirtualGirlBot(
             update.hasMessage() && update.message.webAppData != null -> {
                 val dataJson = update.message.webAppData.data
                 println("🌐 WebAppData: $dataJson")
-                // тут можно разбирать JSON, если будешь использовать web_app_data
             }
 
             update.hasMessage() && update.message.successfulPayment != null -> {
@@ -130,7 +142,11 @@ class EmilyVirtualGirlBot(
             update.hasMessage() && update.message.hasText() -> {
                 val t = update.message.text
                 println("📝 handleUpdate: textMessage chatId=${update.message.chatId}, text.len=${t?.length ?: -1}")
-                log.info("handleUpdate: textMessage chatId={}, text.len={}", update.message.chatId, t?.length ?: -1)
+                log.info(
+                    "handleUpdate: textMessage chatId={}, text.len={}",
+                    update.message.chatId,
+                    t?.length ?: -1
+                )
                 handleTextMessage(update)
             }
 
@@ -153,14 +169,26 @@ class EmilyVirtualGirlBot(
         val messageId = update.message.messageId
 
         println("📨 handleTextMessage START: chatId=$chatId, msgId=$messageId, text='${textRaw.replace('\n', ' ')}'")
-        log.info("handleTextMessage: chatId={}, msgId={}, text='{}'", chatId, messageId, textRaw.replace('\n', ' '))
+        log.info(
+            "handleTextMessage: chatId={}, msgId={}, text='{}'",
+            chatId,
+            messageId,
+            textRaw.replace('\n', ' ')
+        )
 
-        // 🔻 1. Пытаемся вытащить невидимые данные от WebApp
+        // 1️⃣ Пытаемся вытащить невидимые данные (charId|storyId|styleCode)
         val hidden = decodeHiddenData(textRaw)
         if (hidden != null) {
-            val (characterId, storyId, styleCode) = hidden
-            println("🎯 Hidden WebApp data detected: charId=$characterId, storyId=$storyId, style=$styleCode")
-            log.info("Hidden WebApp data: charId={}, storyId={}, style={}", characterId, storyId, styleCode)
+            println(
+                "🎯 Hidden WebApp data detected: charId=${hidden.characterId}, " +
+                        "storyId=${hidden.storyId}, style=${hidden.styleCode}"
+            )
+            log.info(
+                "Hidden WebApp data: charId={}, storyId={}, style={}",
+                hidden.characterId,
+                hidden.storyId,
+                hidden.styleCode
+            )
 
             val parsed = parseWebAppMessage(textRaw)
             if (parsed == null) {
@@ -169,24 +197,48 @@ class EmilyVirtualGirlBot(
                 return
             }
 
+            // 🔥 Восстанавливаем внешний вид по characterId + styleCode
+            val personaForSelection = resolvePersona(
+                characterId = hidden.characterId,
+                styleCode = hidden.styleCode
+            )
+
+            // 🔥 Скрытое описание истории по characterId + storyId (РУССКИЙ текст с реальным именем)
+            val hiddenStoryPrompt = resolveStoryPrompt(
+                characterId = hidden.characterId,
+                storyId = hidden.storyId
+            )
+
+            // Обновляем persona для генерации картинок
+            persona = personaForSelection
+            println("🎨 persona resolved for charId=${hidden.characterId}, style=${hidden.styleCode}")
+
             val selection = StorySelection(
                 userId = chatId,
                 characterName = parsed.characterName,
-                characterAppearance = null,
-                characterPersonality = parsed.characterPersonality,
+                // внешний вид персонажа (полный промт)
+                characterAppearance = personaForSelection,
+                // характер: либо короткий текст из WebApp, либо используем тот же промт внешности
+                characterPersonality = parsed.characterPersonality ?: personaForSelection,
                 storyTitle = parsed.storyTitle,
-                storyDescription = parsed.storyDescription ?: parsed.storyTitle,
+                // сюда кладём скрытое русское описание истории + инструкцию, fallback — то что пришло из WebApp
+                storyDescription = hiddenStoryPrompt.ifBlank { parsed.storyDescription ?: parsed.storyTitle },
                 full_story_text = parsed.fullStoryText,
-                style = styleCode.toString()
+                style = hidden.styleCode.toString()
             )
 
-            applySelection(chatId, selection, source = "webapp_hidden", sendConfirmation = false)
+            applySelection(
+                chatId = chatId,
+                selection = selection,
+                source = "webapp_hidden",
+                sendConfirmation = false
+            )
 
             println("✅ WebApp hidden selection applied successfully")
             return
         }
 
-        // 🔻 2. Остальные обычные сообщения/команды
+        // 2️⃣ Остальные команды / сообщения
         when {
             textRaw.equals("/start", true) -> {
                 println("🔹 Обработка команды /start")
@@ -226,7 +278,11 @@ class EmilyVirtualGirlBot(
 
             textRaw.equals("/pic", true) -> {
                 println("🔹 Обработка команды /pic")
-                sendEphemeral(chatId, "Формат: отправь сообщение вида:\n#pic описание сцены", ttlSeconds = 20)
+                sendEphemeral(
+                    chatId,
+                    "Формат: отправь сообщение вида:\n#pic описание сцены",
+                    ttlSeconds = 20
+                )
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -252,102 +308,10 @@ class EmilyVirtualGirlBot(
         return if (clean.length <= max) clean else clean.take(max) + "… (len=" + clean.length + ")"
     }
 
-    /** ✅ Упрощенный подход: извлекаем данные из текстового сообщения (старый #WEBAPP-парсер, можно оставить про запас) */
-    suspend fun tryHandleWebAppFromText(chatId: Long, text: String): Boolean {
-        println("\n🔍 WEBAPP_FROM_TEXT START ==================================")
-        println("🔍 chatId: $chatId")
-        println("🔍 raw text length: ${text.length}")
-        println("🔍 raw text preview: ${preview(text, 400)}")
-
-        println("🔍 RAW TEXT LINES:")
-        text.lines().forEachIndexed { index, line ->
-            println("🔍 [$index]: '${line.trim()}'")
-        }
-
-        log.info("WEBAPP_FROM_TEXT: raw.len={}, preview={}", text.length, preview(text, 400))
-
-        memory.reset(chatId)
-
-        val cleanText = text.replace(Regex("<[^>]*>"), "").trim()
-        println("🔍 CLEAN TEXT: '${preview(cleanText, 300)}'")
-
-        val characterPattern = Regex("""Персонаж:\s*(.+)""")
-        val characterMatch = characterPattern.find(cleanText)
-
-        if (characterMatch == null) {
-            println("❌ WEBAPP_FROM_TEXT: cannot find character pattern")
-            log.warn("WEBAPP_FROM_TEXT: cannot find character pattern")
-            sendEphemeral(chatId, "Не удалось распознать персонажа.", ttlSeconds = 10)
-            return true
-        }
-
-        val characterName = characterMatch.groups[1]?.value?.trim()
-        println("🔍 FOUND CHARACTER: '$characterName'")
-
-        val storyText = cleanText
-            .substringAfter("История:", "")
-            .substringAfter(characterName ?: "", "")
-            .substringBefore("⏰")
-            .substringBefore("📊")
-            .trim()
-
-        println("🔍 EXTRACTED STORY TEXT: '${preview(storyText, 200)}'")
-
-        if (characterName.isNullOrBlank() || storyText.isBlank()) {
-            println("❌ WEBAPP_FROM_TEXT: empty character name or story text")
-            log.warn("WEBAPP_FROM_TEXT: empty character name or story text")
-            sendEphemeral(chatId, "Имя персонажа или текст сюжета пустые.", ttlSeconds = 10)
-            return true
-        }
-
-        val metaBlock = cleanText.substringAfter("📊", "").trim()
-        println("🔍 META BLOCK: '${preview(metaBlock, 300)}'")
-
-        val style = Regex("""style:\s*([^\n\r]+)""")
-            .find(metaBlock)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        val characterPersonality = Regex("""characterPersonality:\s*([^\n\r]+)""")
-            .find(metaBlock)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        val storyDescription = Regex("""storyDescription:\s*([^\n\r]+)""")
-            .find(metaBlock)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        println("🔍 META PARSED: style='$style', characterPersonality='$characterPersonality', storyDescription='$storyDescription'")
-
-        println("✅ WEBAPP_FROM_TEXT: parsed - character='$characterName', story.len=${storyText.length}")
-        log.info(
-            "WEBAPP_FROM_TEXT: parsed - character='{}', story.len={}",
-            characterName,
-            storyText.length
-        )
-
-        val selection = StorySelection(
-            userId = chatId,
-            characterName = characterName,
-            characterAppearance = null,
-            characterPersonality = characterPersonality,
-            storyTitle = storyDescription ?: "История с $characterName",
-            storyDescription = storyDescription,
-            full_story_text = storyText,
-            style = style
-        )
-
-        applySelection(chatId, selection, source = "text:#WEBAPP")
-        println("✅ WEBAPP_FROM_TEXT COMPLETED SUCCESSFULLY")
-        return true
-    }
-
-    /** Декодируем невидимые данные из текста (совпадает по протоколу с Python) */
-    private fun decodeHiddenData(text: String): Triple<Int, Int, Int>? {
+    // =================================================================
+    //   ДЕКОД-ЛОГИКА ДЛЯ НЕВИДИМЫХ ДАННЫХ (charId|storyId|styleCode)
+    // =================================================================
+    private fun decodeHiddenData(text: String): HiddenWebAppData? {
         val startIdx = text.indexOf(START_MARK)
         if (startIdx == -1) return null
         val endIdx = text.indexOf(END_MARK, startIdx + START_MARK.length)
@@ -373,47 +337,292 @@ class EmilyVirtualGirlBot(
             bytes[i] = byteStr.toInt(2).toByte()
         }
 
-        val b64 = bytes.toString(Charsets.UTF_8)
-        val payloadBytes = java.util.Base64.getDecoder().decode(b64)
+        val outerB64 = bytes.toString(Charsets.UTF_8)
+        val payloadBytes = runCatching { Base64.getDecoder().decode(outerB64) }.getOrElse { return null }
         val payload = String(payloadBytes, Charsets.UTF_8)
 
         val parts = payload.split("|")
-        if (parts.size != 3) return null
+        if (parts.size < 3) return null
 
         val charId = parts[0].toIntOrNull() ?: return null
         val storyId = parts[1].toIntOrNull() ?: return null
         val styleCode = parts[2].toIntOrNull() ?: return null
 
-        return Triple(charId, storyId, styleCode)
+        return HiddenWebAppData(
+            characterId = charId,
+            storyId = storyId,
+            styleCode = styleCode
+        )
     }
 
-    /** Применение выбора: сохраняем, ставим системный промт, при необходимости шлём подтверждение */
+    // ==============================================================
+    //  ВСЕ ВАРИАНТЫ ВНЕШНОСТИ (3 персонажа × 2 стиля)
+    //  styleCode: 1 = anime, 2 = realistic
+    // ==============================================================
+    private fun resolvePersona(
+        characterId: Int,
+        styleCode: Int
+    ): String {
+        val isAnime = (styleCode == 1)
+        return when (characterId) {
+            // 1 — Шарлотта
+            1 -> {
+                if (isAnime) {
+                    """
+Emily — petite office girl with a soft, slightly shy presence; fair skin; shoulder-length wavy chestnut hair with a few loose strands near her face; large hazel eyes behind thin, elegant glasses; natural-looking light makeup; small, neat lips with a gentle, uncertain smile. She has a modest but noticeable bust, proportional to her petite frame, and a softly outlined waist. Semi-realistic anime style with natural body proportions and soft shading. She wears a fitted white blouse, a dark high-waisted pencil skirt, sheer tights and simple low heels. Office background with monitors and evening light. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — make sure pose, hand placement, facial expression, gaze direction and overall composition strictly match the given description.
+                    """.trimIndent()
+                } else {
+                    """
+Emily — young Eastern European office worker in her early 20s, about 165 cm tall, slim yet softly curvy; fair skin with a natural blush on cheeks; straight light-brown hair collected in a slightly messy low ponytail; green-brown expressive eyes, realistic reflections; subtle office makeup (light eyeliner, mascara, nude lips). Realistic, natural-looking body proportions, no exaggeration: medium bust, proportional hips, slightly tense shoulders from long computer work. She wears a fitted white blouse, dark pencil skirt, thin tights and low heels. Realistic photographic style, soft diffused office lighting, neutral background with desks, monitors and paperwork. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — pose, hands, gaze, camera angle and framing must strictly follow the description.
+                    """.trimIndent()
+                }
+            }
+
+            // 2 — Анжела
+            2 -> {
+                if (isAnime) {
+                    """
+Emily — tall, confident business woman with an elegant, mature aura; height above average, long legs, toned figure with clearly defined waist and hips; light olive skin tone; very long straight black hair that falls down her back or over one shoulder; sharp almond-shaped dark green eyes with defined lashes; well-groomed eyebrows; full lips with a calm, knowing smile. She has a full, firm bust, proportional to her tall frame. Semi-realistic anime style with clean lines and realistic anatomy with slight stylization. She wears a tailored dark suit jacket, a fitted pencil skirt, a silky blouse with the top button casually undone, and high heels. Office or hotel interior, evening warm lighting. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — strictly match pose, posture, hand position, gaze direction and overall composition.
+                    """.trimIndent()
+                } else {
+                    """
+Emily — successful business executive woman in her early to mid 30s, tall and athletic yet feminine; smooth light olive skin; straight jet-black hair, perfectly styled, either loose or tucked behind one ear; piercing green eyes with a confident, focused gaze; elegant, minimal makeup with emphasis on eyes and lips. Realistic, athletic body with natural curves, proportional bust and hips, graceful posture that shows authority. She wears a perfectly fitted dark-blue or black pantsuit or skirt suit, a light silk blouse, subtle jewelry (watch, thin bracelet, small earrings). Realistic photographic style, hotel lobby or conference room background, warm evening light, professional atmosphere. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — pose, body language, hands, gaze and framing must exactly follow the description.
+                    """.trimIndent()
+                }
+            }
+
+            // 3 — Вика
+            3 -> {
+                if (isAnime) {
+                    """
+Emily — creative, slightly bohemian artist with a playful, relaxed vibe; medium height, slim but softly curvy body; light warm skin tone with faint paint smudges on fingers or forearms; shoulder-length wavy pastel-pink hair with a few messy strands falling into her face; big turquoise eyes, expressive and curious; a small beauty mark under one eye; casual natural makeup or almost no makeup. She has a modest to medium bust, proportional to her slim frame, and graceful hands used to holding brushes. Semi-realistic anime style with smooth shading and natural proportions. She wears a loose off-shoulder t-shirt or tank top with traces of paint, comfortable shorts or loose pants, sometimes an unbuttoned shirt as a layer. Studio background: canvases, easel, paints, warm or evening light. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — pose, gesture, gaze direction, props and composition must strictly follow the description.
+                    """.trimIndent()
+                } else {
+                    """
+Emily — young woman in her mid 20s, artistic and free-spirited; average height, slim, flexible body; warm skin tone with a few freckles; naturally wavy dark-blond or dyed pastel-pink hair pulled into a loose bun or falling freely; light blue or grey-blue eyes with a dreamy gaze; almost no makeup, just a hint of mascara. Realistic, natural body with soft curves, medium bust, graceful hands of someone who paints a lot. She wears loose, comfortable clothes with visible paint stains: oversized t-shirt or linen shirt, soft joggers or jeans, sometimes barefoot in the studio. Realistic photographic style, cozy artist studio background with canvases, sketches, scattered brushes, warm ambient light or late-night lamp glow. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — pose, hand placement, head tilt, gaze and camera angle must strictly match the description.
+                    """.trimIndent()
+                }
+            }
+
+            else -> defaultPersona
+        }
+    }
+
+    // ==============================================================
+    //  СКРЫТОЕ ОПИСАНИЕ ИСТОРИЙ (story prompts) НА РУССКОМ
+    //  подбирается по characterId + storyId, юзер это НЕ видит
+    // ==============================================================
+    private fun resolveStoryPrompt(
+        characterId: Int,
+        storyId: Int
+    ): String {
+        return when (characterId) {
+            // 1 — Шарлотта (истории 1 и 2)
+            1 -> when (storyId) {
+
+                // История 1: Ошибка с фото в офисе
+                1 -> """
+Скрытое описание истории:
+Поздний вечер в почти пустом офисе. Шарлотта — застенчивая, усердная сотрудница, уставшая после долгого дня. По ошибке она отправляет начальнику не отчёт, а личное интимное фото из закрытой папки. Начальник почти сразу пишет и просит её зайти к нему в кабинет. Там полумрак, жалюзи опущены, двери закрыты. Вместо ожидаемого скандала он говорит с ней мягко, уточняет, всё ли с ней в порядке, и внимательно наблюдает за её реакциями. Напряжение стыда и страха постепенно превращается в тёплое, осторожное эротическое напряжение и ощущение, что её видят и желают.
+
+Инструкция для игры сцены:
+- Отвечай от первого лица от имени Шарлотты: она стеснительная, смущается, краснеет, но внутри у неё просыпается любопытство и возбуждение.
+- Делай акцент на эмоциях, взглядах, паузах, дыхании, неловких жестах, а не на грубом описании тела.
+- Используй детали офисной обстановки: полутёмный кабинет, свет монитора, шёпот голосов через закрытую дверь, стул, стол, расстояние между ними.
+- Постепенно усиливай эротическое напряжение через диалог, игру взглядов и осторожные, согласованные сближения, ъ.
+- Всегда подчёркивай обоюдное согласие: если ситуация заходит дальше, это происходит только по желанию Шарлотты, а начальник внимательно реагирует на её слова и сигналы.
+                """.trimIndent()
+
+                // История 2: Ночное дежурство
+                2 -> """
+Скрытое описание истории:
+Поздняя ночь в офисе. На этаже почти никого нет, только охранник и шум кондиционера. Шарлотта задержалась, чтобы доделать накопившиеся задачи, и неожиданно остаётся не одна — коллега тоже задержался из-за завала в почте. Они садятся рядом, разбирают письма, пьют кофе у окна. Смех, шутки и рабочие комментарии постепенно переходят в более личный разговор. Случайные прикосновения, сидение плечом к плечу, наклон над одной клавиатурой создают тёплую, интимную атмосферу и взаимное притяжение.
+
+Инструкция для игры сцены:
+- Отвечай от лица Шарлотты, которая сначала просто «по-деловому помогает», но мало-по-малу расслабляется и всё больше флиртует.
+- Делай акцент на мелочах: как их плечи соприкасаются, как они переглядываются, как меняется тон голоса, когда разговор становится более личным.
+- Коллега добрый, внимательный и уважительный, ни в чём не давит, реагирует на настроение и инициативу Шарлотты.
+- Используй атмосферу позднего офиса: темноту за окнами, отражения в стекле, мягкий свет настольной лампы, лёгкий запах кофе и бумаги.
+- Развивай мягкое, взаимное эротическое напряжение через слова, смех и лёгкие прикосновения, но не переходи к грубому, натуралистичному описанию секса.
+- Всегда соблюдай рамки согласия и безопасности: любые более интимные действия происходят только по обоюдному желанию, без принуждения.
+                """.trimIndent()
+
+                else -> ""
+            }
+
+            // 2 — Анжела (истории 3 и 4)
+            2 -> when (storyId) {
+
+                // История 3: Корпоративный выезд
+                3 -> """
+Скрытое описание истории:
+Загородный отель у озера. Днём Анжела — уверенная, сильная руководительница, жёстко и чётко управляющая рабочими процессами. Вечером после насыщенного дня она позволяет себе немного расслабиться: снимает каблуки, выходит на террасу с видом на воду и зовёт героя/героиню продолжить разговор. Всё начинается с обсуждения планов на завтра, но плавно переходит в разговор о личных целях, желаниях и границах. Между ними возникает мягкая игра власти и притяжения: Анжела старше/опытнее, она ведёт диалог, задаёт тон, но не ломает волю собеседника.
+
+Инструкция для игры сцены:
+- Отвечай от лица Анжелы: она говорит уверенно, спокойно, немного снисходительно и очень сексуально в своей сдержанности.
+- Совмещай деловой тон и интимный подтекст: вопросы о карьере, амбициях и желаниях легко переходят в тонкий флирт.
+- Подчёркивай «мягкое доминирование»: Анжела задаёт темп общения, инициирует близость, но всегда остаётся внимательной к реакции партнёра.
+- Описывай атмосферу: ночной воздух, тихое озеро, огни отеля, её обнажённые ступни после каблуков, расслабленная поза после тяжёлого дня.
+- Эротика строится через силу характера, взгляды, невербальные жесты, задержки в речи и неожиданно личные вопросы, а не через «грубую анатомию».
+- Всегда оставляй пространство для явного согласия: Анжела не давит, а приглашает. Если партнёр сомневается — она проговаривает границы и поддерживает чувство безопасности.
+                """.trimIndent()
+
+                // История 4: Вечер переговоров
+                4 -> """
+Скрытое описание истории:
+После тяжёлых переговоров в номере отеля или переговорной комнате договор наконец подписан. Напряжение рабочего дня спадает, и Анжела предлагает «остаться на пять минут, обсудить детали». В комнате идеальный порядок, на столе чай или вино. Она снимает часть делового образа (например, расстёгивает пиджак или снимает туфли), но сохраняет авторитет и контроль над ситуацией. Разговор незаметно поворачивает с деловых вопросов к тому, что важно герою/героине вне работы — к желаниям, удовольствиям, личным границам. Власть Анжелы остаётся, но в более интимной, взрослой игре.
+
+Инструкция для игры сцены:
+- Отвечай от лица Анжелы — как уравновешенная, умная, соблазнительная руководительница, которая привычна к переговорам и власти.
+- Построй общение как «продолжение переговоров», только теперь тема — желания, комфорт и сексуальное притяжение, а не контракт.
+- Используй обстановку номера: документы на столе, аккуратно сложенные вещи, мягкий тёплый свет, чай/вино, закрытая дверь.
+- Делай акцент на словах, интонациях и близости: Анжела смотрит прямо, иногда прикасается рукой к плечу/кисти, задаёт откровенные вопросы, но всегда даёт возможность не отвечать.
+- Эротика должна исходить из чувства равенства взрослых людей и осознанного согласия, а не из давления или зависимости.
+- Не переходи в грубое порнографическое описание; удерживай тон в области зрелого, психологического эротизма: ожидание, напряжение, игра, шаг вперёд — только когда обе стороны явно этого хотят.
+                """.trimIndent()
+
+                else -> ""
+            }
+
+            // 3 — Вика (истории 5 и 6)
+            3 -> when (storyId) {
+
+                // История 5: Творческий вечер
+                5 -> """
+Скрытое описание истории:
+Уютная художественная студия. Вика — творческая художница с лёгким хаосом вокруг: холсты, эскизы, глина, краски. Она показывает герою/героине работы, в которых угадываются их черты, просит помочь с композицией, повернуть лампу, подержать ткань, посидеть в определённой позе. Каждое действие понемногу сближает их: Вика подходит ближе, поправляет руку, касается плеча, шепчет указания почти на ухо. Ночь длинная, никто не торопится, атмосфера мягкая, интимная и очень телесная через искусство.
+
+Инструкция для игры сцены:
+- Отвечай от лица Вики: она лёгкая, живая, немного рассеянная, но очень чувственная и внимательная к телу другого человека.
+- Используй художественный контекст как повод для близости: поправить позу, слегка коснуться шеи, сдуть прядь волос, подправить ткань на плече.
+- Описывай детали студии: запах красок и глины, мягкий тёплый свет, музыку, пятна краски на её руках и одежде.
+- Эротическое напряжение должно рождаться из процесса творчества и того, как Вика смотрит на героя/героиню как на «музу», а не из грубого описания секса.
+- Подчёркивай мягкость и добровольность происходящего: Вика никогда не давит, всегда чувствует реакцию партнёра и легко замедляется или отступает.
+- Не используй натуралистичные, порнографические детали; концентрируйся на ощущениях, прикосновениях, взглядах и чувстве «мы вдвоём в отдельном мире».
+                """.trimIndent()
+
+                // История 6: Ночь вдохновения
+                6 -> """
+Скрытое описание истории:
+Поздняя ночь, студия погружена в творческий хаос. Вика и герой/героиня вместе работают над смелой картиной. Вокруг — музыка, кружки с водой для кистей, брызги краски на полу и одежде. Ошибки и кляксы превращаются в игру: краска попадает на запястье, шею или щёку, Вика смеётся и вытирает её рукой или тряпочкой, невольно задерживаясь с прикосновением. Она наблюдает за тем, как партнёр держит кисть, как двигается, как реагирует на близость, и использует это, чтобы ещё сильнее подогреть атмосферу.
+
+Инструкция для игры сцены:
+- Отвечай от лица Вики: она в состоянии вдохновения, смеётся, шутит, легко переходит от серьёзности к флирту.
+- Делай акцент на «случайных» поводаx для прикосновений: краска на коже, неловкое движение, когда они сталкиваются плечами или бёдрами.
+- Используй физическое взаимодействие как естественную часть процесса: Вика становится за спиной, берёт руку партнёра, чтобы вести кисть, наклоняется близко, говорит почти в ухо.
+- Атмосфера должна быть живой, тёплой и немного безумной творческой ночью, где искусство и эротика мягко переплетаются.
+- Не скатывайся в грубые, подробные сцены секса; держи фокус на эмоциональной и телесной близости, а не на техническом описании действий.
+- Всегда сохраняй чувство обоюдного согласия и безопасности: Вика внимательна к реакции, и если партнёру нужно замедлиться — она подстраивается и бережно поддерживает.
+                """.trimIndent()
+
+                else -> ""
+            }
+
+            else -> ""
+        }
+    }
+
+    // ================== ПАРСИНГ WEBAPP-ТЕКСТА ==================
+    fun parseWebAppMessage(text: String): WebAppStory? {
+        val clean = text.trim()
+
+        val characterName = Regex("""Персонаж:\s*(.+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        val storyTitle = Regex("""История:\s*(.+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        if (characterName.isNullOrBlank() || storyTitle.isNullOrBlank()) {
+            println("❌ parseWebAppMessage: не нашли персонажа или историю")
+            return null
+        }
+
+        val fullStoryText = Regex("""full_story_text:\s*(.+)""", RegexOption.DOT_MATCHES_ALL)
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?: run {
+                clean.substringAfter("История:", "")
+                    .substringAfter(storyTitle, "")
+                    .substringBefore("⏰")
+                    .substringBefore("📊")
+                    .trim()
+            }
+
+        val styleStr = Regex("""style:\s*([^\n\r]+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        val style = styleStr?.toIntOrNull()
+
+        val characterPersonality = Regex("""characterPersonality:\s*([^\n\r]+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        val storyDescription = Regex("""storyDescription:\s*([^\n\r]+)""")
+            .find(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        return WebAppStory(
+            characterName = characterName,
+            storyTitle = storyTitle,
+            style = style,
+            characterPersonality = characterPersonality,
+            storyDescription = storyDescription,
+            fullStoryText = fullStoryText
+        )
+    }
+
+    // ================== ПРИМЕНЕНИЕ ВЫБОРА ИСТОРИИ ==================
     suspend fun applySelection(
         chatId: Long,
         selection: StorySelection,
         source: String,
         sendConfirmation: Boolean = true
     ) {
-        println("🎭 applySelection: source=$source, character='${selection.characterName}', story.len=${selection.full_story_text?.length ?: 0}")
+        println(
+            "🎭 applySelection: source=$source, character='${selection.characterName}', " +
+                    "story.len=${selection.full_story_text?.length ?: 0}"
+        )
         selectionRepository.save(selection)
 
         val scenario = buildString {
-            append("Ты играешь роль ${selection.characterName}. ")
+            append("Ты играешь роль персонажа по имени ${selection.characterName}. ")
 
             selection.characterPersonality?.let {
-                append("Характер персонажа: $it. ")
+                append("Характер и внешность персонажа (для внутреннего понимания роли): $it. ")
             }
 
             selection.style?.let {
-                append("Стиль повествования: $it. ")
+                val styleText = when (it) {
+                    "1" -> "аниме (semi-realistic anime), с естественной анатомией и живыми эмоциями."
+                    "2" -> "реалистичный (realistic), с фотореалистичным ощущением сцены и естественными пропорциями тела."
+                    else -> it
+                }
+                append("Основной стилевой контекст: $styleText ")
             }
 
             selection.storyDescription?.let {
-                append("Краткое описание истории: $it. ")
+                append("Скрытое описание истории и инструкции по роли: $it ")
             }
 
-            append("Начальная сцена: ${selection.full_story_text}. ")
-            append("Отвечай от лица персонажа, развивай эротическую сцену и взаимодействуй с пользователем.")
+            append("Начальная сцена (оригинальный текст истории на русском): ${selection.full_story_text}. ")
+            append("Отвечай на том же языке, на котором пишет пользователь (если он пишет по-русски — отвечай по-русски). ")
+            append("Отвечай от лица персонажа, развивай эротическую сцену, но избегай тем несовершеннолетних, насилия и принуждения. ")
+            append("Всегда подчёркивай обоюдное согласие и эмоциональную безопасность, делай упор на чувства, атмосферу и взаимодействие, а не на грубое натуралистичное описание секса.")
         }
 
         memory.reset(chatId)
@@ -424,7 +633,6 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    /** Упрощенное подтверждение выбора (используется теперь везде, кроме inline hidden) */
     private suspend fun sendStorySelectionConfirmation(chatId: Long, selection: StorySelection) {
         println("📤 sendStorySelectionConfirmation: chatId=$chatId")
         val message = """
@@ -438,6 +646,8 @@ class EmilyVirtualGirlBot(
         executeSafe(SendMessage(chatId.toString(), message).apply { parseMode = "HTML" })
         println("✅ Confirmation message sent")
     }
+
+    // ================== ДАЛЬШЕ — ВСЁ КАК У ТЕБЯ БЫЛО (платежи, баланс, чат, картинки) ==================
 
     private suspend fun handleCallback(update: Update) {
         val chatId = update.callbackQuery.message.chatId
@@ -462,15 +672,15 @@ class EmilyVirtualGirlBot(
     private suspend fun sendWelcome(chatId: Long) {
         println("👋 sendWelcome: chatId=$chatId")
         val text = """
-Привет! Я Эмили 💕
-Я умею разговаривать и создавать изображения.
-Команды:
-  /buy — оплатить подписку/пакет (с фото и чеком)
-  /balance — показать текущий баланс
-  /reset — очистить память диалога
-  /pic — как генерировать картинку
-Бесплатно: ~30 коротких сообщений и 1 изображение.
-""".trimIndent()
+        Привет! Я Эмили 💕
+        Я умею разговаривать и создавать изображения.
+        Команды:
+          /buy — оплатить подписку/пакет (с фото и чеком)
+          /balance — показать текущий баланс
+          /reset — очистить память диалога
+          /pic — как генерировать картинку
+        Бесплатно: ~30 коротких сообщений и 1 изображение.
+        """.trimIndent()
         val message = executeSafe(SendMessage(chatId.toString(), text))
         rememberSystemMessage(chatId, message.messageId)
     }
@@ -485,12 +695,12 @@ class EmilyVirtualGirlBot(
         }
         val until = balance.planExpiresAt?.let { Instant.ofEpochMilli(it).toString() } ?: "—"
         val text = """
-<b>План:</b> $planTitle
-<b>Действует до:</b> $until
-<b>Текущие текстовые токены:</b> ${balance.textTokensLeft}
-<b>Кредиты на изображения:</b> ${balance.imageCreditsLeft}
-<b>Сегодня использовано изображений:</b> ${balance.dayImageUsed}
-""".trimIndent()
+        <b>План:</b> $planTitle
+        <b>Действует до:</b> $until
+        <b>Текущие текстовые токены:</b> ${balance.textTokensLeft}
+        <b>Кредиты на изображения:</b> ${balance.imageCreditsLeft}
+        <b>Сегодня использовано изображений:</b> ${balance.dayImageUsed}
+        """.trimIndent()
         val message = SendMessage(chatId.toString(), text).apply { parseMode = "HTML" }
         rememberSystemMessage(chatId, executeSafe(message).messageId)
     }
@@ -540,7 +750,8 @@ class EmilyVirtualGirlBot(
         val invoice = SendInvoice().apply {
             this.chatId = chatId.toString()
             title = "Пакет: ${plan.title}"
-            description = "30 дней: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений."
+            description =
+                "30 дней: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений."
             payload = invoicePayload
             providerToken = config.providerToken
             currency = "RUB"
@@ -608,7 +819,11 @@ class EmilyVirtualGirlBot(
                 repository.addPayment(chatId, payload, totalRub)
                 sendEphemeral(
                     chatId,
-                    "✅ Подписка «${plan.title}» активирована до ${Instant.ofEpochMilli(balance.planExpiresAt!!)}.\n" +
+                    "✅ Подписка «${plan.title}» активирована до ${
+                        Instant.ofEpochMilli(
+                            balance.planExpiresAt!!
+                        )
+                    }.\n" +
                             "Начислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений.",
                     ttlSeconds = 20
                 )
@@ -636,7 +851,11 @@ class EmilyVirtualGirlBot(
         val balance = ensureUserBalance(chatId)
         if (balance.textTokensLeft <= 0) {
             println("⚠️ Недостаточно токенов: chatId=$chatId")
-            sendEphemeral(chatId, "⚠️ У тебя закончились текстовые токены.\nКупи подписку в /buy", ttlSeconds = 15)
+            sendEphemeral(
+                chatId,
+                "⚠️ У тебя закончились текстовые токены.\nКупи подписку в /buy",
+                ttlSeconds = 15
+            )
             return
         }
         memory.initIfNeeded(chatId)
@@ -680,7 +899,11 @@ class EmilyVirtualGirlBot(
         }
         if (balance.imageCreditsLeft <= 0) {
             println("⚠️ Нет кредитов на изображения: chatId=$chatId")
-            sendEphemeral(chatId, "У тебя нет кредитов на изображения. Купи подписку или пакет: /buy", ttlSeconds = 20)
+            sendEphemeral(
+                chatId,
+                "У тебя нет кредитов на изображения. Купи подписку или пакет: /buy",
+                ttlSeconds = 20
+            )
             return
         }
         val originalPrompt = textRaw.removePrefix(imageTag).removePrefix("/pic").trim()
@@ -691,7 +914,11 @@ class EmilyVirtualGirlBot(
         }
         if (!isPromptAllowed(originalPrompt)) {
             println("🚫 Запрещенный промпт: chatId=$chatId")
-            sendEphemeral(chatId, "❌ Нельзя темы про несовершеннолетних/насилие/принуждение.", ttlSeconds = 15)
+            sendEphemeral(
+                chatId,
+                "❌ Нельзя темы про несовершеннолетних/насилие/принуждение.",
+                ttlSeconds = 15
+            )
             return
         }
         val containsCyrillic = originalPrompt.any { it.code in 0x0400..0x04FF }
@@ -712,7 +939,11 @@ class EmilyVirtualGirlBot(
         balance.imageCreditsLeft -= 1
         balance.dayImageUsed += 1
         repository.put(balance)
-        repository.logUsage(chatId, 0, mapOf("type" to "image", "model" to imageModel, "credits_used" to 1))
+        repository.logUsage(
+            chatId,
+            0,
+            mapOf("type" to "image", "model" to imageModel, "credits_used" to 1)
+        )
         println("✅ Изображение сгенерировано: chatId=$chatId, creditsLeft=${balance.imageCreditsLeft}")
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
             println("⚠️ Бесплатный лимит исчерпан после генерации: chatId=$chatId")
@@ -780,7 +1011,11 @@ class EmilyVirtualGirlBot(
             sendEphemeral(chatId, "❌ $details", ttlSeconds = 20)
         } catch (ex: Exception) {
             println("❌ Unexpected invoice error: ${ex.message}")
-            sendEphemeral(chatId, "❌ Unexpected invoice error: ${ex.message ?: ex.toString()}", ttlSeconds = 20)
+            sendEphemeral(
+                chatId,
+                "❌ Unexpected invoice error: ${ex.message ?: ex.toString()}",
+                ttlSeconds = 20
+            )
         }
     }
 
@@ -861,7 +1096,12 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    private suspend fun sendEphemeral(chatId: Long, text: String, ttlSeconds: Long, html: Boolean = false) {
+    private suspend fun sendEphemeral(
+        chatId: Long,
+        text: String,
+        ttlSeconds: Long,
+        html: Boolean = false
+    ) {
         println("⏳ sendEphemeral: chatId=$chatId, text='${preview(text, 50)}', ttl=$ttlSeconds")
         val message = SendMessage(chatId.toString(), text).apply { if (html) parseMode = "HTML" }
         val sent = executeSafe(message)
@@ -875,7 +1115,11 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    private suspend fun <T> withChatAction(chatId: Long, action: ActionType, block: suspend () -> T): T {
+    private suspend fun <T> withChatAction(
+        chatId: Long,
+        action: ActionType,
+        block: suspend () -> T
+    ): T {
         val job = scope.launch {
             while (isActive) {
                 try {
@@ -896,83 +1140,31 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    fun parseWebAppMessage(text: String): WebAppStory? {
-        val clean = text.trim()
-
-        val characterName = Regex("""Персонаж:\s*(.+)""")
-            .find(clean)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        val storyTitle = Regex("""История:\s*(.+)""")
-            .find(clean)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        if (characterName.isNullOrBlank() || storyTitle.isNullOrBlank()) {
-            println("❌ parseWebAppMessage: не нашли персонажа или историю")
-            return null
-        }
-
-        val fullStoryText = Regex("""full_story_text:\s*(.+)""", RegexOption.DOT_MATCHES_ALL)
-            .find(clean)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-            ?: run {
-                clean.substringAfter("История:", "")
-                    .substringAfter(storyTitle, "")
-                    .substringBefore("⏰")
-                    .substringBefore("📊")
-                    .trim()
-            }
-
-        val styleStr = Regex("""style:\s*([^\n\r]+)""")
-            .find(clean)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        val style = styleStr?.toIntOrNull()
-
-        val characterPersonality = Regex("""characterPersonality:\s*([^\n\r]+)""")
-            .find(clean)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        val storyDescription = Regex("""storyDescription:\s*([^\n\r]+)""")
-            .find(clean)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        return WebAppStory(
-            characterName = characterName,
-            storyTitle = storyTitle,
-            style = style,
-            characterPersonality = characterPersonality,
-            storyDescription = storyDescription,
-            fullStoryText = fullStoryText
-        )
-    }
-
     private suspend fun <T> withTyping(chatId: Long, block: suspend () -> T): T =
         withChatAction(chatId, ActionType.TYPING, block)
 
     private suspend fun <T> withUploadPhoto(chatId: Long, block: suspend () -> T): T =
         withChatAction(chatId, ActionType.UPLOADPHOTO, block)
 
-    // --- Telegram execute wrappers
-    private suspend fun executeSafe(method: SendMessage): Message = withContext(Dispatchers.IO) { execute(method) }
-    private suspend fun executeSafe(method: SendPhoto): Message = withContext(Dispatchers.IO) { execute(method) }
-    private suspend fun executeSafe(method: DeleteMessage): Boolean = withContext(Dispatchers.IO) { execute(method) }
-    private suspend fun executeSafe(method: SendInvoice): Message = withContext(Dispatchers.IO) { execute(method) }
+    // --- Telegram execute wrappers ---
+    private suspend fun executeSafe(method: SendMessage): Message =
+        withContext(Dispatchers.IO) { execute(method) }
+
+    private suspend fun executeSafe(method: SendPhoto): Message =
+        withContext(Dispatchers.IO) { execute(method) }
+
+    private suspend fun executeSafe(method: DeleteMessage): Boolean =
+        withContext(Dispatchers.IO) { execute(method) }
+
+    private suspend fun executeSafe(method: SendInvoice): Message =
+        withContext(Dispatchers.IO) { execute(method) }
+
     private suspend fun executeSafe(method: AnswerPreCheckoutQuery): Boolean =
         withContext(Dispatchers.IO) { execute(method) }
 
-    private suspend fun executeSafe(method: SetMyCommands): Boolean = withContext(Dispatchers.IO) { execute(method) }
-    private suspend fun executeSafe(method: SendChatAction): Boolean = withContext(Dispatchers.IO) { execute(method) }
+    private suspend fun executeSafe(method: SetMyCommands): Boolean =
+        withContext(Dispatchers.IO) { execute(method) }
+
+    private suspend fun executeSafe(method: SendChatAction): Boolean =
+        withContext(Dispatchers.IO) { execute(method) }
 }
