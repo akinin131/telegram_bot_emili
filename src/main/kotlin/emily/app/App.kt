@@ -1,12 +1,12 @@
 package emily.app
 
-import com.deepl.api.Translator
 import emily.bot.EmilyVirtualGirlBot
 import emily.data.BalanceRepository
 import emily.data.StorySelectionRepository
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
+import emily.service.YandexTranslator
 import emily.service.defaultSystemPrompt
 import emily.firebase.FirebaseInitializer
 import okhttp3.OkHttpClient
@@ -31,7 +31,8 @@ fun main() {
         telegramToken = "8341155085:AAGl_Ba7IGAjC1OIEPfJIW5Mo_cOayofySU",
         providerToken = "390540012:LIVE:78849",
         veniceToken = "kK5vqPy3fU32foa_h06s04rkb6ELejHeCMr0S1_8Sq",
-        deeplToken = "2a72f4e3-6b4d-4d44-9dab-1f337803eb34:fx"
+        yandexApiKey = "",
+        yandexFolderId = ""
     )
 
     val okHttpClient = OkHttpClient.Builder()
@@ -42,7 +43,9 @@ fun main() {
         .build()
 
     val translator = runCatching {
-        if (config.deeplToken.isNotBlank()) Translator(config.deeplToken) else null
+        if (config.yandexApiKey.isNotBlank() && config.yandexFolderId.isNotBlank()) {
+            YandexTranslator(config.yandexApiKey, config.yandexFolderId, okHttpClient)
+        } else null
     }.getOrNull()
 
     val repo = BalanceRepository()
