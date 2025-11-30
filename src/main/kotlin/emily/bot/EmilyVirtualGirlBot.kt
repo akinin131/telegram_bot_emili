@@ -6,7 +6,7 @@ import emily.data.*
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
-import emily.service.YandexTranslator
+import emily.service.MyMemoryTranslator
 import java.io.ByteArrayInputStream
 import java.time.Instant
 import java.time.LocalDate
@@ -44,7 +44,7 @@ class EmilyVirtualGirlBot(
     private val chatService: ChatService,
     private val imageService: ImageService,
     private val memory: ConversationMemory,
-    private val translator: YandexTranslator?
+    private val translator: MyMemoryTranslator?
 ) : TelegramLongPollingBot() {
 
     private val log = LoggerFactory.getLogger(EmilyVirtualGirlBot::class.java)

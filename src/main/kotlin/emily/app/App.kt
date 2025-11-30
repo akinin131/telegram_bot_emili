@@ -6,7 +6,7 @@ import emily.data.StorySelectionRepository
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
-import emily.service.YandexTranslator
+import emily.service.MyMemoryTranslator
 import emily.service.defaultSystemPrompt
 import emily.firebase.FirebaseInitializer
 import okhttp3.OkHttpClient
@@ -30,9 +30,7 @@ fun main() {
     val config = BotConfig(
         telegramToken = "8341155085:AAGl_Ba7IGAjC1OIEPfJIW5Mo_cOayofySU",
         providerToken = "390540012:LIVE:78849",
-        veniceToken = "kK5vqPy3fU32foa_h06s04rkb6ELejHeCMr0S1_8Sq",
-        yandexApiKey = "",
-        yandexFolderId = ""
+        veniceToken = "kK5vqPy3fU32foa_h06s04rkb6ELejHeCMr0S1_8Sq"
     )
 
     val okHttpClient = OkHttpClient.Builder()
@@ -42,11 +40,7 @@ fun main() {
         .writeTimeout(java.time.Duration.ofSeconds(30))
         .build()
 
-    val translator = runCatching {
-        if (config.yandexApiKey.isNotBlank() && config.yandexFolderId.isNotBlank()) {
-            YandexTranslator(config.yandexApiKey, config.yandexFolderId, okHttpClient)
-        } else null
-    }.getOrNull()
+    val translator = MyMemoryTranslator(okHttpClient)
 
     val repo = BalanceRepository()
     val selectionRepository = StorySelectionRepository()
