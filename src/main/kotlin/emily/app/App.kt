@@ -16,7 +16,10 @@ import org.telegram.telegrambots.meta.api.methods.updates.DeleteWebhook
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession
 
 private const val CHAT_MODEL = "venice-uncensored"
-private const val IMAGE_MODEL = "wai-Illustrious"
+
+// две разные модели под разные стили
+private const val IMAGE_MODEL_ANIME = "wai-Illustrious"
+private const val IMAGE_MODEL_REALISTIC = "lustify-v7"
 
 fun main() {
     SingleInstance.acquire(44601)
@@ -40,12 +43,16 @@ fun main() {
         .writeTimeout(java.time.Duration.ofSeconds(30))
         .build()
 
+    // сейчас использует MyMemory, позже можно будет легко заменить на Яндекс
     val translator = MyMemoryTranslator(okHttpClient)
 
     val repo = BalanceRepository()
     val selectionRepository = StorySelectionRepository()
     val chatService = ChatService(okHttpClient, config.veniceToken, CHAT_MODEL)
-    val imageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL)
+
+    // отдельные ImageService под аниме и реализм
+    val animeImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_ANIME)
+    val realisticImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_REALISTIC)
 
     val memory = ConversationMemory { "" }
 
@@ -54,7 +61,8 @@ fun main() {
         repository = repo,
         selectionRepository = selectionRepository,
         chatService = chatService,
-        imageService = imageService,
+        animeImageService = animeImageService,
+        realisticImageService = realisticImageService,
         memory = memory,
         translator = translator
     )

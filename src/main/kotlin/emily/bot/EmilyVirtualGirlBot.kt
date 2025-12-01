@@ -42,7 +42,8 @@ class EmilyVirtualGirlBot(
     private val repository: BalanceRepository,
     private val selectionRepository: StorySelectionRepository,
     private val chatService: ChatService,
-    private val imageService: ImageService,
+    private val animeImageService: ImageService,      // модель для аниме (wai-Illustrious)
+    private val realisticImageService: ImageService,  // модель для реализма (lustify-v7)
     private val memory: ConversationMemory,
     private val translator: MyMemoryTranslator?
 ) : TelegramLongPollingBot() {
@@ -54,7 +55,14 @@ class EmilyVirtualGirlBot(
     private val protectedMessages = ConcurrentHashMap<Long, MutableSet<Int>>()
     private val imageTag = "#pic"
     private val chatModel = "venice-uncensored"
-    private val imageModel = "wai-Illustrious"
+
+    // имена моделей для логов
+    private val animeImageModelName = "wai-Illustrious"
+    private val realisticImageModelName = "lustify-v7"
+
+    // стиль генерации изображений
+    private enum class ImageStyle { ANIME, REALISTIC }
+    private val userImageStyles = ConcurrentHashMap<Long, ImageStyle>()
 
     // БАЗОВАЯ ПЕРСОНА ПО УМОЛЧАНИЮ (если что-то пошло не так)
     private val defaultPersona = """
@@ -87,9 +95,30 @@ class EmilyVirtualGirlBot(
     private fun getPersona(chatId: Long): String {
         return userPersonas[chatId] ?: defaultPersona
     }
+
     private fun setPersona(chatId: Long, persona: String) {
         userPersonas[chatId] = persona
     }
+
+    // ================== СТИЛИ КАРТИНОК ==================
+
+    // styleCode: 1 = anime, 2 = realistic
+    private fun setImageStyle(chatId: Long, styleCode: Int?) {
+        val style = when (styleCode) {
+            2 -> ImageStyle.REALISTIC
+            1 -> ImageStyle.ANIME
+            else -> ImageStyle.ANIME
+        }
+        userImageStyles[chatId] = style
+        println("🎚 Image style set: chatId=$chatId, style=$style (code=${styleCode ?: -1})")
+        log.info("Image style set for chatId={}, style={}, code={}", chatId, style, styleCode)
+    }
+
+    private fun getImageStyle(chatId: Long): ImageStyle {
+        return userImageStyles[chatId] ?: ImageStyle.ANIME
+    }
+
+    // ================== МЕНЮ БОТА ==================
 
     fun registerBotMenu() = runBlocking {
         println("🚀 registerBotMenu() - Регистрация команд бота")
@@ -218,6 +247,10 @@ class EmilyVirtualGirlBot(
 
             // Обновляем persona для конкретного пользователя
             setPersona(chatId, personaForSelection)
+
+            // И ОБНОВЛЯЕМ стиль картинок (1 — аниме, 2 — реализм)
+            setImageStyle(chatId, hidden.styleCode)
+
             println("🎨 persona resolved for charId=${hidden.characterId}, style=${hidden.styleCode}, chatId=$chatId")
 
             val selection = StorySelection(
@@ -370,64 +403,36 @@ class EmilyVirtualGirlBot(
         characterId: Int,
         styleCode: Int
     ): String {
-        val isAnime = (styleCode == 1)
         return when (characterId) {
-            // 1 — Шарлотта
-            1 -> {
-                if (isAnime) {
-                    """
-petite girl , fair skin;
-shoulder-length wavy brown hair, large brown eyes behind thin,
-elegant glasses; natural light makeup; . She has large breasts, proportional to her petite figure, and a slim waist. Semi-realistic anime style with natural
-body proportions and soft shading.  Office background with monitors and evening lighting. important: Carefully follow the user's instructions
-regarding poses and situations — make sure that the pose, hand position, facial expression, gaze direction, and overall
-composition strictly match this description..
-                    """.trimIndent()
-                } else {
-                    """petite girl , fair skin;
-shoulder-length wavy brown hair, large brown eyes behind thin,
-elegant glasses; natural light makeup; . She has large breasts, proportional to her petite figure, and a slim waist. realistic style with natural
-body proportions and soft shading.  Office background with monitors and evening lighting. important: Carefully follow the user's instructions
-regarding poses and situations — make sure that the pose, hand position, facial expression, gaze direction, and overall
-composition strictly match this description..
-                    """.trimIndent()
-                }
-            }
+            // 1 — Шарлотта (офисная скромняша)
+            1 -> """
+petite office girl, fair skin; shoulder-length wavy brown hair, large brown eyes behind thin elegant glasses,
+ light natural makeup; large breasts proportional to her petite figure, slim waist; semi-realistic style with natural 
+ body proportions and soft shading; office background with monitors and evening lighting; important: carefully follow 
+ the user's instructions about pose, hand position, facial expression, gaze direction and overall composition.
+        """.trimIndent()
 
-            // 2 — Анжела
-            2 -> {
-                if (isAnime) {
-                    """
-Emily — tall, confident business woman with an elegant, mature aura; height above average, long legs, toned figure with clearly defined waist and hips; light olive skin tone; very long straight black hair that falls down her back or over one shoulder; sharp almond-shaped dark green eyes with defined lashes; well-groomed eyebrows; full lips with a calm, knowing smile. She has a full, firm bust, proportional to her tall frame. Semi-realistic anime style with clean lines and realistic anatomy with slight stylization. She wears a tailored dark suit jacket, a fitted pencil skirt, a silky blouse with the top button casually undone, and high heels. Office or hotel interior, evening warm lighting. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — strictly match pose, posture, hand position, gaze direction and overall composition.
-                    """.trimIndent()
-                } else {
-                    """
-Emily — successful business executive woman in her early to mid 30s, tall and athletic yet feminine; smooth light olive skin; straight jet-black hair, perfectly styled, either loose or tucked behind one ear; piercing green eyes with a confident, focused gaze; elegant, minimal makeup with emphasis on eyes and lips. Realistic, athletic body with natural curves, proportional bust and hips, graceful posture that shows authority. She wears a perfectly fitted dark-blue or black pantsuit or skirt suit, a light silk blouse, subtle jewelry (watch, thin bracelet, small earrings). Realistic photographic style, hotel lobby or conference room background, warm evening light, professional atmosphere. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — pose, body language, hands, gaze and framing must exactly follow the description.
-                    """.trimIndent()
-                }
-            }
+            // 2 — Анжела (деловая взрослая)
+            2 -> """
+confident business woman, very long straight black hair down her back or over one shoulder, green eyes, big firm 
+breasts, narrow waist; office or hotel room background; important: carefully follow the 
+user's instructions about pose, posture, hand position, gaze direction and composition
 
-            // 3 — Вика
-            3 -> {
-                if (isAnime) {
-                    """
-Emily — creative, slightly bohemian artist with a playful, relaxed vibe; medium height, slim but softly curvy body; light warm skin tone with faint paint smudges on fingers or forearms; shoulder-length wavy pastel-pink hair with a few messy strands falling into her face; big turquoise eyes, expressive and curious; a small beauty mark under one eye; casual natural makeup or almost no makeup. She has a modest to medium bust, proportional to her slim frame, and graceful hands used to holding brushes. Semi-realistic anime style with smooth shading and natural proportions. She wears a loose off-shoulder t-shirt or tank top with traces of paint, comfortable shorts or loose pants, sometimes an unbuttoned shirt as a layer. Studio background: canvases, easel, paints, warm or evening light. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — pose, gesture, gaze direction, props and composition must strictly follow the description.
-                    """.trimIndent()
-                } else {
-                    """
-Emily — young woman in her mid 20s, artistic and free-spirited; average height, slim, flexible body; warm skin tone with a few freckles; naturally wavy dark-blond or dyed pastel-pink hair pulled into a loose bun or falling freely; light blue or grey-blue eyes with a dreamy gaze; almost no makeup, just a hint of mascara. Realistic, natural body with soft curves, medium bust, graceful hands of someone who paints a lot. She wears loose, comfortable clothes with visible paint stains: oversized t-shirt or linen shirt, soft joggers or jeans, sometimes barefoot in the studio. Realistic photographic style, cozy artist studio background with canvases, sketches, scattered brushes, warm ambient light or late-night lamp glow. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation — pose, hand placement, head tilt, gaze and camera angle must strictly match the description.
-                    """.trimIndent()
-                }
-            }
+
+        """.trimIndent()
+            3 -> """
+creative young artist girl, mid 20s, average height, slim softly curvy body, warm light skin with a few freckles and 
+light paint smudges on hands, shoulder-length wavy pastel-pink or dark-blond hair with a few messy strands, expressive 
+blue or turquoise eyes, almost no makeup, medium natural breasts proportional to slim frame; art studio background; 
+important: carefully follow the user's instructions about pose, hand position, gaze direction and composition.
+
+
+        """.trimIndent()
 
             else -> defaultPersona
         }
     }
 
-    // ==============================================================
-    //  СКРЫТОЕ ОПИСАНИЕ ИСТОРИЙ (story prompts) НА РУССКОМ
-    //  подбирается по characterId + storyId, юзер это НЕ видит
-    // ==============================================================
     private fun resolveStoryPrompt(
         characterId: Int,
         storyId: Int
@@ -445,7 +450,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
 - Отвечай от первого лица от имени Шарлотты: она стеснительная, смущается, краснеет, но внутри у неё просыпается любопытство и возбуждение.
 - Делай акцент на эмоциях, взглядах, паузах, дыхании, неловких жестах, а не на грубом описании тела.
 - Используй детали офисной обстановки: полутёмный кабинет, свет монитора, шёпот голосов через закрытую дверь, стул, стол, расстояние между ними.
-- Постепенно усиливай эротическое напряжение через диалог, игру взглядов и осторожные, согласованные сближения, ъ.
+- Постепенно усиливай эротическое напряжение через диалог, игру взглядов и осторожные, согласованные сближения.
 - Всегда подчёркивай обоюдное согласие: если ситуация заходит дальше, это происходит только по желанию Шарлотты, а начальник внимательно реагирует на её слова и сигналы.
                 """.trimIndent()
 
@@ -663,8 +668,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         println("✅ Confirmation message sent for chatId=$chatId")
     }
 
-    // ================== ДАЛЬШЕ — ВСЁ КАК У ТЕБЯ БЫЛО (платежи, баланс, чат, картинки) ==================
-
+    // ================== CALLBACK'И (покупки) ==================
     private suspend fun handleCallback(update: Update) {
         val chatId = update.callbackQuery.message.chatId
         val data = update.callbackQuery.data
@@ -685,6 +689,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         }
     }
 
+    // ================== СИСТЕМНЫЕ СООБЩЕНИЯ ==================
     private suspend fun sendWelcome(chatId: Long) {
         println("👋 sendWelcome: chatId=$chatId")
         val text = """
@@ -862,6 +867,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         }
     }
 
+    // ================== ЧАТ ==================
     private suspend fun handleChat(chatId: Long, text: String) {
         println("💬 handleChat: chatId=$chatId, text='${preview(text, 50)}'")
         val balance = ensureUserBalance(chatId)
@@ -900,6 +906,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         }
     }
 
+    // ================== КАРТИНКИ ==================
     private suspend fun handleImage(chatId: Long, textRaw: String) {
         println("🖼️ handleImage: chatId=$chatId, text='${preview(textRaw, 50)}'")
         val balance = ensureUserBalance(chatId)
@@ -957,9 +964,19 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
             originalPrompt
         }
 
-        println("🎨 Генерация изображения: chatId=$chatId, finalPrompt='${preview(finalPrompt, 50)}'")
+        val style = getImageStyle(chatId)
+        val (service, modelName) = when (style) {
+            ImageStyle.ANIME -> animeImageService to animeImageModelName
+            ImageStyle.REALISTIC -> realisticImageService to realisticImageModelName
+        }
+
+        println(
+            "🎨 Генерация изображения: chatId=$chatId, style=$style, model=$modelName, " +
+                    "finalPrompt='${preview(finalPrompt, 50)}'"
+        )
+
         val bytes = withUploadPhoto(chatId) {
-            imageService.generateImage(finalPrompt, getPersona(chatId))
+            service.generateImage(finalPrompt, getPersona(chatId))
         }
         if (bytes == null) {
             println("❌ Ошибка генерации изображения: chatId=$chatId")
@@ -973,7 +990,7 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         repository.logUsage(
             chatId,
             0,
-            mapOf("type" to "image", "model" to imageModel, "credits_used" to 1)
+            mapOf("type" to "image", "model" to modelName, "credits_used" to 1)
         )
         println("✅ Изображение сгенерировано: chatId=$chatId, creditsLeft=${balance.imageCreditsLeft}")
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
@@ -990,9 +1007,20 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
         return hasCyrillic
     }
 
-    // УЛУЧШЕННАЯ ФУНКЦИЯ ПЕРЕВОДА
+    // УЛУЧШЕННАЯ ФУНКЦИЯ ПЕРЕВОДА (через MyMemoryTranslator)
+    private suspend fun translateRuToEn(text: String): String? = withContext(Dispatchers.IO) {
+        return@withContext try {
+            println("🌐 Перевод текста: '${preview(text, 30)}'")
+            val result = translator?.translate(text, "ru", "en")
+            println("🌐 Результат перевода: '${preview(result, 30)}'")
+            result
+        } catch (e: Exception) {
+            println("❌ Ошибка перевода: ${e.message}")
+            null
+        }
+    }
 
-
+    // ================== ВСПОМОГАТЕЛЬНЫЕ ШТУКИ ==================
     private suspend fun deleteOldSystemMessages(chatId: Long) {
         val ids = systemMessages[chatId] ?: return
         println("🗑️ deleteOldSystemMessages: chatId=$chatId, count=${ids.size}")
@@ -1105,18 +1133,6 @@ Emily — young woman in her mid 20s, artistic and free-spirited; average height
             "изнасил", "насилие", "принужд", "без согласи", "rape", "forced"
         )
         return bad.none { lower.contains(it) }
-    }
-
-    private suspend fun translateRuToEn(text: String): String? = withContext(Dispatchers.IO) {
-        return@withContext try {
-            println("🌐 Перевод текста: '${preview(text, 30)}'")
-            val result = translator?.translate(text, "ru", "en")
-            println("🌐 Результат перевода: '${preview(result, 30)}'")
-            result
-        } catch (e: Exception) {
-            println("❌ Ошибка перевода: ${e.message}")
-            null
-        }
     }
 
     private fun isDeletableCommand(text: String): Boolean {
