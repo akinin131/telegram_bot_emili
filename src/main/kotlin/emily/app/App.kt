@@ -2,6 +2,7 @@ package emily.app
 
 import emily.bot.EmilyVirtualGirlBot
 import emily.data.BalanceRepository
+import emily.data.ChatHistoryRepository
 import emily.data.StorySelectionRepository
 import emily.service.ChatService
 import emily.service.ConversationMemory
@@ -48,6 +49,7 @@ fun main() {
 
     val repo = BalanceRepository()
     val selectionRepository = StorySelectionRepository()
+    val chatHistoryRepository = ChatHistoryRepository()
     val chatService = ChatService(okHttpClient, config.veniceToken, CHAT_MODEL)
 
     // отдельные ImageService под аниме и реализм
@@ -60,6 +62,7 @@ fun main() {
         config = config,
         repository = repo,
         selectionRepository = selectionRepository,
+        chatHistoryRepository= chatHistoryRepository,
         chatService = chatService,
         animeImageService = animeImageService,
         realisticImageService = realisticImageService,

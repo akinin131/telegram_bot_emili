@@ -39,6 +39,7 @@ class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
     private val selectionRepository: StorySelectionRepository,
+    private val chatHistoryRepository: ChatHistoryRepository,
     private val chatService: ChatService,
     private val animeImageService: ImageService,
     private val realisticImageService: ImageService,
@@ -300,6 +301,7 @@ class EmilyVirtualGirlBot(
             textRaw.equals("/reset", true) -> {
                 println("🔹 Обработка команды /reset для chatId=$chatId")
                 memory.reset(chatId)
+                chatHistoryRepository.clear(chatId)  // 🔥 добавили
                 deleteOldSystemMessages(chatId)
                 sendEphemeral(chatId, "Память диалога очищена 🙈", ttlSeconds = 10)
                 deleteUserCommand(chatId, messageId, textRaw)
@@ -349,6 +351,9 @@ class EmilyVirtualGirlBot(
                     "story.len=${selection.full_story_text?.length ?: 0}"
         )
         selectionRepository.save(selection)
+
+        // 🔥 чистим старую историю чата
+        chatHistoryRepository.clear(chatId)
 
         setPersona(chatId, selection.characterAppearance ?: defaultPersona)
         selection.style?.toIntOrNull()?.let { setImageStyle(chatId, it) }
@@ -656,11 +661,27 @@ class EmilyVirtualGirlBot(
     // ================== ЧАТ ==================
     private suspend fun handleChat(chatId: Long, text: String) {
         println("💬 handleChat: chatId=$chatId, text='${preview(text, 50)}'")
+
         val isNewDialogue = memory.history(chatId).isEmpty()
+
         if (isNewDialogue) {
+            // 1️⃣ Восстанавливаем выбор истории + system-промт
             val selection = ensureStorySelection(chatId) ?: return
             println("🧭 Story selection restored for chatId=$chatId, character='${selection.characterName}'")
+
+            // 2️⃣ ДОТЯГИВАЕМ ПОСЛЕДНИЕ 20 РЕПЛИК ИЗ FIREBASE
+            val lastTurns = chatHistoryRepository.getLast(chatId, limit = 20)
+            if (lastTurns.isNotEmpty()) {
+                println("♻️ Restoring ${lastTurns.size} chat turns from history for chatId=$chatId")
+
+                // ensureStorySelection уже положил system-промт (buildScenario(selection))
+                // поэтому просто возвращаем user/assistant-реплики в память
+                lastTurns.forEach { turn ->
+                    memory.append(chatId, turn.role, turn.text)
+                }
+            }
         }
+
         val balance = ensureUserBalance(chatId)
         if (balance.textTokensLeft <= 0) {
             println("⚠️ Недостаточно токенов: chatId=$chatId")
@@ -671,16 +692,23 @@ class EmilyVirtualGirlBot(
             )
             return
         }
+
         memory.initIfNeeded(chatId)
 
+        // 3️⃣ Сохраняем ТЕКУЩЕЕ сообщение пользователя и в память, и в Firebase
         memory.append(chatId, "user", text)
+        chatHistoryRepository.append(chatId, "user", text)
+
         val history = memory.history(chatId)
 
         val result = withTyping(chatId) { chatService.generateReply(history) }
         println("🤖 ChatService result: text.len=${result.text.length}, tokensUsed=${result.tokensUsed} для chatId=$chatId")
         log.info("ChatService result: text.len={}, tokensUsed={}", result.text.length, result.tokensUsed)
 
+        // 4️⃣ То же самое для ответа ассистента
         memory.append(chatId, "assistant", result.text)
+        chatHistoryRepository.append(chatId, "assistant", result.text)
+
         sendText(chatId, result.text)
 
         if (result.tokensUsed > 0) {
@@ -696,6 +724,7 @@ class EmilyVirtualGirlBot(
             sendEphemeral(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy", ttlSeconds = 15)
         }
     }
+
 
     // ================== КАРТИНКИ ==================
     private suspend fun handleImage(chatId: Long, textRaw: String) {
