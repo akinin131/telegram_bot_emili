@@ -6,6 +6,7 @@ import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
+import emily.service.defaultSystemPrompt
 import java.io.ByteArrayInputStream
 import java.time.Instant
 import java.time.LocalDate
@@ -75,6 +76,7 @@ class EmilyVirtualGirlBot(
     private val userPersonas = ConcurrentHashMap<Long, String>()
 
     private val webAppSelectionParser = WebAppSelectionParser(defaultPersona)
+    private val miniAppUrl = "https://t.me/${getBotUsername()}?startapp=select_story"
 
     override fun getBotUsername(): String = "EmilyVirtualGirlBot"
     override fun getBotToken(): String = config.telegramToken
@@ -348,7 +350,22 @@ class EmilyVirtualGirlBot(
         )
         selectionRepository.save(selection)
 
-        val scenario = buildString {
+        setPersona(chatId, selection.characterAppearance ?: defaultPersona)
+        selection.style?.toIntOrNull()?.let { setImageStyle(chatId, it) }
+
+        val scenario = buildScenario(selection)
+
+        memory.reset(chatId)
+        memory.setSystem(chatId, scenario)
+
+        if (sendConfirmation) {
+            sendStorySelectionConfirmation(chatId, selection)
+        }
+    }
+
+    private fun buildScenario(selection: StorySelection): String {
+        val introStory = selection.full_story_text ?: selection.storyDescription ?: selection.storyTitle
+        return buildString {
             append("Ты играешь роль персонажа по имени ${selection.characterName}. ")
 
             selection.characterPersonality?.let {
@@ -368,18 +385,59 @@ class EmilyVirtualGirlBot(
                 append("Скрытое описание истории и инструкции по роли: $it ")
             }
 
-            append("Начальная сцена (оригинальный текст истории на русском): ${selection.full_story_text}. ")
+            append("Начальная сцена (оригинальный текст истории на русском): $introStory. ")
             append("Отвечай на том же языке, на котором пишет пользователь (если он пишет по-русски — отвечай по-русски). ")
             append("Отвечай от лица персонажа, развивай эротическую сцену, но избегай тем несовершеннолетних, насилия и принуждения. ")
             append("Всегда подчёркивай обоюдное согласие и эмоциональную безопасность, делай упор на чувства, атмосферу и взаимодействие, а не на грубое натуралистичное описание секса.")
         }
+    }
 
-        memory.reset(chatId)
-        memory.setSystem(chatId, scenario)
-
-        if (sendConfirmation) {
-            sendStorySelectionConfirmation(chatId, selection)
+    private suspend fun ensureStorySelection(chatId: Long): StorySelection? {
+        val selection = selectionRepository.get(chatId)
+        if (selection == null) {
+            sendStorySelectionRequest(chatId)
+            return null
         }
+
+        setPersona(chatId, selection.characterAppearance ?: defaultPersona)
+        selection.style?.toIntOrNull()?.let { setImageStyle(chatId, it) }
+
+        val history = memory.history(chatId)
+        if (history.isEmpty() || history.firstOrNull()?.second == defaultSystemPrompt()) {
+            memory.reset(chatId)
+            memory.setSystem(chatId, buildScenario(selection))
+        }
+
+        return selection
+    }
+
+    private suspend fun sendStorySelectionRequest(chatId: Long) {
+        val caption = """
+            <b>Выбери историю, чтобы начать игру</b>
+
+            Открой Mini App, выбери персонажа и сюжет — и можем начинать!
+        """.trimIndent()
+
+        val markup = InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = "Открыть Mini App"
+                        url = miniAppUrl
+                    }
+                )
+            )
+        }
+
+        val message = SendPhoto().apply {
+            this.chatId = chatId.toString()
+            photo = InputFile(Plan.PRO.photoUrl)
+            this.caption = caption
+            parseMode = "HTML"
+            replyMarkup = markup
+        }
+
+        rememberSystemMessage(chatId, executeSafe(message).messageId)
     }
 
     private suspend fun sendStorySelectionConfirmation(chatId: Long, selection: StorySelection) {
@@ -598,6 +656,11 @@ class EmilyVirtualGirlBot(
     // ================== ЧАТ ==================
     private suspend fun handleChat(chatId: Long, text: String) {
         println("💬 handleChat: chatId=$chatId, text='${preview(text, 50)}'")
+        val isNewDialogue = memory.history(chatId).isEmpty()
+        if (isNewDialogue) {
+            val selection = ensureStorySelection(chatId) ?: return
+            println("🧭 Story selection restored for chatId=$chatId, character='${selection.characterName}'")
+        }
         val balance = ensureUserBalance(chatId)
         if (balance.textTokensLeft <= 0) {
             println("⚠️ Недостаточно токенов: chatId=$chatId")
