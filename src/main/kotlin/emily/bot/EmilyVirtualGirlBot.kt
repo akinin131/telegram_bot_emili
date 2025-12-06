@@ -56,18 +56,14 @@ class EmilyVirtualGirlBot(
     private val imageTag = "#pic"
     private val chatModel = "venice-uncensored"
 
-    // имена моделей для логов
     private val animeImageModelName = "wai-Illustrious"
     private val realisticImageModelName = "lustify-v7"
 
-    // стиль генерации изображений
     private enum class ImageStyle { ANIME, REALISTIC }
     private val userImageStyles = ConcurrentHashMap<Long, ImageStyle>()
 
-    // БАЗОВАЯ ПЕРСОНА ПО УМОЛЧАНИЮ (если что-то пошло не так)
     private val defaultPersona = Strings.get("persona.default")
 
-    // Текущие персона для каждого пользователя
     private val userPersonas = ConcurrentHashMap<Long, String>()
 
     private val webAppSelectionParser = WebAppSelectionParser(defaultPersona)
@@ -84,9 +80,6 @@ class EmilyVirtualGirlBot(
         userPersonas[chatId] = persona
     }
 
-    // ================== СТИЛИ КАРТИНОК ==================
-
-    // styleCode: 1 = anime, 2 = realistic
     private fun setImageStyle(chatId: Long, styleCode: Int?) {
         val style = when (styleCode) {
             2 -> ImageStyle.REALISTIC
@@ -101,8 +94,6 @@ class EmilyVirtualGirlBot(
     private fun getImageStyle(chatId: Long): ImageStyle {
         return userImageStyles[chatId] ?: ImageStyle.ANIME
     }
-
-    // ================== МЕНЮ БОТА ==================
 
     fun registerBotMenu() = runBlocking {
         println("🚀 registerBotMenu() - Регистрация команд бота")
@@ -196,7 +187,6 @@ class EmilyVirtualGirlBot(
             textRaw.replace('\n', ' ')
         )
 
-        // 1️⃣ Пытаемся вытащить невидимые данные (charId|storyId|styleCode)
         val hidden = webAppSelectionParser.decodeHiddenData(textRaw)
         if (hidden != null) {
             println(
@@ -217,22 +207,18 @@ class EmilyVirtualGirlBot(
                 return
             }
 
-            // 🔥 Восстанавливаем внешний вид по characterId + styleCode
             val personaForSelection = webAppSelectionParser.resolvePersona(
                 characterId = hidden.characterId,
                 styleCode = hidden.styleCode
             )
 
-            // 🔥 Скрытое описание истории по characterId + storyId (РУССКИЙ текст с реальным именем)
             val hiddenStoryPrompt = webAppSelectionParser.resolveStoryPrompt(
                 characterId = hidden.characterId,
                 storyId = hidden.storyId
             )
 
-            // Обновляем persona для конкретного пользователя
             setPersona(chatId, personaForSelection)
 
-            // И ОБНОВЛЯЕМ стиль картинок (1 — аниме, 2 — реализм)
             setImageStyle(chatId, hidden.styleCode)
 
             println("🎨 persona resolved for charId=${hidden.characterId}, style=${hidden.styleCode}, chatId=$chatId")
@@ -240,12 +226,9 @@ class EmilyVirtualGirlBot(
             val selection = StorySelection(
                 userId = chatId,
                 characterName = parsed.characterName,
-                // внешний вид персонажа (полный промт)
                 characterAppearance = personaForSelection,
-                // характер: либо короткий текст из WebApp, либо используем тот же промт внешности
                 characterPersonality = parsed.characterPersonality ?: personaForSelection,
                 storyTitle = parsed.storyTitle,
-                // сюда кладём скрытое русское описание истории + инструкцию, fallback — то что пришло из WebApp
                 storyDescription = hiddenStoryPrompt.ifBlank { parsed.storyDescription ?: parsed.storyTitle },
                 full_story_text = parsed.fullStoryText,
                 style = hidden.styleCode.toString()
@@ -262,7 +245,6 @@ class EmilyVirtualGirlBot(
             return
         }
 
-        // 2️⃣ Остальные команды / сообщения
         when {
             textRaw.equals("/start", true) -> {
                 println("🔹 Обработка команды /start для chatId=$chatId")
@@ -295,7 +277,7 @@ class EmilyVirtualGirlBot(
             textRaw.equals("/reset", true) -> {
                 println("🔹 Обработка команды /reset для chatId=$chatId")
                 memory.reset(chatId)
-                chatHistoryRepository.clear(chatId)  // 🔥 добавили
+                chatHistoryRepository.clear(chatId)
                 deleteOldSystemMessages(chatId)
                 sendEphemeral(chatId, Strings.get("reset.success"), ttlSeconds = 10)
                 deleteUserCommand(chatId, messageId, textRaw)
@@ -333,7 +315,6 @@ class EmilyVirtualGirlBot(
         return if (clean.length <= max) clean else clean.take(max) + "… (len=" + clean.length + ")"
     }
 
-    // ================== ПРИМЕНЕНИЕ ВЫБОРА ИСТОРИИ ==================
     suspend fun applySelection(
         chatId: Long,
         selection: StorySelection,
@@ -346,7 +327,6 @@ class EmilyVirtualGirlBot(
         )
         selectionRepository.save(selection)
 
-        // 🔥 чистим старую историю чата
         chatHistoryRepository.clear(chatId)
 
         setPersona(chatId, selection.characterAppearance ?: defaultPersona)
@@ -443,7 +423,6 @@ class EmilyVirtualGirlBot(
         println("✅ Confirmation message sent for chatId=$chatId")
     }
 
-    // ================== CALLBACK'И (покупки) ==================
     private suspend fun handleCallback(update: Update) {
         val chatId = update.callbackQuery.message.chatId
         val data = update.callbackQuery.data
@@ -464,7 +443,6 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    // ================== СИСТЕМНЫЕ СООБЩЕНИЯ ==================
     private suspend fun sendWelcome(chatId: Long) {
         println("👋 sendWelcome: chatId=$chatId")
         val text = Strings.get("welcome.text")
@@ -638,24 +616,19 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    // ================== ЧАТ ==================
     private suspend fun handleChat(chatId: Long, text: String) {
         println("💬 handleChat: chatId=$chatId, text='${preview(text, 50)}'")
 
         val isNewDialogue = memory.history(chatId).isEmpty()
 
         if (isNewDialogue) {
-            // 1️⃣ Восстанавливаем выбор истории + system-промт
             val selection = ensureStorySelection(chatId) ?: return
             println("🧭 Story selection restored for chatId=$chatId, character='${selection.characterName}'")
 
-            // 2️⃣ ДОТЯГИВАЕМ ПОСЛЕДНИЕ 20 РЕПЛИК ИЗ FIREBASE
             val lastTurns = chatHistoryRepository.getLast(chatId, limit = 20)
             if (lastTurns.isNotEmpty()) {
                 println("♻️ Restoring ${lastTurns.size} chat turns from history for chatId=$chatId")
 
-                // ensureStorySelection уже положил system-промт (buildScenario(selection))
-                // поэтому просто возвращаем user/assistant-реплики в память
                 lastTurns.forEach { turn ->
                     memory.append(chatId, turn.role, turn.text)
                 }
@@ -675,7 +648,6 @@ class EmilyVirtualGirlBot(
 
         memory.initIfNeeded(chatId)
 
-        // 3️⃣ Сохраняем ТЕКУЩЕЕ сообщение пользователя и в память, и в Firebase
         memory.append(chatId, "user", text)
         chatHistoryRepository.append(chatId, "user", text)
 
@@ -685,7 +657,6 @@ class EmilyVirtualGirlBot(
         println("🤖 ChatService result: text.len=${result.text.length}, tokensUsed=${result.tokensUsed} для chatId=$chatId")
         log.info("ChatService result: text.len={}, tokensUsed={}", result.text.length, result.tokensUsed)
 
-        // 4️⃣ То же самое для ответа ассистента
         memory.append(chatId, "assistant", result.text)
         chatHistoryRepository.append(chatId, "assistant", result.text)
 
@@ -706,7 +677,6 @@ class EmilyVirtualGirlBot(
     }
 
 
-    // ================== КАРТИНКИ ==================
     private suspend fun handleImage(chatId: Long, textRaw: String) {
         println("🖼️ handleImage: chatId=$chatId, text='${preview(textRaw, 50)}'")
         val balance = ensureUserBalance(chatId)
@@ -789,7 +759,6 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    // УЛУЧШЕННАЯ ФУНКЦИЯ ПРОВЕРКИ КИРИЛЛИЦЫ
     private fun hasCyrillic(text: String): Boolean {
         val cyrillicPattern = Regex("[а-яА-ЯёЁ]")
         val hasCyrillic = cyrillicPattern.containsMatchIn(text)
@@ -797,7 +766,6 @@ class EmilyVirtualGirlBot(
         return hasCyrillic
     }
 
-    // УЛУЧШЕННАЯ ФУНКЦИЯ ПЕРЕВОДА (через MyMemoryTranslator)
     private suspend fun translateRuToEn(text: String): String? = withContext(Dispatchers.IO) {
         return@withContext try {
             println("🌐 Перевод текста: '${preview(text, 30)}'")
@@ -810,7 +778,6 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    // ================== ВСПОМОГАТЕЛЬНЫЕ ШТУКИ ==================
     private suspend fun deleteOldSystemMessages(chatId: Long) {
         val ids = systemMessages[chatId] ?: return
         println("🗑️ deleteOldSystemMessages: chatId=$chatId, count=${ids.size}")
@@ -990,7 +957,6 @@ class EmilyVirtualGirlBot(
     private suspend fun <T> withUploadPhoto(chatId: Long, block: suspend () -> T): T =
         withChatAction(chatId, ActionType.UPLOADPHOTO, block)
 
-    // --- Telegram execute wrappers ---
     private suspend fun executeSafe(method: SendMessage): Message =
         withContext(Dispatchers.IO) { execute(method) }
 

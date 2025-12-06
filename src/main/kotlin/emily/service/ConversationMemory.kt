@@ -14,26 +14,24 @@ class ConversationMemory(
 ) {
     private val contexts = ConcurrentHashMap<Long, MutableList<Pair<String, String>>>()
 
-    /** Полностью заменить первый system для чата */
     fun setSystem(chatId: Long, content: String) {
-        val ctx = contexts.computeIfAbsent(chatId) { mutableListOf("system" to "") }
-        if (ctx.isEmpty() || ctx.first().first != "system") {
-            ctx.add(0, "system" to content)
+        val conversationEntries = contexts.computeIfAbsent(chatId) { mutableListOf("system" to "") }
+        if (conversationEntries.isEmpty() || conversationEntries.first().first != "system") {
+            conversationEntries.add(0, "system" to content)
         } else {
-            ctx[0] = "system" to content
+            conversationEntries[0] = "system" to content
         }
     }
 
     fun history(chatId: Long): List<Pair<String, String>> =
         contexts[chatId]?.toList().orEmpty()
 
-    /** Создать system, если её нет. Уже существующую — НЕ трогаем. */
     fun initIfNeeded(chatId: Long) {
-        val ctx = contexts.computeIfAbsent(chatId) { mutableListOf() }
-        if (ctx.isEmpty()) {
-            ctx += "system" to systemPromptProvider().orEmpty()
-        } else if (ctx.first().first != "system") {
-            ctx.add(0, "system" to systemPromptProvider().orEmpty())
+        val contextEntries = contexts.computeIfAbsent(chatId) { mutableListOf() }
+        if (contextEntries.isEmpty()) {
+            contextEntries += "system" to systemPromptProvider().orEmpty()
+        } else if (contextEntries.first().first != "system") {
+            contextEntries.add(0, "system" to systemPromptProvider().orEmpty())
         }
     }
 

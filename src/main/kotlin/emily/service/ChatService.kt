@@ -22,7 +22,6 @@ class ChatService(
 ) {
     private val json = "application/json".toMediaType()
 
-    // --- logging ---
     private val logger = Logger.getLogger(ChatService::class.java.name)
     private val MAX_LOG_CHARS = 4000
     private fun maskToken(t: String) =
@@ -50,7 +49,6 @@ class ChatService(
             .post(bodyStr.toByteArray(Charsets.UTF_8).toRequestBody(json))
             .build()
 
-        // --- LOG OUTGOING ---
         val reqId = UUID.randomUUID().toString()
         val t0 = System.nanoTime()
         runCatching {
@@ -68,7 +66,6 @@ class ChatService(
         response.use { resp ->
             val body = resp.body?.string().orEmpty()
 
-            // --- LOG INCOMING ---
             val elapsedMs = (System.nanoTime() - t0) / 1_000_000
             runCatching {
                 logger.info(
@@ -111,7 +108,6 @@ class ChatService(
                 tokens = max(1, ceil(lastUserMsg.length / 4.0).toInt())
             }
 
-            // --- LOG PARSED SUMMARY ---
             runCatching {
                 logger.info(
                     """

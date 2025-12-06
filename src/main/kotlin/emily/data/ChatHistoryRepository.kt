@@ -19,30 +19,21 @@ class ChatHistoryRepository(
 
     private val chatsRef by lazy { database.getReference("chatHistory") }
 
-    /**
-     * Сохраняем одну реплику в Firebase.
-     */
     suspend fun append(userId: Long, role: String, text: String) = withContext(Dispatchers.IO) {
         val payload = mapOf(
             "role" to role,
             "text" to text,
             "createdAt" to System.currentTimeMillis()
         )
-        // push() создаёт уникальный ключ под каждое сообщение
         chatsRef.child(userId.toString()).push().setValueAsync(payload)
     }
 
-    /**
-     * Достаём последние [limit] реплик из Firebase (user + assistant),
-     * отсортированные по времени.
-     */
     suspend fun getLast(userId: Long, limit: Int): List<ChatTurn> = withContext(Dispatchers.IO) {
         val query = chatsRef
             .child(userId.toString())
             .orderByChild("createdAt")
             .limitToLast(limit)
 
-        // ❗ Никакого awaitSingle — всё делаем руками
         suspendCancellableCoroutine { cont ->
             val listener = object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
@@ -90,10 +81,6 @@ class ChatHistoryRepository(
         }
     }
 
-    /**
-     * Полностью очищаем историю конкретного пользователя.
-     * setValueAsync(null) в Realtime DB = удалить узел.
-     */
     suspend fun clear(userId: Long) = withContext(Dispatchers.IO) {
         chatsRef.child(userId.toString()).setValueAsync(null)
     }

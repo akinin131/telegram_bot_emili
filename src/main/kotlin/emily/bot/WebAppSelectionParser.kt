@@ -3,13 +3,6 @@ package emily.bot
 import emily.app.WebAppStory
 import emily.resources.Strings
 import java.util.Base64
-
-/**
- * Инкапсулирует логику работы с данными из WebApp:
- * - скрытые маркеры с выбором истории
- * - парсинг текста из WebView
- * - восстановление внешности персонажа и скрытого промпта истории.
- */
 class WebAppSelectionParser(
     private val defaultPersona: String
 ) {
@@ -20,26 +13,25 @@ class WebAppSelectionParser(
         val styleCode: Int
     )
 
-    // Невидимые символы (совпадают с Python)
-    private val Z0: Char = '\u200B'   // 0: zero width space
-    private val Z1: Char = '\u200C'   // 1: zero width non-joiner
-    private val START_MARK: String = "\u2063\u200D" // маркер начала
-    private val END_MARK: String = "\u200D\u2063"   // маркер конца
+    private val zeroWidthSpace: Char = '\u200B'
+    private val zeroWidthNonJoiner: Char = '\u200C'
+    private val startMark: String = "\u2063\u200D"
+    private val endMark: String = "\u200D\u2063"
 
     fun decodeHiddenData(text: String): HiddenWebAppData? {
-        val startIdx = text.indexOf(START_MARK)
+        val startIdx = text.indexOf(startMark)
         if (startIdx == -1) return null
-        val endIdx = text.indexOf(END_MARK, startIdx + START_MARK.length)
+        val endIdx = text.indexOf(endMark, startIdx + startMark.length)
         if (endIdx == -1) return null
 
-        val encoded = text.substring(startIdx + START_MARK.length, endIdx)
+        val encoded = text.substring(startIdx + startMark.length, endIdx)
         if (encoded.isEmpty()) return null
 
         val bits = StringBuilder(encoded.length)
         for (ch in encoded) {
             when (ch) {
-                Z0 -> bits.append('0')
-                Z1 -> bits.append('1')
+                zeroWidthSpace -> bits.append('0')
+                zeroWidthNonJoiner -> bits.append('1')
                 else -> return null
             }
         }
@@ -76,10 +68,7 @@ class WebAppSelectionParser(
         styleCode: Int
     ): String {
         return when (characterId) {
-            // 1 — Шарлотта (офисная скромняша)
             1 -> Strings.get("persona.charlotte")
-
-            // 2 — Анжела (деловая взрослая)
             2 -> Strings.get("persona.angela")
             3 -> Strings.get("persona.vika")
 
@@ -94,7 +83,6 @@ class WebAppSelectionParser(
     private val vikaStory5Prompt = Strings.get("story.vika.prompt5")
     private val vikaStory6Prompt = Strings.get("story.vika.prompt6")
 
-    // Карта: персонаж -> (история -> текст)
     private val storyPrompts: Map<Int, Map<Int, String>> = mapOf(
         1 to mapOf(
             1 to charlotteStory1Prompt,
