@@ -7,6 +7,7 @@ import emily.service.ConversationMemory
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
 import emily.service.defaultSystemPrompt
+import emily.resources.Strings
 import java.io.ByteArrayInputStream
 import java.time.Instant
 import java.time.LocalDate
@@ -114,11 +115,11 @@ class EmilyVirtualGirlBot(
         println("🚀 registerBotMenu() - Регистрация команд бота")
         log.info("registerBotMenu()")
         val commands = listOf(
-            BotCommand("/start", "Начать общение с Эмили"),
-            BotCommand("/buy", "Купить подписку или пакет"),
-            BotCommand("/balance", "Посмотреть баланс"),
-            BotCommand("/reset", "Очистить память диалога"),
-            BotCommand("/pic", "Сгенерировать изображение")
+            BotCommand("/start", Strings.get("command.start")),
+            BotCommand("/buy", Strings.get("command.buy")),
+            BotCommand("/balance", Strings.get("command.balance")),
+            BotCommand("/reset", Strings.get("command.reset")),
+            BotCommand("/pic", Strings.get("command.pic"))
         )
         executeSafe(SetMyCommands(commands, BotCommandScopeDefault(), null))
     }
@@ -219,7 +220,7 @@ class EmilyVirtualGirlBot(
             val parsed = webAppSelectionParser.parseWebAppMessage(textRaw)
             if (parsed == null) {
                 println("❌ Не удалось распарсить текст истории из сообщения")
-                sendText(chatId, "Не удалось обработать выбор истории 😔")
+                sendText(chatId, Strings.get("error.story.parse"))
                 return
             }
 
@@ -303,7 +304,7 @@ class EmilyVirtualGirlBot(
                 memory.reset(chatId)
                 chatHistoryRepository.clear(chatId)  // 🔥 добавили
                 deleteOldSystemMessages(chatId)
-                sendEphemeral(chatId, "Память диалога очищена 🙈", ttlSeconds = 10)
+                sendEphemeral(chatId, Strings.get("reset.success"), ttlSeconds = 10)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -311,7 +312,7 @@ class EmilyVirtualGirlBot(
                 println("🔹 Обработка команды /pic")
                 sendEphemeral(
                     chatId,
-                    "Формат: отправь сообщение вида:\n#pic описание сцены",
+                    Strings.get("pic.hint"),
                     ttlSeconds = 20
                 )
                 deleteUserCommand(chatId, messageId, textRaw)
@@ -417,17 +418,13 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun sendStorySelectionRequest(chatId: Long) {
-        val caption = """
-            <b>Выбери историю, чтобы начать игру</b>
-
-            Открой Mini App, выбери персонажа и сюжет — и можем начинать!
-        """.trimIndent()
+        val caption = Strings.get("story.selection.request.caption")
 
         val markup = InlineKeyboardMarkup().apply {
             keyboard = listOf(
                 listOf(
                     InlineKeyboardButton().apply {
-                        text = "Открыть Mini App"
+                        text = Strings.get("story.selection.button")
                         url = miniAppUrl
                     }
                 )
@@ -447,13 +444,7 @@ class EmilyVirtualGirlBot(
 
     private suspend fun sendStorySelectionConfirmation(chatId: Long, selection: StorySelection) {
         println("📤 sendStorySelectionConfirmation: chatId=$chatId")
-        val message = """
-            🎭 <b>Сцена выбрана!</b>
-            
-            Персонаж: <b>${escapeHtml(selection.characterName)}</b>
-            
-            Теперь напиши первое сообщение — и мы начнём нашу историю! 💕
-        """.trimIndent()
+        val message = Strings.get("story.selection.confirmation", escapeHtml(selection.characterName))
 
         executeSafe(SendMessage(chatId.toString(), message).apply { parseMode = "HTML" })
         println("✅ Confirmation message sent for chatId=$chatId")
@@ -483,16 +474,7 @@ class EmilyVirtualGirlBot(
     // ================== СИСТЕМНЫЕ СООБЩЕНИЯ ==================
     private suspend fun sendWelcome(chatId: Long) {
         println("👋 sendWelcome: chatId=$chatId")
-        val text = """
-        Привет! Я Эмили 💕
-        Я умею разговаривать и создавать изображения.
-        Команды:
-          /buy — оплатить подписку/пакет (с фото и чеком)
-          /balance — показать текущий баланс
-          /reset — очистить память диалога
-          /pic — как генерировать картинку
-        Бесплатно: ~30 коротких сообщений и 1 изображение.
-        """.trimIndent()
+        val text = Strings.get("welcome.text")
         val message = executeSafe(SendMessage(chatId.toString(), text))
         rememberSystemMessage(chatId, message.messageId)
     }
@@ -503,16 +485,17 @@ class EmilyVirtualGirlBot(
             Plan.BASIC.code -> Plan.BASIC.title
             Plan.PRO.code -> Plan.PRO.title
             Plan.ULTRA.code -> Plan.ULTRA.title
-            else -> "нет (Free)"
+            else -> Strings.get("balance.plan.none")
         }
         val until = balance.planExpiresAt?.let { Instant.ofEpochMilli(it).toString() } ?: "—"
-        val text = """
-        <b>План:</b> $planTitle
-        <b>Действует до:</b> $until
-        <b>Текущие текстовые токены:</b> ${balance.textTokensLeft}
-        <b>Кредиты на изображения:</b> ${balance.imageCreditsLeft}
-        <b>Сегодня использовано изображений:</b> ${balance.dayImageUsed}
-        """.trimIndent()
+        val text = Strings.get(
+            "balance.text",
+            planTitle,
+            until,
+            balance.textTokensLeft,
+            balance.imageCreditsLeft,
+            balance.dayImageUsed
+        )
         val message = SendMessage(chatId.toString(), text).apply { parseMode = "HTML" }
         rememberSystemMessage(chatId, executeSafe(message).messageId)
     }
@@ -523,27 +506,27 @@ class EmilyVirtualGirlBot(
         Plan.values().forEach { plan ->
             rows += listOf(
                 InlineKeyboardButton().apply {
-                    text = "${plan.title} (${plan.priceRub}₽/мес)"
+                    text = Strings.get("buy.menu.plan.button", plan.title, plan.priceRub)
                     callbackData = "buy:plan:${plan.code}"
                 }
             )
         }
         rows += listOf(
             InlineKeyboardButton().apply {
-                text = "Фото для возбуждения (10)"
+                text = Strings.get("buy.menu.pack.p10")
                 callbackData = "buy:pack:${ImagePack.P10.code}"
             }
         )
         rows += listOf(
             InlineKeyboardButton().apply {
-                text = "Порочный альбом (50)"
+                text = Strings.get("buy.menu.pack.p50")
                 callbackData = "buy:pack:${ImagePack.P50.code}"
             }
         )
         val markup = InlineKeyboardMarkup().apply { keyboard = rows }
         val msg = SendMessage(
             chatId.toString(),
-            "Выбери пакет. После оплаты баланс пополнится автоматически.\n\nПодписка идёт без автопродления"
+            Strings.get("buy.menu.text")
         ).apply {
             replyMarkup = markup
         }
@@ -555,20 +538,23 @@ class EmilyVirtualGirlBot(
         val plan = Plan.byCode(planCode) ?: return
         val invoicePayload = "plan:${plan.code}:${UUID.randomUUID()}"
         val providerDataJson = makeProviderData(
-            desc = "Пакет ${plan.title} — 30 дней. Текстовые токены + кредиты изображений.",
+            desc = Strings.get("invoice.plan.provider.desc", plan.title),
             rub = plan.priceRub,
             includeVat = true
         )
         val invoice = SendInvoice().apply {
             this.chatId = chatId.toString()
-            title = "Пакет: ${plan.title}"
-            description =
-                "30 дней: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений."
+            title = Strings.get("invoice.plan.title", plan.title)
+            description = Strings.get(
+                "invoice.plan.description",
+                plan.monthlyTextTokens,
+                plan.monthlyImageCredits
+            )
             payload = invoicePayload
             providerToken = config.providerToken
             currency = "RUB"
             startParameter = "plan-${plan.code}"
-            prices = listOf(LabeledPrice("${plan.title} 30 дней", plan.priceRub * 100))
+            prices = listOf(LabeledPrice(Strings.get("invoice.plan.price.label", plan.title), plan.priceRub * 100))
             needEmail = true
             sendEmailToProvider = true
             isFlexible = false
@@ -585,14 +571,14 @@ class EmilyVirtualGirlBot(
         val pack = ImagePack.byCode(packCode) ?: return
         val invoicePayload = "pack:${pack.code}:${UUID.randomUUID()}"
         val providerDataJson = makeProviderData(
-            desc = "${pack.title}. Дополнительные единицы генерации изображений.",
+            desc = Strings.get("invoice.pack.provider.desc", pack.title),
             rub = pack.priceRub,
             includeVat = true
         )
         val invoice = SendInvoice().apply {
             this.chatId = chatId.toString()
             title = pack.title
-            description = "Разовый пакет: ${pack.title}"
+            description = Strings.get("invoice.pack.description", pack.title)
             payload = invoicePayload
             providerToken = config.providerToken
             currency = "RUB"
@@ -631,12 +617,13 @@ class EmilyVirtualGirlBot(
                 repository.addPayment(chatId, payload, totalRub)
                 sendEphemeral(
                     chatId,
-                    "✅ Подписка «${plan.title}» активирована до ${
-                        Instant.ofEpochMilli(
-                            balance.planExpiresAt!!
-                        )
-                    }.\n" +
-                            "Начислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} изображений.",
+                    Strings.get(
+                        "payment.plan.activated",
+                        plan.title,
+                        Instant.ofEpochMilli(balance.planExpiresAt!!),
+                        plan.monthlyTextTokens,
+                        plan.monthlyImageCredits
+                    ),
                     ttlSeconds = 20
                 )
                 println("🎉 План активирован: ${plan.title} для chatId=$chatId")
@@ -650,7 +637,7 @@ class EmilyVirtualGirlBot(
                 repository.addPayment(chatId, payload, totalRub)
                 sendEphemeral(
                     chatId,
-                    "✅ Начислено: ${pack.images} изображений по пакету «${pack.title}».",
+                    Strings.get("payment.pack.activated", pack.images, pack.title),
                     ttlSeconds = 15
                 )
                 println("🎉 Пакет активирован: ${pack.title} для chatId=$chatId")
@@ -687,7 +674,7 @@ class EmilyVirtualGirlBot(
             println("⚠️ Недостаточно токенов: chatId=$chatId")
             sendEphemeral(
                 chatId,
-                "⚠️ У тебя закончились текстовые токены.\nКупи подписку в /buy",
+                Strings.get("text.tokens.not.enough"),
                 ttlSeconds = 15
             )
             return
@@ -721,7 +708,7 @@ class EmilyVirtualGirlBot(
         }
         if (balance.plan == null && balance.textTokensLeft <= 0) {
             println("⚠️ Бесплатный лимит исчерпан: chatId=$chatId")
-            sendEphemeral(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy", ttlSeconds = 15)
+            sendEphemeral(chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
         }
     }
 
@@ -735,7 +722,7 @@ class EmilyVirtualGirlBot(
             println("⚠️ Дневной лимит изображений исчерпан: chatId=$chatId")
             sendEphemeral(
                 chatId,
-                "Дневной лимит изображений исчерпан ($cap). Попробуй завтра или купи пакет /buy.",
+                Strings.get("image.daily.limit", cap),
                 ttlSeconds = 20
             )
             return
@@ -744,7 +731,7 @@ class EmilyVirtualGirlBot(
             println("⚠️ Нет кредитов на изображения: chatId=$chatId")
             sendEphemeral(
                 chatId,
-                "У тебя нет кредитов на изображения. Купи подписку или пакет: /buy",
+                Strings.get("image.no.credits"),
                 ttlSeconds = 20
             )
             return
@@ -752,7 +739,7 @@ class EmilyVirtualGirlBot(
         val originalPrompt = textRaw.removePrefix(imageTag).removePrefix("/pic").trim()
         if (originalPrompt.isBlank()) {
             println("⚠️ Пустой промпт для изображения: chatId=$chatId")
-            sendEphemeral(chatId, "После #pic укажи описание 🙂", ttlSeconds = 10)
+            sendEphemeral(chatId, Strings.get("image.empty.prompt"), ttlSeconds = 10)
             return
         }
 
@@ -790,7 +777,7 @@ class EmilyVirtualGirlBot(
         }
         if (bytes == null) {
             println("❌ Ошибка генерации изображения: chatId=$chatId")
-            sendEphemeral(chatId, "Не удалось сгенерировать изображение. Попробуй ещё раз.", ttlSeconds = 12)
+            sendEphemeral(chatId, Strings.get("image.generate.fail"), ttlSeconds = 12)
             return
         }
         sendPhoto(chatId, bytes, caption = null)
@@ -805,7 +792,7 @@ class EmilyVirtualGirlBot(
         println("✅ Изображение сгенерировано: chatId=$chatId, creditsLeft=${balance.imageCreditsLeft}")
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
             println("⚠️ Бесплатный лимит исчерпан после генерации: chatId=$chatId")
-            sendEphemeral(chatId, "Бесплатный лимит исчерпан. Оформи подписку: /buy", ttlSeconds = 15)
+            sendEphemeral(chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
         }
     }
 
@@ -857,7 +844,7 @@ class EmilyVirtualGirlBot(
         val photo = SendPhoto().apply {
             this.chatId = chatId.toString()
             this.photo = InputFile(ByteArrayInputStream(bytes), "image.png")
-            this.caption = caption ?: "Готово 💕"
+            this.caption = caption ?: Strings.get("photo.default.caption")
         }
         executeSafe(photo)
     }
@@ -883,17 +870,14 @@ class EmilyVirtualGirlBot(
         } catch (ex: TelegramApiRequestException) {
             println("❌ Invoice error: ${ex.message}")
             val details = buildString {
-                appendLine("Invoice error:")
-                appendLine("message=${ex.message}")
-                appendLine("apiResponse=${ex.apiResponse}")
-                appendLine("parameters=${ex.parameters}")
+                appendLine(Strings.get("invoice.error.details", ex.message, ex.apiResponse, ex.parameters))
             }
             sendEphemeral(chatId, "❌ $details", ttlSeconds = 20)
         } catch (ex: Exception) {
             println("❌ Unexpected invoice error: ${ex.message}")
             sendEphemeral(
                 chatId,
-                "❌ Unexpected invoice error: ${ex.message ?: ex.toString()}",
+                Strings.get("invoice.error.unexpected", ex.message ?: ex.toString()),
                 ttlSeconds = 20
             )
         }
