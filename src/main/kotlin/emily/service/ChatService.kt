@@ -1,6 +1,7 @@
 package emily.service
 
 import emily.http.await
+import emily.resources.Strings
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlinx.coroutines.Dispatchers
@@ -82,7 +83,7 @@ class ChatService(
 
             if (!resp.isSuccessful) {
                 return@withContext ChatResult(
-                    text = "Проблемы со связью 😢 Попробуем ещё раз?",
+                    text = Strings.get("chat.connection.issue"),
                     tokensUsed = 0,
                     rawUsage = null
                 )
@@ -93,8 +94,8 @@ class ChatService(
                 ?.optJSONObject(0)
                 ?.optJSONObject("message")
                 ?.optString("content")
-                ?.ifBlank { "..." }
-                ?: "..."
+                ?.ifBlank { Strings.get("chat.response.placeholder") }
+                ?: Strings.get("chat.response.placeholder")
 
             var tokens = 0
             var usageJson: JSONObject? = null

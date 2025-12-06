@@ -1,5 +1,6 @@
 package emily.service
 
+import emily.resources.Strings
 import java.util.concurrent.ConcurrentHashMap
 
 private const val MAX_CONTEXT_MESSAGES = 20
@@ -84,6 +85,4 @@ class ConversationMemory(
     }
 }
 
-fun defaultSystemPrompt(): String =
-    "Ты — Эмили, виртуальная девушка: тёплая, игривая, поддерживающая и немного пошлая! " +
-            "любишь немного флиртовать. Отвечай дружелюбно и запоминай контекст разговора."
+fun defaultSystemPrompt(): String = Strings.get("system.prompt.default")
