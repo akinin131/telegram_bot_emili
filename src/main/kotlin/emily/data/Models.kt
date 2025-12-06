@@ -1,6 +1,7 @@
 package emily.data
 
 import com.google.gson.annotations.SerializedName
+import emily.resources.Strings
 import java.time.LocalDate
 
 enum class Plan(
@@ -13,7 +14,7 @@ enum class Plan(
 ) {
     BASIC(
         code = "basic",
-        title = "Скромница",
+        title = Strings.get("plan.title.basic"),
         priceRub = 399,
         monthlyTextTokens = 100_000,
         monthlyImageCredits = 15,
@@ -21,7 +22,7 @@ enum class Plan(
     ),
     PRO(
         code = "pro",
-        title = "Шлюшка",
+        title = Strings.get("plan.title.pro"),
         priceRub = 650,
         monthlyTextTokens = 300_000,
         monthlyImageCredits = 50,
@@ -29,7 +30,7 @@ enum class Plan(
     ),
     ULTRA(
         code = "ultra",
-        title = "Грязная развратница",
+        title = Strings.get("plan.title.ultra"),
         priceRub = 1800,
         monthlyTextTokens = 800_000,
         monthlyImageCredits = 150,
@@ -50,14 +51,14 @@ enum class ImagePack(
 ) {
     P10(
         code = "pack10",
-        title = "Фото для возбуждения",
+        title = Strings.get("pack.title.p10"),
         priceRub = 99,
         images = 10,
         photoUrl = "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
     ),
     P50(
         code = "pack50",
-        title = "Порочный альбом",
+        title = Strings.get("pack.title.p50"),
         priceRub = 249,
         images = 50,
         photoUrl = "https://drive.google.com/uc?export=download&id=1f67uMVIMFWCe4DvQU4GlgnI5vx0cH6iC"

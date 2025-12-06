@@ -65,14 +65,7 @@ class EmilyVirtualGirlBot(
     private val userImageStyles = ConcurrentHashMap<Long, ImageStyle>()
 
     // БАЗОВАЯ ПЕРСОНА ПО УМОЛЧАНИЮ (если что-то пошло не так)
-    private val defaultPersona = """
-        Emily — petite yet curvy, with soft skin; short, straight silver hair; green eyes;
-        large, full, natural breasts (large, prominent, realistic, proportional);
-        enjoys being nude; age 20+; semi-realistic anime style with natural body proportions.
-        IMPORTANT: Carefully follow the user's instructions regarding poses and the situation —
-        make sure the pose, hand placement, gaze direction, and overall composition strictly
-        match the given description.
-    """.trimIndent()
+    private val defaultPersona = Strings.get("persona.default")
 
     // Текущие персона для каждого пользователя
     private val userPersonas = ConcurrentHashMap<Long, String>()
@@ -372,29 +365,29 @@ class EmilyVirtualGirlBot(
     private fun buildScenario(selection: StorySelection): String {
         val introStory = selection.full_story_text ?: selection.storyDescription ?: selection.storyTitle
         return buildString {
-            append("Ты играешь роль персонажа по имени ${selection.characterName}. ")
+            append(Strings.get("scenario.character.intro", selection.characterName)).append(' ')
 
             selection.characterPersonality?.let {
-                append("Характер и внешность персонажа (для внутреннего понимания роли): $it. ")
+                append(Strings.get("scenario.personality", it)).append(' ')
             }
 
             selection.style?.let {
                 val styleText = when (it) {
-                    "1" -> "аниме (semi-realistic anime), с естественной анатомией и живыми эмоциями."
-                    "2" -> "реалистичный (realistic), с фотореалистичным ощущением сцены и естественными пропорциями тела."
+                    "1" -> Strings.get("scenario.style.anime")
+                    "2" -> Strings.get("scenario.style.realistic")
                     else -> it
                 }
-                append("Основной стилевой контекст: $styleText ")
+                append(Strings.get("scenario.style.prefix", styleText)).append(' ')
             }
 
             selection.storyDescription?.let {
-                append("Скрытое описание истории и инструкции по роли: $it ")
+                append(Strings.get("scenario.story.description", it)).append(' ')
             }
 
-            append("Начальная сцена (оригинальный текст истории на русском): $introStory. ")
-            append("Отвечай на том же языке, на котором пишет пользователь (если он пишет по-русски — отвечай по-русски). ")
-            append("Отвечай от лица персонажа, развивай эротическую сцену, но избегай тем несовершеннолетних, насилия и принуждения. ")
-            append("Всегда подчёркивай обоюдное согласие и эмоциональную безопасность, делай упор на чувства, атмосферу и взаимодействие, а не на грубое натуралистичное описание секса.")
+            append(Strings.get("scenario.story.intro", introStory)).append(' ')
+            append(Strings.get("scenario.language")).append(' ')
+            append(Strings.get("scenario.safety")).append(' ')
+            append(Strings.get("scenario.consent"))
         }
     }
 
