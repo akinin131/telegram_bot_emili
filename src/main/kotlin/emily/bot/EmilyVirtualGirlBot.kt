@@ -1,7 +1,6 @@
 package emily.bot
 
 import emily.app.BotConfig
-import emily.bot.WebAppSelectionParser
 import emily.data.*
 import emily.service.ChatService
 import emily.service.ConversationMemory
@@ -34,15 +33,14 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
 import kotlin.text.buildString
-import kotlin.text.orEmpty
 
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
     private val selectionRepository: StorySelectionRepository,
     private val chatService: ChatService,
-    private val animeImageService: ImageService,      // модель для аниме (wai-Illustrious)
-    private val realisticImageService: ImageService,  // модель для реализма (lustify-v7)
+    private val animeImageService: ImageService,
+    private val realisticImageService: ImageService,
     private val memory: ConversationMemory,
     private val translator: MyMemoryTranslator?
 ) : TelegramLongPollingBot() {
@@ -665,17 +663,7 @@ class EmilyVirtualGirlBot(
             sendEphemeral(chatId, "После #pic укажи описание 🙂", ttlSeconds = 10)
             return
         }
-        if (!isPromptAllowed(originalPrompt)) {
-            println("🚫 Запрещенный промпт: chatId=$chatId")
-            sendEphemeral(
-                chatId,
-                "❌ Нельзя темы про несовершеннолетних/насилие/принуждение.",
-                ttlSeconds = 15
-            )
-            return
-        }
 
-        // УЛУЧШЕННАЯ ПРОВЕРКА РУССКОГО ТЕКСТА
         val containsCyrillic = hasCyrillic(originalPrompt)
         println("🔤 Проверка языка: containsCyrillic=$containsCyrillic, prompt='${preview(originalPrompt, 30)}'")
 
@@ -854,15 +842,6 @@ class EmilyVirtualGirlBot(
         Plan.PRO.code -> DAILY_IMAGE_CAP_PRO
         Plan.ULTRA.code -> DAILY_IMAGE_CAP_ULTRA
         else -> 1
-    }
-
-    private fun isPromptAllowed(text: String): Boolean {
-        val lower = text.lowercase()
-        val bad = listOf(
-            "несовершеннолет", "школьник", "школьница", "подрост", "minor", "teen", "loli", "shota",
-            "изнасил", "насилие", "принужд", "без согласи", "rape", "forced"
-        )
-        return bad.none { lower.contains(it) }
     }
 
     private fun isDeletableCommand(text: String): Boolean {

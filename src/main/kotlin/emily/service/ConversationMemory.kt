@@ -32,10 +32,8 @@ class ConversationMemory(
         if (ctx.isEmpty()) {
             ctx += "system" to systemPromptProvider().orEmpty()
         } else if (ctx.first().first != "system") {
-            // На всякий случай, если история есть, но начинается не с system.
             ctx.add(0, "system" to systemPromptProvider().orEmpty())
         }
-        // Если первый элемент уже "system" — ничего не делаем.
     }
 
     fun reset(chatId: Long) {
