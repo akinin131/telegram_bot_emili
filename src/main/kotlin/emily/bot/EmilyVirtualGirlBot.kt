@@ -67,9 +67,10 @@ class EmilyVirtualGirlBot(
     private val userPersonas = ConcurrentHashMap<Long, String>()
 
     private val webAppSelectionParser = WebAppSelectionParser(defaultPersona)
+    override fun getBotUsername(): String = "virtal_girl_sex_bot"
+
     private val miniAppUrl = "https://t.me/${getBotUsername()}?startapp=select_story"
 
-    override fun getBotUsername(): String = "EmilyVirtualGirlBot"
     override fun getBotToken(): String = config.telegramToken
 
     private fun getPersona(chatId: Long): String {
