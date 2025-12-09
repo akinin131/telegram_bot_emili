@@ -25,14 +25,14 @@ fun main() {
     BotRunGuard.tryLockOrExit()
 
     FirebaseInitializer(
-        credentialsPath = "emilyvirtualgirlbot-firebase-adminsdk-fbsvc-2b1c251dfd.json",
-        databaseUrl = "https://emilyvirtualgirlbot-default-rtdb.firebaseio.com"
+        credentialsPath = Secrets.get("FIREBASE_CREDENTIALS_PATH"),
+        databaseUrl = Secrets.get("FIREBASE_DATABASE_URL")
     ).init()
 
     val config = BotConfig(
-        telegramToken = "8341155085:AAGl_Ba7IGAjC1OIEPfJIW5Mo_cOayofySU",
-        providerToken = "390540012:LIVE:78849",
-        veniceToken = "kK5vqPy3fU32foa_h06s04rkb6ELejHeCMr0S1_8Sq"
+        telegramToken = Secrets.get("TELEGRAM_BOT_TOKEN"),
+        providerToken = Secrets.get("PROVIDER_TOKEN"),
+        veniceToken = Secrets.get("VENICE_TOKEN")
     )
 
     val okHttpClient = OkHttpClient.Builder()
