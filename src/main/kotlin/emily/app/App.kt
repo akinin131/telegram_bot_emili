@@ -8,7 +8,6 @@ import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
-import emily.service.defaultSystemPrompt
 import emily.firebase.FirebaseInitializer
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor

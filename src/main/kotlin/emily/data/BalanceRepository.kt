@@ -19,7 +19,7 @@ class BalanceRepository(
         if (snapshot.exists()) snapshot.toBalance(userId) else createDefault(userId)
     }
 
-    suspend fun put(balance: UserBalance) = withContext(Dispatchers.IO) {
+    suspend fun put(balance: UserBalance): Any? = withContext(Dispatchers.IO) {
         balance.updatedAt = System.currentTimeMillis()
         val payload = mapOf(
             "userId" to balance.userId,
@@ -35,7 +35,7 @@ class BalanceRepository(
         balancesRef.child(balance.userId.toString()).setValueAsync(payload)
     }
 
-    suspend fun addPayment(userId: Long, payload: String, amountRub: Int) = withContext(Dispatchers.IO) {
+    suspend fun addPayment(userId: Long, payload: String, amountRub: Int): Any? = withContext(Dispatchers.IO) {
         val id = UUID.randomUUID().toString()
         val payloadMap = mapOf(
             "payload" to payload,
@@ -45,7 +45,7 @@ class BalanceRepository(
         paymentsRef.child(userId.toString()).child(id).setValueAsync(payloadMap)
     }
 
-    suspend fun logUsage(userId: Long, tokens: Int, meta: Map<String, Any?> = emptyMap()) = withContext(Dispatchers.IO) {
+    suspend fun logUsage(userId: Long, tokens: Int, meta: Map<String, Any?> = emptyMap()): Any? = withContext(Dispatchers.IO) {
         val id = UUID.randomUUID().toString()
         val payload = mutableMapOf<String, Any?>(
             "tokens" to tokens,

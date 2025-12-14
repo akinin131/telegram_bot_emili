@@ -14,4 +14,3 @@ data class WebAppStory(
     val storyDescription: String?,
     val fullStoryText: String
 )
-

@@ -316,7 +316,7 @@ class EmilyVirtualGirlBot(
         return if (clean.length <= max) clean else clean.take(max) + "… (len=" + clean.length + ")"
     }
 
-    suspend fun applySelection(
+    private suspend fun applySelection(
         chatId: Long,
         selection: StorySelection,
         source: String,
@@ -475,7 +475,7 @@ class EmilyVirtualGirlBot(
     private suspend fun sendBuyMenu(chatId: Long) {
         println("🛍️ sendBuyMenu: chatId=$chatId")
         val rows = mutableListOf<List<InlineKeyboardButton>>()
-        Plan.values().forEach { plan ->
+        Plan.entries.forEach { plan ->
             rows += listOf(
                 InlineKeyboardButton().apply {
                     text = Strings.get("buy.menu.plan.button", plan.title, plan.priceRub)

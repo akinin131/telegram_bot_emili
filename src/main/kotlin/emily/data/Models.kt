@@ -38,7 +38,7 @@ enum class Plan(
     );
 
     companion object {
-        fun byCode(code: String?): Plan? = values().firstOrNull { it.code == code }
+        fun byCode(code: String?): Plan? = entries.firstOrNull { it.code == code }
     }
 }
 
@@ -65,7 +65,7 @@ enum class ImagePack(
     );
 
     companion object {
-        fun byCode(code: String?): ImagePack? = values().firstOrNull { it.code == code }
+        fun byCode(code: String?): ImagePack? = entries.firstOrNull { it.code == code }
     }
 }
 

@@ -10,7 +10,7 @@ class StorySelectionRepository(
 ) {
     private val selectionsRef by lazy { database.getReference("storySelections") }
 
-    suspend fun save(selection: StorySelection) = withContext(Dispatchers.IO) {
+    suspend fun save(selection: StorySelection): Any? = withContext(Dispatchers.IO) {
         val payload = mapOf(
             "userId" to selection.userId,
             "characterName" to selection.characterName,

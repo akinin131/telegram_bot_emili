@@ -19,7 +19,7 @@ class ChatHistoryRepository(
 
     private val chatsRef by lazy { database.getReference("chatHistory") }
 
-    suspend fun append(userId: Long, role: String, text: String) = withContext(Dispatchers.IO) {
+    suspend fun append(userId: Long, role: String, text: String): Any? = withContext(Dispatchers.IO) {
         val payload = mapOf(
             "role" to role,
             "text" to text,
@@ -81,7 +81,7 @@ class ChatHistoryRepository(
         }
     }
 
-    suspend fun clear(userId: Long) = withContext(Dispatchers.IO) {
+    suspend fun clear(userId: Long): Any? = withContext(Dispatchers.IO) {
         chatsRef.child(userId.toString()).setValueAsync(null)
     }
 }
