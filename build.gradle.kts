@@ -7,7 +7,7 @@ group = "org.telegramBot"
 version = "1.0-SNAPSHOT"
 
 repositories {
-    google()        // <-- ДОБАВЬ ЭТО
+    google()
     mavenCentral()
 }
 
