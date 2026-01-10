@@ -6,7 +6,6 @@ import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
-import emily.service.defaultSystemPrompt
 import emily.resources.Strings
 import java.io.ByteArrayInputStream
 import java.time.Instant
@@ -39,7 +38,6 @@ import kotlin.text.buildString
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
-    private val selectionRepository: StorySelectionRepository,
     private val chatHistoryRepository: ChatHistoryRepository,
     private val chatService: ChatService,
     private val animeImageService: ImageService,
@@ -59,42 +57,13 @@ class EmilyVirtualGirlBot(
     private val animeImageModelName = "wai-Illustrious"
     private val realisticImageModelName = "lustify-v7"
 
-    private enum class ImageStyle { ANIME, REALISTIC }
-    private val userImageStyles = ConcurrentHashMap<Long, ImageStyle>()
-
     private val defaultPersona = Strings.get("persona.default")
-
-    private val userPersonas = ConcurrentHashMap<Long, String>()
-
-    private val webAppSelectionParser = WebAppSelectionParser(defaultPersona)
     override fun getBotUsername(): String = "virtal_girl_sex_bot"
 
-    private val miniAppUrl = "https://t.me/${getBotUsername()}?startapp=select_story"
+    private enum class ImageStyle { ANIME, REALISTIC }
+    private val defaultImageStyle = ImageStyle.ANIME
 
     override fun getBotToken(): String = config.telegramToken
-
-    private fun getPersona(chatId: Long): String {
-        return userPersonas[chatId] ?: defaultPersona
-    }
-
-    private fun setPersona(chatId: Long, persona: String) {
-        userPersonas[chatId] = persona
-    }
-
-    private fun setImageStyle(chatId: Long, styleCode: Int?) {
-        val style = when (styleCode) {
-            2 -> ImageStyle.REALISTIC
-            1 -> ImageStyle.ANIME
-            else -> ImageStyle.ANIME
-        }
-        userImageStyles[chatId] = style
-        println("🎚 Image style set: chatId=$chatId, style=$style (code=${styleCode ?: -1})")
-        log.info("Image style set for chatId={}, style={}, code={}", chatId, style, styleCode)
-    }
-
-    private fun getImageStyle(chatId: Long): ImageStyle {
-        return userImageStyles[chatId] ?: ImageStyle.ANIME
-    }
 
     fun registerBotMenu() = runBlocking {
         println("🚀 registerBotMenu() - Регистрация команд бота")
@@ -188,64 +157,6 @@ class EmilyVirtualGirlBot(
             textRaw.replace('\n', ' ')
         )
 
-        val hidden = webAppSelectionParser.decodeHiddenData(textRaw)
-        if (hidden != null) {
-            println(
-                "🎯 Hidden WebApp data detected: charId=${hidden.characterId}, " +
-                        "storyId=${hidden.storyId}, style=${hidden.styleCode}"
-            )
-            log.info(
-                "Hidden WebApp data: charId={}, storyId={}, style={}",
-                hidden.characterId,
-                hidden.storyId,
-                hidden.styleCode
-            )
-
-            val parsed = webAppSelectionParser.parseWebAppMessage(textRaw)
-            if (parsed == null) {
-                println("❌ Не удалось распарсить текст истории из сообщения")
-                sendText(chatId, Strings.get("error.story.parse"))
-                return
-            }
-
-            val personaForSelection = webAppSelectionParser.resolvePersona(
-                characterId = hidden.characterId,
-                styleCode = hidden.styleCode
-            )
-
-            val hiddenStoryPrompt = webAppSelectionParser.resolveStoryPrompt(
-                characterId = hidden.characterId,
-                storyId = hidden.storyId
-            )
-
-            setPersona(chatId, personaForSelection)
-
-            setImageStyle(chatId, hidden.styleCode)
-
-            println("🎨 persona resolved for charId=${hidden.characterId}, style=${hidden.styleCode}, chatId=$chatId")
-
-            val selection = StorySelection(
-                userId = chatId,
-                characterName = parsed.characterName,
-                characterAppearance = personaForSelection,
-                characterPersonality = parsed.characterPersonality ?: personaForSelection,
-                storyTitle = parsed.storyTitle,
-                storyDescription = hiddenStoryPrompt.ifBlank { parsed.storyDescription ?: parsed.storyTitle },
-                full_story_text = parsed.fullStoryText,
-                style = hidden.styleCode.toString()
-            )
-
-            applySelection(
-                chatId = chatId,
-                selection = selection,
-                source = "webapp_hidden",
-                sendConfirmation = false
-            )
-
-            println("✅ WebApp hidden selection applied successfully for chatId=$chatId")
-            return
-        }
-
         when {
             textRaw.equals("/start", true) -> {
                 println("🔹 Обработка команды /start для chatId=$chatId")
@@ -314,114 +225,6 @@ class EmilyVirtualGirlBot(
         if (s.isNullOrBlank()) return "∅"
         val clean = s.replace("\n", "\\n").replace("\r", "\\r")
         return if (clean.length <= max) clean else clean.take(max) + "… (len=" + clean.length + ")"
-    }
-
-    private suspend fun applySelection(
-        chatId: Long,
-        selection: StorySelection,
-        source: String,
-        sendConfirmation: Boolean = true
-    ) {
-        println(
-            "🎭 applySelection: chatId=$chatId, source=$source, character='${selection.characterName}', " +
-                    "story.len=${selection.full_story_text?.length ?: 0}"
-        )
-        selectionRepository.save(selection)
-
-        chatHistoryRepository.clear(chatId)
-
-        setPersona(chatId, selection.characterAppearance ?: defaultPersona)
-        selection.style?.toIntOrNull()?.let { setImageStyle(chatId, it) }
-
-        val scenario = buildScenario(selection)
-
-        memory.reset(chatId)
-        memory.setSystem(chatId, scenario)
-
-        if (sendConfirmation) {
-            sendStorySelectionConfirmation(chatId, selection)
-        }
-    }
-
-    private fun buildScenario(selection: StorySelection): String {
-        val introStory = selection.full_story_text ?: selection.storyDescription ?: selection.storyTitle
-        return buildString {
-            append(Strings.get("scenario.character.intro", selection.characterName)).append(' ')
-
-            selection.characterPersonality?.let {
-                append(Strings.get("scenario.personality", it)).append(' ')
-            }
-
-            selection.style?.let {
-                val styleText = when (it) {
-                    "1" -> Strings.get("scenario.style.anime")
-                    "2" -> Strings.get("scenario.style.realistic")
-                    else -> it
-                }
-                append(Strings.get("scenario.style.prefix", styleText)).append(' ')
-            }
-
-            selection.storyDescription?.let {
-                append(Strings.get("scenario.story.description", it)).append(' ')
-            }
-
-            append(Strings.get("scenario.story.intro", introStory)).append(' ')
-            append(Strings.get("scenario.language")).append(' ')
-            append(Strings.get("scenario.safety")).append(' ')
-            append(Strings.get("scenario.consent"))
-        }
-    }
-
-    private suspend fun ensureStorySelection(chatId: Long): StorySelection? {
-        val selection = selectionRepository.get(chatId)
-        if (selection == null) {
-            sendStorySelectionRequest(chatId)
-            return null
-        }
-
-        setPersona(chatId, selection.characterAppearance ?: defaultPersona)
-        selection.style?.toIntOrNull()?.let { setImageStyle(chatId, it) }
-
-        val history = memory.history(chatId)
-        if (history.isEmpty() || history.firstOrNull()?.second == defaultSystemPrompt()) {
-            memory.reset(chatId)
-            memory.setSystem(chatId, buildScenario(selection))
-        }
-
-        return selection
-    }
-
-    private suspend fun sendStorySelectionRequest(chatId: Long) {
-        val caption = Strings.get("story.selection.request.caption")
-
-        val markup = InlineKeyboardMarkup().apply {
-            keyboard = listOf(
-                listOf(
-                    InlineKeyboardButton().apply {
-                        text = Strings.get("story.selection.button")
-                        url = miniAppUrl
-                    }
-                )
-            )
-        }
-
-        val message = SendPhoto().apply {
-            this.chatId = chatId.toString()
-            photo = InputFile(Plan.PRO.photoUrl)
-            this.caption = caption
-            parseMode = "HTML"
-            replyMarkup = markup
-        }
-
-        rememberSystemMessage(chatId, executeSafe(message).messageId)
-    }
-
-    private suspend fun sendStorySelectionConfirmation(chatId: Long, selection: StorySelection) {
-        println("📤 sendStorySelectionConfirmation: chatId=$chatId")
-        val message = Strings.get("story.selection.confirmation", escapeHtml(selection.characterName))
-
-        executeSafe(SendMessage(chatId.toString(), message).apply { parseMode = "HTML" })
-        println("✅ Confirmation message sent for chatId=$chatId")
     }
 
     private suspend fun handleCallback(update: Update) {
@@ -623,8 +426,7 @@ class EmilyVirtualGirlBot(
         val isNewDialogue = memory.history(chatId).isEmpty()
 
         if (isNewDialogue) {
-            val selection = ensureStorySelection(chatId) ?: return
-            println("🧭 Story selection restored for chatId=$chatId, character='${selection.characterName}'")
+            memory.initIfNeeded(chatId)
 
             val lastTurns = chatHistoryRepository.getLast(chatId, limit = 20)
             if (lastTurns.isNotEmpty()) {
@@ -725,7 +527,7 @@ class EmilyVirtualGirlBot(
             originalPrompt
         }
 
-        val style = getImageStyle(chatId)
+        val style = defaultImageStyle
         val (service, modelName) = when (style) {
             ImageStyle.ANIME -> animeImageService to animeImageModelName
             ImageStyle.REALISTIC -> realisticImageService to realisticImageModelName
@@ -737,7 +539,7 @@ class EmilyVirtualGirlBot(
         )
 
         val bytes = withUploadPhoto(chatId) {
-            service.generateImage(finalPrompt, getPersona(chatId))
+            service.generateImage(finalPrompt, defaultPersona)
         }
         if (bytes == null) {
             println("❌ Ошибка генерации изображения: chatId=$chatId")
