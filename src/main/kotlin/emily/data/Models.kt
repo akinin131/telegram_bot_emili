@@ -1,6 +1,5 @@
 package emily.data
 
-import com.google.gson.annotations.SerializedName
 import emily.resources.Strings
 import java.time.LocalDate
 
@@ -87,17 +86,4 @@ data class UserBalance(
     var dayStamp: String = LocalDate.now().toString(),
     var createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis()
-)
-
-data class StorySelection(
-    val userId: Long,
-    val characterName: String,
-    val characterAppearance: String?,
-    val characterPersonality: String?,
-    val storyTitle: String,
-    val storyDescription: String?,
-    @SerializedName("full_story_text")
-    val full_story_text: String?,
-    val style: String?,
-    val updatedAt: Long = System.currentTimeMillis()
 )
