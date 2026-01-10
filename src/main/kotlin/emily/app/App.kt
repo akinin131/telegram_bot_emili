@@ -3,11 +3,11 @@ package emily.app
 import emily.bot.EmilyVirtualGirlBot
 import emily.data.BalanceRepository
 import emily.data.ChatHistoryRepository
-import emily.data.StorySelectionRepository
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
+import emily.service.defaultSystemPrompt
 import emily.firebase.FirebaseInitializer
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -44,19 +44,17 @@ fun main() {
     val translator = MyMemoryTranslator(okHttpClient)
 
     val balanceRepository = BalanceRepository()
-    val selectionRepository = StorySelectionRepository()
     val chatHistoryRepository = ChatHistoryRepository()
     val chatService = ChatService(okHttpClient, config.veniceToken, CHAT_MODEL)
 
     val animeImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_ANIME)
     val realisticImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_REALISTIC)
 
-    val memory = ConversationMemory { "" }
+    val memory = ConversationMemory { defaultSystemPrompt() }
 
     val bot = EmilyVirtualGirlBot(
         config = config,
         repository = balanceRepository,
-        selectionRepository = selectionRepository,
         chatHistoryRepository= chatHistoryRepository,
         chatService = chatService,
         animeImageService = animeImageService,
