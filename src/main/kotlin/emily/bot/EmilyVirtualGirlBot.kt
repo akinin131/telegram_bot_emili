@@ -2,11 +2,11 @@ package emily.bot
 
 import emily.app.BotConfig
 import emily.data.*
+import emily.resources.Strings
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
-import emily.resources.Strings
 import java.io.ByteArrayInputStream
 import java.time.Instant
 import java.time.LocalDate
@@ -31,7 +31,9 @@ import org.telegram.telegrambots.meta.api.objects.commands.BotCommand
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow
 import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
 import kotlin.text.buildString
 
@@ -47,10 +49,12 @@ class EmilyVirtualGirlBot(
 ) : TelegramLongPollingBot() {
 
     private val log = LoggerFactory.getLogger(EmilyVirtualGirlBot::class.java)
+    private val awaitingImagePrompt = ConcurrentHashMap<Long, Boolean>()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val systemMessages = ConcurrentHashMap<Long, MutableList<Int>>()
     private val protectedMessages = ConcurrentHashMap<Long, MutableSet<Int>>()
+
     private val imageTag = "#pic"
     private val chatModel = "venice-uncensored"
 
@@ -62,6 +66,15 @@ class EmilyVirtualGirlBot(
 
     private enum class ImageStyle { ANIME, REALISTIC }
     private val defaultImageStyle = ImageStyle.ANIME
+
+    // ---- UI: Main menu buttons (ReplyKeyboard) ----
+    private object MenuBtn {
+        const val BALANCE = "💰 Баланс"
+        const val BUY = "🛍 Купить"
+        const val PIC = "🖼 Картинка"
+        const val RESET = "♻️ Сброс"
+        const val HELP = "ℹ️ Помощь"
+    }
 
     override fun getBotToken(): String = config.telegramToken
 
@@ -144,10 +157,38 @@ class EmilyVirtualGirlBot(
         }
     }
 
+    // ---------- MAIN MENU KEYBOARD ----------
+    private fun mainMenuKeyboard(): ReplyKeyboardMarkup {
+        val row1 = KeyboardRow().apply {
+            add(MenuBtn.BUY)
+            add(MenuBtn.BALANCE)
+        }
+        val row2 = KeyboardRow().apply {
+            add(MenuBtn.PIC)
+            add(MenuBtn.RESET)
+        }
+        val row3 = KeyboardRow().apply {
+            add(MenuBtn.HELP)
+        }
+        return ReplyKeyboardMarkup().apply {
+            keyboard = listOf(row1, row2, row3)
+            resizeKeyboard = true
+            oneTimeKeyboard = false
+            selective = false
+        }
+    }
+
     private suspend fun handleTextMessage(update: Update) {
         val chatId = update.message.chatId
         val textRaw = update.message.text.trim()
         val messageId = update.message.messageId
+
+        if (awaitingImagePrompt.remove(chatId) == true) {
+            ensureUserBalance(chatId)
+            memory.autoClean(chatId)
+            handleImage(chatId, "$imageTag $textRaw")
+            return
+        }
 
         println("📨 handleTextMessage START: chatId=$chatId, msgId=$messageId, text='${textRaw.replace('\n', ' ')}'")
         log.info(
@@ -158,6 +199,52 @@ class EmilyVirtualGirlBot(
         )
 
         when {
+            // ---- MENU BUTTONS (ReplyKeyboard) ----
+            textRaw.equals(MenuBtn.BUY, true) -> {
+                ensureUserBalance(chatId)
+                memory.autoClean(chatId)
+                deleteOldSystemMessages(chatId)
+                sendBuyMenu(chatId)
+            }
+
+            textRaw.equals(MenuBtn.BALANCE, true) -> {
+                val balance = ensureUserBalance(chatId)
+                memory.autoClean(chatId)
+                deleteOldSystemMessages(chatId)
+                sendBalance(chatId, balance)
+            }
+
+            textRaw.equals(MenuBtn.PIC, true) -> {
+                awaitingImagePrompt[chatId] = true
+                sendEphemeral(chatId, "Напиши описание картинки одним сообщением 🙂", ttlSeconds = 25)
+            }
+
+
+            textRaw.equals(MenuBtn.RESET, true) -> {
+                memory.reset(chatId)
+                chatHistoryRepository.clear(chatId)
+                deleteOldSystemMessages(chatId)
+                sendEphemeral(chatId, Strings.get("reset.success"), ttlSeconds = 10)
+            }
+
+            textRaw.equals(MenuBtn.HELP, true) -> {
+                // Можешь заменить на Strings.get("help.text") если добавишь строку
+                val help = buildString {
+                    appendLine("🧭 Меню:")
+                    appendLine("• ${MenuBtn.BUY} — купить план/пакет")
+                    appendLine("• ${MenuBtn.BALANCE} — посмотреть баланс")
+                    appendLine("• ${MenuBtn.PIC} — как сгенерировать картинку")
+                    appendLine("• ${MenuBtn.RESET} — сбросить диалог")
+                    appendLine()
+                    appendLine("🖼 Генерация картинки:")
+                    appendLine("• напиши: $imageTag котёнок в дождь")
+                    appendLine("• или: /pic котёнок в дождь")
+                    appendLine("• или: покажи мне котёнка в дождь")
+                }
+                sendEphemeral(chatId, help, ttlSeconds = 35)
+            }
+
+            // ---- COMMANDS ----
             textRaw.equals("/start", true) -> {
                 println("🔹 Обработка команды /start для chatId=$chatId")
                 memory.initIfNeeded(chatId)
@@ -197,15 +284,14 @@ class EmilyVirtualGirlBot(
 
             textRaw.equals("/pic", true) -> {
                 println("🔹 Обработка команды /pic")
-                sendEphemeral(
-                    chatId,
-                    Strings.get("pic.hint"),
-                    ttlSeconds = 20
-                )
+                sendEphemeral(chatId, Strings.get("pic.hint"), ttlSeconds = 20)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
-            textRaw.startsWith(imageTag, true) || textRaw.startsWith("/pic ", true) -> {
+            // ---- IMAGE TRIGGERS ----
+            textRaw.startsWith(imageTag, true) ||
+                    textRaw.startsWith("покажи мне", true) ||
+                    textRaw.startsWith("/pic ", true) -> {
                 println("🖼️ Обработка запроса изображения для chatId=$chatId")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
@@ -234,6 +320,7 @@ class EmilyVirtualGirlBot(
         log.info("handleCallback chatId={}, data={}", chatId, data)
         memory.autoClean(chatId)
         deleteOldSystemMessages(chatId)
+
         when {
             data.startsWith("buy:plan:") -> {
                 println("💰 Создание инвойса для плана: ${data.removePrefix("buy:plan:")} для chatId=$chatId")
@@ -250,8 +337,11 @@ class EmilyVirtualGirlBot(
     private suspend fun sendWelcome(chatId: Long) {
         println("👋 sendWelcome: chatId=$chatId")
         val text = Strings.get("welcome.text")
-        val message = executeSafe(SendMessage(chatId.toString(), text))
-        rememberSystemMessage(chatId, message.messageId)
+        val message = SendMessage(chatId.toString(), text).apply {
+            replyMarkup = mainMenuKeyboard()
+        }
+        val sent = executeSafe(message)
+        rememberSystemMessage(chatId, sent.messageId)
     }
 
     private suspend fun sendBalance(chatId: Long, balance: UserBalance) {
@@ -271,13 +361,17 @@ class EmilyVirtualGirlBot(
             balance.imageCreditsLeft,
             balance.dayImageUsed
         )
-        val message = SendMessage(chatId.toString(), text).apply { parseMode = "HTML" }
+        val message = SendMessage(chatId.toString(), text).apply {
+            parseMode = "HTML"
+            replyMarkup = mainMenuKeyboard()
+        }
         rememberSystemMessage(chatId, executeSafe(message).messageId)
     }
 
     private suspend fun sendBuyMenu(chatId: Long) {
         println("🛍️ sendBuyMenu: chatId=$chatId")
         val rows = mutableListOf<List<InlineKeyboardButton>>()
+
         Plan.entries.forEach { plan ->
             rows += listOf(
                 InlineKeyboardButton().apply {
@@ -299,10 +393,8 @@ class EmilyVirtualGirlBot(
             }
         )
         val markup = InlineKeyboardMarkup().apply { keyboard = rows }
-        val msg = SendMessage(
-            chatId.toString(),
-            Strings.get("buy.menu.text")
-        ).apply {
+
+        val msg = SendMessage(chatId.toString(), Strings.get("buy.menu.text")).apply {
             replyMarkup = markup
         }
         rememberSystemMessage(chatId, executeSafe(msg).messageId)
@@ -377,6 +469,7 @@ class EmilyVirtualGirlBot(
         val payload = payment.invoicePayload ?: return
         val totalRub = (payment.totalAmount / 100.0).toInt()
         val balance = ensureUserBalance(chatId)
+
         when {
             payload.startsWith("plan:") -> {
                 val code = payload.split(":").getOrNull(1)
@@ -431,7 +524,6 @@ class EmilyVirtualGirlBot(
             val lastTurns = chatHistoryRepository.getLast(chatId, limit = 20)
             if (lastTurns.isNotEmpty()) {
                 println("♻️ Restoring ${lastTurns.size} chat turns from history for chatId=$chatId")
-
                 lastTurns.forEach { turn ->
                     memory.append(chatId, turn.role, turn.text)
                 }
@@ -441,11 +533,7 @@ class EmilyVirtualGirlBot(
         val balance = ensureUserBalance(chatId)
         if (balance.textTokensLeft <= 0) {
             println("⚠️ Недостаточно токенов: chatId=$chatId")
-            sendEphemeral(
-                chatId,
-                Strings.get("text.tokens.not.enough"),
-                ttlSeconds = 15
-            )
+            sendEphemeral(chatId, Strings.get("text.tokens.not.enough"), ttlSeconds = 15)
             return
         }
 
@@ -473,36 +561,36 @@ class EmilyVirtualGirlBot(
             println("📊 Токены обновлены: chatId=$chatId, tokensLeft=${balance.textTokensLeft}")
             log.info("tokens updated chatId={}, tokensLeft={}", chatId, balance.textTokensLeft)
         }
+
         if (balance.plan == null && balance.textTokensLeft <= 0) {
             println("⚠️ Бесплатный лимит исчерпан: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
         }
     }
 
-
     private suspend fun handleImage(chatId: Long, textRaw: String) {
         println("🖼️ handleImage: chatId=$chatId, text='${preview(textRaw, 50)}'")
         val balance = ensureUserBalance(chatId)
         val cap = dailyCap(balance.plan)
+
         if (balance.plan == null && balance.imageCreditsLeft < 1) {
             println("⚠️ Дневной лимит изображений исчерпан: chatId=$chatId")
-            sendEphemeral(
-                chatId,
-                Strings.get("image.daily.limit", cap),
-                ttlSeconds = 20
-            )
+            sendEphemeral(chatId, Strings.get("image.daily.limit", cap), ttlSeconds = 20)
             return
         }
         if (balance.imageCreditsLeft <= 0) {
             println("⚠️ Нет кредитов на изображения: chatId=$chatId")
-            sendEphemeral(
-                chatId,
-                Strings.get("image.no.credits"),
-                ttlSeconds = 20
-            )
+            sendEphemeral(chatId, Strings.get("image.no.credits"), ttlSeconds = 20)
             return
         }
-        val originalPrompt = textRaw.removePrefix(imageTag).removePrefix("/pic").trim()
+
+        // Вырезаем разные “триггеры” в нормальный промпт
+        val originalPrompt = textRaw
+            .removePrefix(imageTag)
+            .removePrefix("/pic")
+            .removePrefix("покажи мне")
+            .trim()
+
         if (originalPrompt.isBlank()) {
             println("⚠️ Пустой промпт для изображения: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("image.empty.prompt"), ttlSeconds = 10)
@@ -541,12 +629,15 @@ class EmilyVirtualGirlBot(
         val bytes = withUploadPhoto(chatId) {
             service.generateImage(finalPrompt, defaultPersona)
         }
+
         if (bytes == null) {
             println("❌ Ошибка генерации изображения: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("image.generate.fail"), ttlSeconds = 12)
             return
         }
+
         sendPhoto(chatId, bytes, caption = null)
+
         balance.imageCreditsLeft -= 1
         balance.dayImageUsed += 1
         repository.put(balance)
@@ -555,6 +646,7 @@ class EmilyVirtualGirlBot(
             0,
             mapOf("type" to "image", "model" to modelName, "credits_used" to 1)
         )
+
         println("✅ Изображение сгенерировано: chatId=$chatId, creditsLeft=${balance.imageCreditsLeft}")
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
             println("⚠️ Бесплатный лимит исчерпан после генерации: chatId=$chatId")
@@ -598,7 +690,10 @@ class EmilyVirtualGirlBot(
 
     private suspend fun sendText(chatId: Long, text: String, html: Boolean = false) {
         println("📤 sendText: chatId=$chatId, text='${preview(text, 50)}'")
-        val message = SendMessage(chatId.toString(), text).apply { if (html) parseMode = "HTML" }
+        val message = SendMessage(chatId.toString(), text).apply {
+            if (html) parseMode = "HTML"
+            replyMarkup = mainMenuKeyboard()
+        }
         executeSafe(message)
     }
 
@@ -698,18 +793,6 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    private fun escapeHtml(text: String): String = buildString {
-        for (ch in text) {
-            when (ch) {
-                '<' -> append("&lt;")
-                '>' -> append("&gt;")
-                '"' -> append("&quot;")
-                '&' -> append("&amp;")
-                else -> append(ch)
-            }
-        }
-    }
-
     private suspend fun sendEphemeral(
         chatId: Long,
         text: String,
@@ -717,7 +800,10 @@ class EmilyVirtualGirlBot(
         html: Boolean = false
     ) {
         println("⏳ sendEphemeral: chatId=$chatId, text='${preview(text, 50)}', ttl=$ttlSeconds")
-        val message = SendMessage(chatId.toString(), text).apply { if (html) parseMode = "HTML" }
+        val message = SendMessage(chatId.toString(), text).apply {
+            if (html) parseMode = "HTML"
+            replyMarkup = mainMenuKeyboard()
+        }
         val sent = executeSafe(message)
         scope.launch {
             delay(ttlSeconds * 1000)

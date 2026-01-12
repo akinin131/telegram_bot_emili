@@ -20,7 +20,7 @@ private const val IMAGE_MODEL_ANIME = "wai-Illustrious"
 private const val IMAGE_MODEL_REALISTIC = "lustify-v7"
 
 fun main() {
-    SingleInstance.acquire(44601)
+    SingleInstance.acquire(44605)
     BotRunGuard.tryLockOrExit()
 
     FirebaseInitializer(
