@@ -66,6 +66,18 @@ class EmilyVirtualGirlBot(
     private val protectedMessages = ConcurrentHashMap<Long, MutableSet<Int>>()
 
     private val imageTag = "#pic"
+    private val imagePromptPrefix =
+        "rating:explicit, masterpiece, absurdres, highly detailed, very aesthetic, newest, recent,"
+    private val imagePromptSuffix = "fully clothed"
+    private val imagePromptSystem = """
+        You are a prompt engineer for image generation.
+        Convert the user's request into a single-line, comma-separated English prompt.
+        Start the prompt with: $imagePromptPrefix
+        Add clear subject, scene, lighting, mood, and action tags based on the request.
+        End with: $imagePromptSuffix
+        Output only the final prompt. No quotes, no explanations, no dialogue.
+        The final prompt must be 300 characters or less.
+    """.trimIndent()
     private val chatModel = "venice-uncensored"
 
     private val animeImageModelName = "wai-Illustrious"
@@ -523,16 +535,7 @@ class EmilyVirtualGirlBot(
             return
         }
 
-        val finalPrompt = if (hasCyrillic(originalPrompt)) {
-            val translated = try {
-                withUploadPhoto(chatId) { withContext(Dispatchers.IO) { translateRuToEn(originalPrompt) } }
-            } catch (_: Exception) {
-                null
-            }
-            if (!translated.isNullOrBlank()) translated else originalPrompt
-        } else {
-            originalPrompt
-        }
+        val finalPrompt = withUploadPhoto(chatId) { buildImagePrompt(chatId, originalPrompt) }
 
         val style = defaultImageStyle
         val (service, modelName) = when (style) {
@@ -571,6 +574,56 @@ class EmilyVirtualGirlBot(
     }
 
     private fun hasCyrillic(text: String): Boolean = Regex("[а-яА-ЯёЁ]").containsMatchIn(text)
+
+    private suspend fun buildImagePrompt(chatId: Long, originalPrompt: String): String {
+        println("🧩 Генерация промпта для изображения: chatId=$chatId")
+        val history = listOf(
+            "system" to imagePromptSystem,
+            "user" to originalPrompt
+        )
+        val result = chatService.generateReply(history)
+        var prompt = normalizePrompt(result.text)
+        if (prompt.isBlank() || prompt == Strings.get("chat.connection.issue")) {
+            println("⚠️ Не удалось получить промпт от модели, использую оригинал")
+            prompt = normalizePrompt(originalPrompt)
+        }
+
+        if (!prompt.lowercase().startsWith("rating:explicit")) {
+            prompt = "$imagePromptPrefix ${prompt}".trim()
+        }
+        if (!prompt.lowercase().contains(imagePromptSuffix)) {
+            prompt = "$prompt, $imagePromptSuffix"
+        }
+
+        if (hasCyrillic(prompt)) {
+            println("🔤 Перевод промпта на английский: chatId=$chatId")
+            val translated = translateRuToEn(prompt)
+            if (!translated.isNullOrBlank()) {
+                println("✅ Переведено: '${preview(translated, 30)}'")
+                prompt = normalizePrompt(translated)
+            } else {
+                println("❌ Перевод не удался, оставляю как есть")
+            }
+        }
+
+        prompt = limitPromptLength(prompt, 300)
+        println("🧾 Финальный промпт: '${preview(prompt, 80)}' (len=${prompt.length})")
+        return prompt
+    }
+
+    private fun normalizePrompt(text: String): String {
+        return text
+            .replace(Regex("[\\r\\n]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .replace(Regex("^\"|\"$"), "")
+            .trim()
+            .trimEnd(',')
+    }
+
+    private fun limitPromptLength(prompt: String, maxChars: Int): String {
+        if (prompt.length <= maxChars) return prompt
+        return prompt.take(maxChars).trimEnd().trimEnd(',', ' ')
+    }
 
     private suspend fun translateRuToEn(text: String): String? = withContext(Dispatchers.IO) {
         try {
