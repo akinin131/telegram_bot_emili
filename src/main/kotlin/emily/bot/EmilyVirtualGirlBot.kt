@@ -34,6 +34,7 @@ import org.telegram.telegrambots.meta.api.objects.commands.BotCommand
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow
@@ -200,8 +201,9 @@ Output ONLY the tags.
         return ReplyKeyboardMarkup().apply {
             keyboard = listOf(row1, row2, row3)
             resizeKeyboard = true
-            oneTimeKeyboard = false
+            oneTimeKeyboard = true     // ✅ после нажатия кнопки свернётся
             selective = false
+            isPersistent = false       // ✅ свайп/назад снова работает нормально
         }
     }
 
@@ -368,12 +370,10 @@ Output ONLY the tags.
 
         val msg = SendMessage(chatId.toString(), text).apply {
             if (html) parseMode = "HTML"
-            this.replyMarkup = when (replyMarkup) {
-                null -> mainMenuKeyboard()
-                is ReplyKeyboardMarkup -> replyMarkup
-                is InlineKeyboardMarkup -> replyMarkup
-                else -> mainMenuKeyboard()
+            if (replyMarkup != null) {
+                this.replyMarkup = replyMarkup as ReplyKeyboard?
             }
+
         }
         val sent = executeSafe(msg)
         session.state.lastSystemMessageId = sent.messageId
@@ -398,10 +398,15 @@ Output ONLY the tags.
      * - планируем удаление через ttl
      * - jobs храним, чтобы не конфликтовали (например, если захотим отменять/чистить)
      */
-    private suspend fun sendEphemeral(session: ChatSession, chatId: Long, text: String, ttlSeconds: Long, html: Boolean = false) {
+    private suspend fun sendEphemeral(
+        session: ChatSession,
+        chatId: Long,
+        text: String,
+        ttlSeconds: Long,
+        html: Boolean = false
+    ) {
         val message = SendMessage(chatId.toString(), text).apply {
             if (html) parseMode = "HTML"
-            replyMarkup = mainMenuKeyboard()
         }
         val sent = executeSafe(message)
 
@@ -409,13 +414,14 @@ Output ONLY the tags.
             delay(ttlSeconds * 1000)
             try {
                 executeSafe(DeleteMessage(chatId.toString(), sent.messageId))
-            } catch (_: Exception) {
-            } finally {
+            } catch (_: Exception) {}
+            finally {
                 session.state.ephemeralJobs.remove(sent.messageId)
             }
         }
         session.state.ephemeralJobs[sent.messageId] = job
     }
+
 
     // ─────────────────────────────────────────────────────────────────────────────
     // Screens: welcome / balance / buy menu
@@ -856,7 +862,6 @@ Output ONLY the tags.
     private suspend fun sendText(chatId: Long, text: String, html: Boolean = false) {
         val message = SendMessage(chatId.toString(), text).apply {
             if (html) parseMode = "HTML"
-            replyMarkup = mainMenuKeyboard()
         }
         executeSafe(message)
     }
