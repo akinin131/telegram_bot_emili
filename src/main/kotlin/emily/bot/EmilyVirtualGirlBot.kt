@@ -468,6 +468,7 @@ Output ONLY the tags.
             if (replyMarkup != null) {
                 this.replyMarkup = replyMarkup as ReplyKeyboard?
             }
+
         }
         val sent = executeSafe(msg)
         session.state.lastSystemMessageId = sent.messageId
@@ -501,13 +502,14 @@ Output ONLY the tags.
             delay(ttlSeconds * 1000)
             try {
                 executeSafe(DeleteMessage(chatId.toString(), sent.messageId))
-            } catch (_: Exception) {
-            } finally {
+            } catch (_: Exception) {}
+            finally {
                 session.state.ephemeralJobs.remove(sent.messageId)
             }
         }
         session.state.ephemeralJobs[sent.messageId] = job
     }
+
 
     fun sendWelcome(chatId: Long) {
         val startButton = InlineKeyboardButton().apply {
