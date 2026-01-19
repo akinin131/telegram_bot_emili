@@ -21,7 +21,7 @@ class ImageService(
     suspend fun generateImage(prompt: String, persona: String): ByteArray? = withContext(Dispatchers.IO) {
         val body = JSONObject()
             .put("model", model)
-            .put("prompt", "$persona, $prompt")
+            .put("prompt", "$prompt, $persona")
             .put("seed", ThreadLocalRandom.current().nextInt(0, 1_000_000_000))
             .put("width", 960)
             .put("height", 1280)

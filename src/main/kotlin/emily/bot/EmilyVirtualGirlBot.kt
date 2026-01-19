@@ -13,16 +13,27 @@ import java.time.LocalDate
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.*
+import java.util.concurrent.ConcurrentLinkedQueue
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import org.slf4j.LoggerFactory
 import org.telegram.telegrambots.bots.TelegramLongPollingBot
 import org.telegram.telegrambots.meta.api.methods.ActionType
 import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
-import org.telegram.telegrambots.meta.api.methods.send.*
+import org.telegram.telegrambots.meta.api.methods.send.SendChatAction
+import org.telegram.telegrambots.meta.api.methods.send.SendMessage
+import org.telegram.telegrambots.meta.api.methods.send.SendPhoto
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage
 import org.telegram.telegrambots.meta.api.objects.InputFile
 import org.telegram.telegrambots.meta.api.objects.Message
@@ -48,11 +59,10 @@ class EmilyVirtualGirlBot(
     private val translator: MyMemoryTranslator?
 ) : TelegramLongPollingBot() {
 
-    private val log = LoggerFactory.getLogger(EmilyVirtualGirlBot::class.java)
     private val awaitingImagePrompt = ConcurrentHashMap<Long, Boolean>()
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val systemMessages = ConcurrentHashMap<Long, MutableList<Int>>()
+
+    private val systemMessages = ConcurrentHashMap<Long, ConcurrentLinkedQueue<Int>>()
     private val protectedMessages = ConcurrentHashMap<Long, MutableSet<Int>>()
 
     private val imageTag = "#pic"
@@ -65,9 +75,9 @@ class EmilyVirtualGirlBot(
     override fun getBotUsername(): String = "virtal_girl_sex_bot"
 
     private enum class ImageStyle { ANIME, REALISTIC }
+
     private val defaultImageStyle = ImageStyle.ANIME
 
-    // ---- UI: Main menu buttons (ReplyKeyboard) ----
     private object MenuBtn {
         const val BALANCE = "💰 Баланс"
         const val BUY = "🛍 Купить"
@@ -79,8 +89,6 @@ class EmilyVirtualGirlBot(
     override fun getBotToken(): String = config.telegramToken
 
     fun registerBotMenu() = runBlocking {
-        println("🚀 registerBotMenu() - Регистрация команд бота")
-        log.info("registerBotMenu()")
         val commands = listOf(
             BotCommand("/start", Strings.get("command.start")),
             BotCommand("/buy", Strings.get("command.buy")),
@@ -92,29 +100,22 @@ class EmilyVirtualGirlBot(
     }
 
     override fun onUpdateReceived(update: Update) {
-        println("📥 onUpdateReceived - Новое обновление получено")
         scope.launch {
             try {
                 handleUpdate(update)
-            } catch (e: Exception) {
-                println("❌ Ошибка в handleUpdate: ${e.message}")
-                log.error("Exception in handleUpdate", e)
+            } catch (_: Exception) {
             }
         }
     }
 
     override fun onClosing() {
-        println("🔴 onClosing - Бот завершает работу")
         super.onClosing()
         scope.cancel()
     }
 
     private suspend fun handleUpdate(update: Update) {
-        println("🔄 handleUpdate - Обработка обновления")
         when {
             update.hasPreCheckoutQuery() -> {
-                println("💰 handleUpdate: preCheckout id=${update.preCheckoutQuery.id}")
-                log.info("handleUpdate: preCheckout id={}", update.preCheckoutQuery.id)
                 val answer = AnswerPreCheckoutQuery().apply {
                     preCheckoutQueryId = update.preCheckoutQuery.id
                     ok = true
@@ -122,42 +123,23 @@ class EmilyVirtualGirlBot(
                 executeSafe(answer)
             }
 
-            update.hasMessage() && update.message.webAppData != null -> {
-                val dataJson = update.message.webAppData.data
-                println("🌐 WebAppData: $dataJson")
-            }
-
             update.hasMessage() && update.message.successfulPayment != null -> {
-                println("✅ handleUpdate: successfulPayment")
-                log.info("handleUpdate: successfulPayment")
                 onSuccessfulPayment(update.message)
             }
 
             update.hasMessage() && update.message.hasText() -> {
-                val t = update.message.text
-                println("📝 handleUpdate: textMessage chatId=${update.message.chatId}, text.len=${t?.length ?: -1}")
-                log.info(
-                    "handleUpdate: textMessage chatId={}, text.len={}",
-                    update.message.chatId,
-                    t?.length ?: -1
-                )
                 handleTextMessage(update)
             }
 
             update.hasCallbackQuery() -> {
-                println("🔘 handleUpdate: callback ${update.callbackQuery.data}")
-                log.info("handleUpdate: callback {}", update.callbackQuery.data)
                 handleCallback(update)
             }
 
             else -> {
-                println("❓ handleUpdate: unhandled update")
-                log.warn("handleUpdate: unhandled update")
             }
         }
     }
 
-    // ---------- MAIN MENU KEYBOARD ----------
     private fun mainMenuKeyboard(): ReplyKeyboardMarkup {
         val row1 = KeyboardRow().apply {
             add(MenuBtn.BUY)
@@ -187,19 +169,11 @@ class EmilyVirtualGirlBot(
             ensureUserBalance(chatId)
             memory.autoClean(chatId)
             handleImage(chatId, "$imageTag $textRaw")
+            sendText(chatId, "✅ Отлично! Введите описание следующего изображения 🙂")
             return
         }
 
-        println("📨 handleTextMessage START: chatId=$chatId, msgId=$messageId, text='${textRaw.replace('\n', ' ')}'")
-        log.info(
-            "handleTextMessage: chatId={}, msgId={}, text='{}'",
-            chatId,
-            messageId,
-            textRaw.replace('\n', ' ')
-        )
-
         when {
-            // ---- MENU BUTTONS (ReplyKeyboard) ----
             textRaw.equals(MenuBtn.BUY, true) -> {
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
@@ -216,9 +190,8 @@ class EmilyVirtualGirlBot(
 
             textRaw.equals(MenuBtn.PIC, true) -> {
                 awaitingImagePrompt[chatId] = true
-                sendEphemeral(chatId, "Напиши описание картинки одним сообщением 🙂", ttlSeconds = 25)
+                sendText(chatId, "✅ Отлично! Введите описание изображения одним сообщением 🙂")
             }
-
 
             textRaw.equals(MenuBtn.RESET, true) -> {
                 memory.reset(chatId)
@@ -228,25 +201,22 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.equals(MenuBtn.HELP, true) -> {
-                // Можешь заменить на Strings.get("help.text") если добавишь строку
                 val help = buildString {
                     appendLine("🧭 Меню:")
                     appendLine("• ${MenuBtn.BUY} — купить план/пакет")
                     appendLine("• ${MenuBtn.BALANCE} — посмотреть баланс")
-                    appendLine("• ${MenuBtn.PIC} — как сгенерировать картинку")
+                    appendLine("• ${MenuBtn.PIC} — генерация картинки")
                     appendLine("• ${MenuBtn.RESET} — сбросить диалог")
                     appendLine()
-                    appendLine("🖼 Генерация картинки:")
-                    appendLine("• напиши: $imageTag котёнок в дождь")
+                    appendLine("🖼 Можно так:")
+                    appendLine("• нажми ${MenuBtn.PIC} и отправь описание")
+                    appendLine("• или: $imageTag котёнок в дождь")
                     appendLine("• или: /pic котёнок в дождь")
-                    appendLine("• или: покажи мне котёнка в дождь")
                 }
                 sendEphemeral(chatId, help, ttlSeconds = 35)
             }
 
-            // ---- COMMANDS ----
             textRaw.equals("/start", true) -> {
-                println("🔹 Обработка команды /start для chatId=$chatId")
                 memory.initIfNeeded(chatId)
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
@@ -256,7 +226,6 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.equals("/buy", true) -> {
-                println("🔹 Обработка команды /buy для chatId=$chatId")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 deleteOldSystemMessages(chatId)
@@ -265,7 +234,6 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.equals("/balance", true) -> {
-                println("🔹 Обработка команды /balance для chatId=$chatId")
                 val balance = ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 deleteOldSystemMessages(chatId)
@@ -274,7 +242,6 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.equals("/reset", true) -> {
-                println("🔹 Обработка команды /reset для chatId=$chatId")
                 memory.reset(chatId)
                 chatHistoryRepository.clear(chatId)
                 deleteOldSystemMessages(chatId)
@@ -283,23 +250,21 @@ class EmilyVirtualGirlBot(
             }
 
             textRaw.equals("/pic", true) -> {
-                println("🔹 Обработка команды /pic")
-                sendEphemeral(chatId, Strings.get("pic.hint"), ttlSeconds = 20)
+                awaitingImagePrompt[chatId] = true
+                sendText(chatId, "✅ Отлично! Введите описание изображения одним сообщением 🙂")
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
-            // ---- IMAGE TRIGGERS ----
             textRaw.startsWith(imageTag, true) ||
                     textRaw.startsWith("покажи мне", true) ||
                     textRaw.startsWith("/pic ", true) -> {
-                println("🖼️ Обработка запроса изображения для chatId=$chatId")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 handleImage(chatId, textRaw)
+                sendText(chatId, "✅ Отлично! Введите описание следующего изображения 🙂")
             }
 
             else -> {
-                println("💬 Обработка обычного сообщения чата для chatId=$chatId")
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 handleChat(chatId, textRaw)
@@ -307,35 +272,19 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    private fun preview(s: String?, max: Int = 220): String {
-        if (s.isNullOrBlank()) return "∅"
-        val clean = s.replace("\n", "\\n").replace("\r", "\\r")
-        return if (clean.length <= max) clean else clean.take(max) + "… (len=" + clean.length + ")"
-    }
-
     private suspend fun handleCallback(update: Update) {
         val chatId = update.callbackQuery.message.chatId
         val data = update.callbackQuery.data
-        println("🔘 handleCallback chatId=$chatId, data=$data")
-        log.info("handleCallback chatId={}, data={}", chatId, data)
         memory.autoClean(chatId)
         deleteOldSystemMessages(chatId)
 
         when {
-            data.startsWith("buy:plan:") -> {
-                println("💰 Создание инвойса для плана: ${data.removePrefix("buy:plan:")} для chatId=$chatId")
-                createPlanInvoice(chatId, data.removePrefix("buy:plan:"))
-            }
-
-            data.startsWith("buy:pack:") -> {
-                println("💰 Создание инвойса для пакета: ${data.removePrefix("buy:pack:")} для chatId=$chatId")
-                createPackInvoice(chatId, data.removePrefix("buy:pack:"))
-            }
+            data.startsWith("buy:plan:") -> createPlanInvoice(chatId, data.removePrefix("buy:plan:"))
+            data.startsWith("buy:pack:") -> createPackInvoice(chatId, data.removePrefix("buy:pack:"))
         }
     }
 
     private suspend fun sendWelcome(chatId: Long) {
-        println("👋 sendWelcome: chatId=$chatId")
         val text = Strings.get("welcome.text")
         val message = SendMessage(chatId.toString(), text).apply {
             replyMarkup = mainMenuKeyboard()
@@ -345,7 +294,6 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun sendBalance(chatId: Long, balance: UserBalance) {
-        println("💰 sendBalance: chatId=$chatId")
         val planTitle = when (balance.plan) {
             Plan.BASIC.code -> Plan.BASIC.title
             Plan.PRO.code -> Plan.PRO.title
@@ -369,7 +317,6 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun sendBuyMenu(chatId: Long) {
-        println("🛍️ sendBuyMenu: chatId=$chatId")
         val rows = mutableListOf<List<InlineKeyboardButton>>()
 
         Plan.entries.forEach { plan ->
@@ -401,7 +348,6 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun createPlanInvoice(chatId: Long, planCode: String) {
-        println("🧾 createPlanInvoice: chatId=$chatId, planCode=$planCode")
         val plan = Plan.byCode(planCode) ?: return
         val invoicePayload = "plan:${plan.code}:${UUID.randomUUID()}"
         val providerDataJson = makeProviderData(
@@ -434,7 +380,6 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun createPackInvoice(chatId: Long, packCode: String) {
-        println("🧾 createPackInvoice: chatId=$chatId, packCode=$packCode")
         val pack = ImagePack.byCode(packCode) ?: return
         val invoicePayload = "pack:${pack.code}:${UUID.randomUUID()}"
         val providerDataJson = makeProviderData(
@@ -463,7 +408,6 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun onSuccessfulPayment(message: Message) {
-        println("✅ onSuccessfulPayment: chatId=${message.chatId}")
         val chatId = message.chatId
         val payment = message.successfulPayment ?: return
         val payload = payment.invoicePayload ?: return
@@ -494,7 +438,6 @@ class EmilyVirtualGirlBot(
                     ),
                     ttlSeconds = 20
                 )
-                println("🎉 План активирован: ${plan.title} для chatId=$chatId")
             }
 
             payload.startsWith("pack:") -> {
@@ -508,22 +451,17 @@ class EmilyVirtualGirlBot(
                     Strings.get("payment.pack.activated", pack.images, pack.title),
                     ttlSeconds = 15
                 )
-                println("🎉 Пакет активирован: ${pack.title} для chatId=$chatId")
             }
         }
     }
 
     private suspend fun handleChat(chatId: Long, text: String) {
-        println("💬 handleChat: chatId=$chatId, text='${preview(text, 50)}'")
-
         val isNewDialogue = memory.history(chatId).isEmpty()
 
         if (isNewDialogue) {
             memory.initIfNeeded(chatId)
-
             val lastTurns = chatHistoryRepository.getLast(chatId, limit = 20)
             if (lastTurns.isNotEmpty()) {
-                println("♻️ Restoring ${lastTurns.size} chat turns from history for chatId=$chatId")
                 lastTurns.forEach { turn ->
                     memory.append(chatId, turn.role, turn.text)
                 }
@@ -532,7 +470,6 @@ class EmilyVirtualGirlBot(
 
         val balance = ensureUserBalance(chatId)
         if (balance.textTokensLeft <= 0) {
-            println("⚠️ Недостаточно токенов: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("text.tokens.not.enough"), ttlSeconds = 15)
             return
         }
@@ -543,10 +480,7 @@ class EmilyVirtualGirlBot(
         chatHistoryRepository.append(chatId, "user", text)
 
         val history = memory.history(chatId)
-
         val result = withTyping(chatId) { chatService.generateReply(history) }
-        println("🤖 ChatService result: text.len=${result.text.length}, tokensUsed=${result.tokensUsed} для chatId=$chatId")
-        log.info("ChatService result: text.len={}, tokensUsed={}", result.text.length, result.tokensUsed)
 
         memory.append(chatId, "assistant", result.text)
         chatHistoryRepository.append(chatId, "assistant", result.text)
@@ -558,33 +492,26 @@ class EmilyVirtualGirlBot(
             if (balance.textTokensLeft < 0) balance.textTokensLeft = 0
             repository.put(balance)
             repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to chatModel))
-            println("📊 Токены обновлены: chatId=$chatId, tokensLeft=${balance.textTokensLeft}")
-            log.info("tokens updated chatId={}, tokensLeft={}", chatId, balance.textTokensLeft)
         }
 
         if (balance.plan == null && balance.textTokensLeft <= 0) {
-            println("⚠️ Бесплатный лимит исчерпан: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
         }
     }
 
     private suspend fun handleImage(chatId: Long, textRaw: String) {
-        println("🖼️ handleImage: chatId=$chatId, text='${preview(textRaw, 50)}'")
         val balance = ensureUserBalance(chatId)
         val cap = dailyCap(balance.plan)
 
         if (balance.plan == null && balance.imageCreditsLeft < 1) {
-            println("⚠️ Дневной лимит изображений исчерпан: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("image.daily.limit", cap), ttlSeconds = 20)
             return
         }
         if (balance.imageCreditsLeft <= 0) {
-            println("⚠️ Нет кредитов на изображения: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("image.no.credits"), ttlSeconds = 20)
             return
         }
 
-        // Вырезаем разные “триггеры” в нормальный промпт
         val originalPrompt = textRaw
             .removePrefix(imageTag)
             .removePrefix("/pic")
@@ -592,26 +519,18 @@ class EmilyVirtualGirlBot(
             .trim()
 
         if (originalPrompt.isBlank()) {
-            println("⚠️ Пустой промпт для изображения: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("image.empty.prompt"), ttlSeconds = 10)
             return
         }
 
-        val containsCyrillic = hasCyrillic(originalPrompt)
-        println("🔤 Проверка языка: containsCyrillic=$containsCyrillic, prompt='${preview(originalPrompt, 30)}'")
-
-        val finalPrompt = if (containsCyrillic) {
-            println("🔤 Перевод промпта с русского: chatId=$chatId")
-            val translated = withUploadPhoto(chatId) { translateRuToEn(originalPrompt) }
-            if (translated != null) {
-                println("✅ Переведено: '$translated'")
-                translated
-            } else {
-                println("❌ Перевод не удался, использую оригинал")
-                originalPrompt
+        val finalPrompt = if (hasCyrillic(originalPrompt)) {
+            val translated = try {
+                withUploadPhoto(chatId) { withContext(Dispatchers.IO) { translateRuToEn(originalPrompt) } }
+            } catch (_: Exception) {
+                null
             }
+            if (!translated.isNullOrBlank()) translated else originalPrompt
         } else {
-            println("🔤 Английский промпт, перевод не требуется")
             originalPrompt
         }
 
@@ -621,18 +540,20 @@ class EmilyVirtualGirlBot(
             ImageStyle.REALISTIC -> realisticImageService to realisticImageModelName
         }
 
-        println(
-            "🎨 Генерация изображения: chatId=$chatId, style=$style, model=$modelName, " +
-                    "finalPrompt='${preview(finalPrompt, 50)}'"
-        )
-
-        val bytes = withUploadPhoto(chatId) {
-            service.generateImage(finalPrompt, defaultPersona)
+        val bytes: ByteArray? = try {
+            withUploadPhoto(chatId) {
+                withContext(Dispatchers.IO) { service.generateImage(finalPrompt, defaultPersona) }
+            }
+        } catch (_: Exception) {
+            null
         }
 
         if (bytes == null) {
-            println("❌ Ошибка генерации изображения: chatId=$chatId")
-            sendEphemeral(chatId, Strings.get("image.generate.fail"), ttlSeconds = 12)
+            sendEphemeral(
+                chatId,
+                "❌ Не удалось сгенерировать изображение (ошибка API/токена/сети).",
+                ttlSeconds = 20
+            )
             return
         }
 
@@ -641,55 +562,37 @@ class EmilyVirtualGirlBot(
         balance.imageCreditsLeft -= 1
         balance.dayImageUsed += 1
         repository.put(balance)
-        repository.logUsage(
-            chatId,
-            0,
-            mapOf("type" to "image", "model" to modelName, "credits_used" to 1)
-        )
 
-        println("✅ Изображение сгенерировано: chatId=$chatId, creditsLeft=${balance.imageCreditsLeft}")
+        repository.logUsage(chatId, 0, mapOf("type" to "image", "model" to modelName, "credits_used" to 1))
+
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
-            println("⚠️ Бесплатный лимит исчерпан после генерации: chatId=$chatId")
             sendEphemeral(chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
         }
     }
 
-    private fun hasCyrillic(text: String): Boolean {
-        val cyrillicPattern = Regex("[а-яА-ЯёЁ]")
-        val hasCyrillic = cyrillicPattern.containsMatchIn(text)
-        println("🔍 Проверка кириллицы: text='${preview(text, 20)}', hasCyrillic=$hasCyrillic")
-        return hasCyrillic
-    }
+    private fun hasCyrillic(text: String): Boolean = Regex("[а-яА-ЯёЁ]").containsMatchIn(text)
 
     private suspend fun translateRuToEn(text: String): String? = withContext(Dispatchers.IO) {
-        return@withContext try {
-            println("🌐 Перевод текста: '${preview(text, 30)}'")
-            val result = translator?.translate(text, "ru", "en")
-            println("🌐 Результат перевода: '${preview(result, 30)}'")
-            result
-        } catch (e: Exception) {
-            println("❌ Ошибка перевода: ${e.message}")
+        try {
+            translator?.translate(text, "ru", "en")
+        } catch (_: Exception) {
             null
         }
     }
 
     private suspend fun deleteOldSystemMessages(chatId: Long) {
-        val ids = systemMessages[chatId] ?: return
-        println("🗑️ deleteOldSystemMessages: chatId=$chatId, count=${ids.size}")
-        val iterator = ids.iterator()
-        while (iterator.hasNext()) {
-            val id = iterator.next()
+        val queue = systemMessages[chatId] ?: return
+        while (true) {
+            val id = queue.poll() ?: break
             if (protectedMessages[chatId]?.contains(id) == true) continue
             try {
                 executeSafe(DeleteMessage(chatId.toString(), id))
             } catch (_: Exception) {
             }
-            iterator.remove()
         }
     }
 
     private suspend fun sendText(chatId: Long, text: String, html: Boolean = false) {
-        println("📤 sendText: chatId=$chatId, text='${preview(text, 50)}'")
         val message = SendMessage(chatId.toString(), text).apply {
             if (html) parseMode = "HTML"
             replyMarkup = mainMenuKeyboard()
@@ -698,7 +601,6 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun sendPhoto(chatId: Long, bytes: ByteArray, caption: String?) {
-        println("📸 sendPhoto: chatId=$chatId, bytes=${bytes.size}, caption=$caption")
         val photo = SendPhoto().apply {
             this.chatId = chatId.toString()
             this.photo = InputFile(ByteArrayInputStream(bytes), "image.png")
@@ -708,31 +610,23 @@ class EmilyVirtualGirlBot(
     }
 
     private fun rememberSystemMessage(chatId: Long, messageId: Int) {
-        val list = systemMessages.computeIfAbsent(chatId) { mutableListOf() }
-        list += messageId
-        println("💾 rememberSystemMessage: chatId=$chatId, messageId=$messageId")
+        val queue = systemMessages.computeIfAbsent(chatId) { ConcurrentLinkedQueue() }
+        queue.add(messageId)
     }
 
     private fun markProtected(chatId: Long, messageId: Int) {
-        val set = protectedMessages.computeIfAbsent(chatId) { mutableSetOf() }
-        set += messageId
-        println("🛡️ markProtected: chatId=$chatId, messageId=$messageId")
+        val set = protectedMessages.computeIfAbsent(chatId) { ConcurrentHashMap.newKeySet() }
+        set.add(messageId)
     }
 
     private suspend fun safeExecuteInvoice(chatId: Long, invoice: SendInvoice) {
-        println("🧾 safeExecuteInvoice: chatId=$chatId")
         try {
             val message = executeSafe(invoice)
             markProtected(chatId, message.messageId)
-            println("✅ Invoice sent successfully: chatId=$chatId")
         } catch (ex: TelegramApiRequestException) {
-            println("❌ Invoice error: ${ex.message}")
-            val details = buildString {
-                appendLine(Strings.get("invoice.error.details", ex.message, ex.apiResponse, ex.parameters))
-            }
+            val details = Strings.get("invoice.error.details", ex.message, ex.apiResponse, ex.parameters)
             sendEphemeral(chatId, "❌ $details", ttlSeconds = 20)
         } catch (ex: Exception) {
-            println("❌ Unexpected invoice error: ${ex.message}")
             sendEphemeral(
                 chatId,
                 Strings.get("invoice.error.unexpected", ex.message ?: ex.toString()),
@@ -759,13 +653,11 @@ class EmilyVirtualGirlBot(
         if (balance.planExpiresAt?.let { now > it } == true) {
             balance.plan = null
             balance.planExpiresAt = null
-            println("🔄 План истек: userId=$userId")
         }
         val today = LocalDate.now().toString()
         if (balance.dayStamp != today) {
             balance.dayStamp = today
             balance.dayImageUsed = 0
-            println("🔄 Сброс дневного лимита: userId=$userId")
         }
         repository.put(balance)
         return balance
@@ -784,22 +676,14 @@ class EmilyVirtualGirlBot(
     }
 
     private suspend fun deleteUserCommand(chatId: Long, messageId: Int, text: String) {
-        if (isDeletableCommand(text)) {
-            println("🗑️ deleteUserCommand: chatId=$chatId, messageId=$messageId")
-            try {
-                executeSafe(DeleteMessage(chatId.toString(), messageId))
-            } catch (_: Exception) {
-            }
+        if (!isDeletableCommand(text)) return
+        try {
+            executeSafe(DeleteMessage(chatId.toString(), messageId))
+        } catch (_: Exception) {
         }
     }
 
-    private suspend fun sendEphemeral(
-        chatId: Long,
-        text: String,
-        ttlSeconds: Long,
-        html: Boolean = false
-    ) {
-        println("⏳ sendEphemeral: chatId=$chatId, text='${preview(text, 50)}', ttl=$ttlSeconds")
+    private suspend fun sendEphemeral(chatId: Long, text: String, ttlSeconds: Long, html: Boolean = false) {
         val message = SendMessage(chatId.toString(), text).apply {
             if (html) parseMode = "HTML"
             replyMarkup = mainMenuKeyboard()
@@ -809,17 +693,12 @@ class EmilyVirtualGirlBot(
             delay(ttlSeconds * 1000)
             try {
                 executeSafe(DeleteMessage(chatId.toString(), sent.messageId))
-                println("🗑️ Ephemeral message deleted: chatId=$chatId")
             } catch (_: Exception) {
             }
         }
     }
 
-    private suspend fun <T> withChatAction(
-        chatId: Long,
-        action: ActionType,
-        block: suspend () -> T
-    ): T {
+    private suspend fun <T> withChatAction(chatId: Long, action: ActionType, block: suspend () -> T): T {
         val job = scope.launch {
             while (isActive) {
                 try {
