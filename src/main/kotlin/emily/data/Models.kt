@@ -14,15 +14,15 @@ enum class Plan(
     BASIC(
         code = "basic",
         title = Strings.get("plan.title.basic"),
-        priceRub = 399,
-        monthlyTextTokens = 100_000,
+        priceRub = 299,
+        monthlyTextTokens = 150_000,
         monthlyImageCredits = 15,
         photoUrl = "https://drive.google.com/uc?export=download&id=1TCRXGBCDeju4zjER_lUvsn5yZPcv-V7s"
     ),
     PRO(
         code = "pro",
         title = Strings.get("plan.title.pro"),
-        priceRub = 650,
+        priceRub = 449,
         monthlyTextTokens = 300_000,
         monthlyImageCredits = 50,
         photoUrl = "https://drive.google.com/uc?export=download&id=1a3kI5IXbX95QMSpRb72vj0RRIKaXs9T6"
@@ -30,7 +30,7 @@ enum class Plan(
     ULTRA(
         code = "ultra",
         title = Strings.get("plan.title.ultra"),
-        priceRub = 1800,
+        priceRub = 899,
         monthlyTextTokens = 800_000,
         monthlyImageCredits = 150,
         photoUrl = "https://drive.google.com/uc?export=download&id=1IYIATc4zTZvKuXLfc5G08ALBZNG8fE32"
@@ -51,7 +51,7 @@ enum class ImagePack(
     P10(
         code = "pack10",
         title = Strings.get("pack.title.p10"),
-        priceRub = 99,
+        priceRub = 100,
         images = 10,
         photoUrl = "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
     ),
@@ -74,7 +74,6 @@ const val FREE_IMAGE_CREDITS = 10
 const val DAILY_IMAGE_CAP_BASIC = 10
 const val DAILY_IMAGE_CAP_PRO = 25
 const val DAILY_IMAGE_CAP_ULTRA = 60
-
 
 data class UserBalance(
     val userId: Long = 0L,
