@@ -509,6 +509,10 @@ Output ONLY the tags.
         }
         session.state.ephemeralJobs[sent.messageId] = job
     }
+    private fun logTokens(tag: String, chatId: Long, tokens: Int, extra: String = "") {
+        val ts = Instant.now().toString()
+        println("[TOKENS][$ts][$tag] chatId=$chatId tokensUsed=$tokens $extra")
+    }
 
 
     fun sendWelcome(chatId: Long) {
@@ -637,18 +641,28 @@ Output ONLY the tags.
 
         val result = genResult.getOrThrow()
 
+        logTokens(
+            tag = "CHAT",
+            chatId = chatId,
+            tokens = result.tokensUsed,
+            extra = "model=$chatModel historyTurns=${history.size} userTextChars=${text.length} replyChars=${result.text.length}"
+        )
+
+
         memory.append(chatId, "assistant", result.text)
         chatHistoryRepository.append(chatId, "assistant", result.text)
 
         sendText(chatId, result.text)
 
         if (result.tokensUsed > 0) {
+            val before = balance.textTokensLeft
             balance.textTokensLeft -= result.tokensUsed
             if (balance.textTokensLeft < 0) balance.textTokensLeft = 0
             repository.put(balance)
 
             repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to chatModel))
         }
+
 
         if (balance.plan == null && balance.textTokensLeft <= 0) {
             sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
