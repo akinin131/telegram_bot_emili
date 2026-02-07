@@ -468,7 +468,6 @@ Output ONLY the tags.
             if (replyMarkup != null) {
                 this.replyMarkup = replyMarkup as ReplyKeyboard?
             }
-
         }
         val sent = executeSafe(msg)
         session.state.lastSystemMessageId = sent.messageId
@@ -502,18 +501,23 @@ Output ONLY the tags.
             delay(ttlSeconds * 1000)
             try {
                 executeSafe(DeleteMessage(chatId.toString(), sent.messageId))
-            } catch (_: Exception) {}
-            finally {
+            } catch (_: Exception) {
+            } finally {
                 session.state.ephemeralJobs.remove(sent.messageId)
             }
         }
         session.state.ephemeralJobs[sent.messageId] = job
     }
-    private fun logTokens(tag: String, chatId: Long, tokens: Int, extra: String = "") {
-        val ts = Instant.now().toString()
-        println("[TOKENS][$ts][$tag] chatId=$chatId tokensUsed=$tokens $extra")
-    }
 
+    fun sendWelcome(chatId: Long) {
+        val startButton = InlineKeyboardButton().apply {
+            text = "💬 Начать диалог"
+            callbackData = "START_DIALOG"
+        }
+
+        val keyboard = InlineKeyboardMarkup().apply {
+            keyboard = listOf(listOf(startButton))
+        }
 
     fun sendWelcome(chatId: Long) {
         val startButton = InlineKeyboardButton().apply {
@@ -641,13 +645,13 @@ Output ONLY the tags.
 
         val result = genResult.getOrThrow()
 
-        logTokens(
-            tag = "CHAT",
-            chatId = chatId,
-            tokens = result.tokensUsed,
-            extra = "model=$chatModel historyTurns=${history.size} userTextChars=${text.length} replyChars=${result.text.length}"
-        )
+        if (genResult.isFailure) {
+            val token = putRetry(session, PendingRetry.Chat(userText = text))
+            sendRetryMessage(session, chatId, NETWORK_FAIL_TEXT_CHAT, token)
+            return
+        }
 
+        val result = genResult.getOrThrow()
 
         memory.append(chatId, "assistant", result.text)
         chatHistoryRepository.append(chatId, "assistant", result.text)
@@ -655,14 +659,12 @@ Output ONLY the tags.
         sendText(chatId, result.text)
 
         if (result.tokensUsed > 0) {
-            val before = balance.textTokensLeft
             balance.textTokensLeft -= result.tokensUsed
             if (balance.textTokensLeft < 0) balance.textTokensLeft = 0
             repository.put(balance)
 
             repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to chatModel))
         }
-
 
         if (balance.plan == null && balance.textTokensLeft <= 0) {
             sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
