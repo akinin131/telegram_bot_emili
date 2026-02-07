@@ -79,6 +79,7 @@ class EmilyVirtualGirlBot(
                 false
             }
         }
+
     private sealed class PendingRetry {
         data class Chat(val userText: String) : PendingRetry()
         data class Image(val originalPrompt: String) : PendingRetry()
@@ -519,16 +520,6 @@ Output ONLY the tags.
             keyboard = listOf(listOf(startButton))
         }
 
-    fun sendWelcome(chatId: Long) {
-        val startButton = InlineKeyboardButton().apply {
-            text = "💬 Начать диалог"
-            callbackData = "START_DIALOG"
-        }
-
-        val keyboard = InlineKeyboardMarkup().apply {
-            keyboard = listOf(listOf(startButton))
-        }
-
         val caption = Strings.get("welcome.text")
 
         // 1) пробуем через file_id
@@ -636,14 +627,6 @@ Output ONLY the tags.
         val genResult = retryOnceAfterDelayIfNetwork {
             withTyping(session, chatId) { chatService.generateReply(history) }
         }
-
-        if (genResult.isFailure) {
-            val token = putRetry(session, PendingRetry.Chat(userText = text))
-            sendRetryMessage(session, chatId, NETWORK_FAIL_TEXT_CHAT, token)
-            return
-        }
-
-        val result = genResult.getOrThrow()
 
         if (genResult.isFailure) {
             val token = putRetry(session, PendingRetry.Chat(userText = text))
