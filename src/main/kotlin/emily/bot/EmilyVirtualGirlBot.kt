@@ -8,6 +8,10 @@ import emily.service.ConversationMemory
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
 import java.io.ByteArrayInputStream
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.time.Instant
 import java.time.LocalDate
 import java.util.Locale
@@ -40,6 +44,10 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow
 import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
 import kotlin.text.buildString
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery
+
 
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
@@ -57,21 +65,33 @@ class EmilyVirtualGirlBot(
 
     private val botScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Per-chat actor (исключает конфликты/гонки внутри одного чата, но не блокирует другие чаты)
-    // ─────────────────────────────────────────────────────────────────────────────
-
     private data class ChatSession(
         val scope: CoroutineScope,
         val inbox: Channel<Update>,
         val state: SessionState
     )
+    private suspend fun executeSafe(method: AnswerCallbackQuery): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                execute(method)
+            } catch (e: Exception) {
+                // если у тебя есть логгер — лучше логировать
+                false
+            }
+        }
+    private sealed class PendingRetry {
+        data class Chat(val userText: String) : PendingRetry()
+        data class Image(val originalPrompt: String) : PendingRetry()
+    }
 
     private data class SessionState(
         @Volatile var awaitingImagePrompt: Boolean = false,
         @Volatile var lastSystemMessageId: Int? = null,
         val protectedMessageIds: MutableSet<Int> = ConcurrentHashMap.newKeySet(),
-        val ephemeralJobs: MutableMap<Int, Job> = ConcurrentHashMap()
+        val ephemeralJobs: MutableMap<Int, Job> = ConcurrentHashMap(),
+        val pendingRetries: MutableMap<String, PendingRetry> = ConcurrentHashMap(),
+        @Volatile var lastUserTextForChat: String? = null,
+        @Volatile var lastUserPromptForImage: String? = null
     )
 
     private val sessions = ConcurrentHashMap<Long, ChatSession>()
@@ -84,7 +104,6 @@ class EmilyVirtualGirlBot(
 
             val session = ChatSession(sessionScope, channel, state)
 
-            // Single consumer per chat: порядок сообщений в одном чате сохраняется.
             sessionScope.launch {
                 channel.consumeEach { update ->
                     try {
@@ -92,7 +111,6 @@ class EmilyVirtualGirlBot(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
-                        // не падаем на одном апдейте
                     }
                 }
             }
@@ -102,7 +120,10 @@ class EmilyVirtualGirlBot(
     }
 
     override fun onUpdateReceived(update: Update) {
-        // Быстро роутим в актор конкретного чата. Разные чаты → параллельно.
+        if (update.hasMessage() && update.message.hasPhoto()) {
+            val fileId = update.message.photo.last().fileId
+            println("FILE_ID = $fileId")
+        }
         val chatId = extractChatId(update) ?: return
         val session = sessionFor(chatId)
         session.inbox.trySend(update)
@@ -123,10 +144,6 @@ class EmilyVirtualGirlBot(
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Bot menu
-    // ─────────────────────────────────────────────────────────────────────────────
-
     fun registerBotMenu() = runBlocking {
         val commands = listOf(
             BotCommand("/start", Strings.get("command.start")),
@@ -138,13 +155,7 @@ class EmilyVirtualGirlBot(
         executeSafe(SetMyCommands(commands, BotCommandScopeDefault(), null))
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Models / Prompts
-    // ─────────────────────────────────────────────────────────────────────────────
-
     private val imageTag = "#pic"
-    private val imagePromptPrefix =
-        "rating:explicit, masterpiece, absurdres, highly detailed, very aesthetic, newest, recent,"
     private val imagePromptSystem = """
 You generate prompts for a Stable Diffusion image model.
 
@@ -164,7 +175,6 @@ rating:general, masterpiece, absurdres, highly detailed, very aesthetic, newest,
 Output ONLY the tags.
 """.trimIndent()
 
-
     private val chatModel = "venice-uncensored"
     private val animeImageModelName = "wai-Illustrious"
     private val realisticImageModelName = "lustify-v7"
@@ -172,6 +182,7 @@ Output ONLY the tags.
     private val defaultPersona = Strings.get("persona.default")
 
     private enum class ImageStyle { ANIME, REALISTIC }
+
     private val defaultImageStyle = ImageStyle.ANIME
 
     private object MenuBtn {
@@ -182,34 +193,76 @@ Output ONLY the tags.
         const val HELP = "ℹ️ Помощь"
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Keyboards
-    // ─────────────────────────────────────────────────────────────────────────────
+    private fun isNetworkIssue(e: Throwable): Boolean {
+        if (e is SocketTimeoutException) return true
+        if (e is UnknownHostException) return true
+        if (e is ConnectException) return true
+        if (e is IOException) return true
 
-    private fun mainMenuKeyboard(): ReplyKeyboardMarkup {
-        val row1 = KeyboardRow().apply {
-            add(MenuBtn.BUY)
-            add(MenuBtn.BALANCE)
-        }
-        val row2 = KeyboardRow().apply {
-            add(MenuBtn.PIC)
-            add(MenuBtn.RESET)
-        }
-        val row3 = KeyboardRow().apply {
-            add(MenuBtn.HELP)
-        }
-        return ReplyKeyboardMarkup().apply {
-            keyboard = listOf(row1, row2, row3)
-            resizeKeyboard = true
-            oneTimeKeyboard = true     // ✅ после нажатия кнопки свернётся
-            selective = false
-            isPersistent = false       // ✅ свайп/назад снова работает нормально
+        val msg = (e.message ?: "").lowercase()
+        val markers = listOf(
+            "timeout", "timed out", "connect", "connection", "reset", "refused",
+            "network", "unreachable", "unknownhost", "eof", "broken pipe",
+            "502", "503", "504", "bad gateway", "service unavailable", "gateway timeout"
+        )
+        return markers.any { it in msg }
+    }
+
+    private suspend fun <T> retryOnceAfterDelayIfNetwork(
+        delayMs: Long = 1000,
+        block: suspend () -> T
+    ): Result<T> {
+        return try {
+            Result.success(block())
+        } catch (e: Throwable) {
+            if (!isNetworkIssue(e)) return Result.failure(e)
+            delay(delayMs)
+            try {
+                Result.success(block())
+            } catch (e2: Throwable) {
+                Result.failure(e2)
+            }
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Core update handling (inside per-chat actor)
-    // ─────────────────────────────────────────────────────────────────────────────
+    private fun retryKeyboard(actionId: String): InlineKeyboardMarkup {
+        return InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = "🔁 Попробовать ещё"
+                        callbackData = actionId
+                    }
+                )
+            )
+        }
+    }
+
+    private val NETWORK_FAIL_TEXT_CHAT =
+        "😏 Ну за***сь… связь снова решила полежать.\n" +
+                "Я честно пыталась, но интернет сегодня как бывшая — игнорит.\n\n" +
+                "Жмякни ниже, и я попробую ещё раз."
+
+    private val NETWORK_FAIL_TEXT_IMAGE =
+        "😈 Картинка не родилась.\n" +
+                "Сервер пыхтел, стонал — и сдох.\n\n" +
+                "Нажми кнопку, и я попробую ещё раз."
+
+    private fun putRetry(session: ChatSession, pending: PendingRetry): String {
+        val token = UUID.randomUUID().toString().replace("-", "").take(12)
+        session.state.pendingRetries[token] = pending
+        return "retry:$token"
+    }
+
+    private suspend fun sendRetryMessage(session: ChatSession, chatId: Long, text: String, token: String) {
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = text,
+            html = false,
+            replyMarkup = retryKeyboard(token)
+        )
+    }
 
     private suspend fun handleUpdateInternal(session: ChatSession, update: Update) {
         when {
@@ -242,11 +295,13 @@ Output ONLY the tags.
         val textRaw = update.message.text.trim()
         val messageId = update.message.messageId
 
-        // Ждём описание картинки после кнопки "🖼 Картинка"
         if (session.state.awaitingImagePrompt) {
             session.state.awaitingImagePrompt = false
             ensureUserBalance(chatId)
             memory.autoClean(chatId)
+
+            session.state.lastUserPromptForImage = textRaw
+
             handleImage(session, chatId, "$imageTag $textRaw")
             return
         }
@@ -266,13 +321,17 @@ Output ONLY the tags.
 
             textRaw.equals(MenuBtn.PIC, true) -> {
                 session.state.awaitingImagePrompt = true
-                sendEphemeral(session, chatId, "✅ Отлично! Введите описание изображения одним сообщением 🙂", ttlSeconds = 35)
+                sendEphemeral(
+                    session,
+                    chatId,
+                    "✅ Отлично! Введите описание изображения одним сообщением 🙂",
+                    ttlSeconds = 35
+                )
             }
 
             textRaw.equals(MenuBtn.RESET, true) -> {
                 memory.reset(chatId)
                 chatHistoryRepository.clear(chatId)
-                // Системное сообщение можно тоже подчистить (актуально: просто удаляем последнее)
                 deleteLastSystemMessage(session, chatId)
                 sendEphemeral(session, chatId, Strings.get("reset.success"), ttlSeconds = 10)
             }
@@ -297,7 +356,7 @@ Output ONLY the tags.
                 memory.initIfNeeded(chatId)
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
-                sendWelcome(session, chatId)
+                sendWelcome(chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -325,7 +384,12 @@ Output ONLY the tags.
 
             textRaw.equals("/pic", true) -> {
                 session.state.awaitingImagePrompt = true
-                sendEphemeral(session, chatId, "✅ Отлично! Введите описание изображения одним сообщением 🙂", ttlSeconds = 35)
+                sendEphemeral(
+                    session,
+                    chatId,
+                    "✅ Отлично! Введите описание изображения одним сообщением 🙂",
+                    ttlSeconds = 35
+                )
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -334,12 +398,23 @@ Output ONLY the tags.
                     textRaw.startsWith("/pic ", true) -> {
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
+
+                val prompt = textRaw
+                    .removePrefix(imageTag)
+                    .removePrefix("/pic")
+                    .removePrefix("покажи мне")
+                    .trim()
+                session.state.lastUserPromptForImage = prompt
+
                 handleImage(session, chatId, textRaw)
             }
 
             else -> {
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
+
+                session.state.lastUserTextForChat = textRaw
+
                 handleChat(session, chatId, textRaw)
             }
         }
@@ -351,21 +426,41 @@ Output ONLY the tags.
         memory.autoClean(chatId)
 
         when {
+            data == "START_DIALOG" -> {
+                executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
+                val fakeUserMessage = "Привет, Эмили 💕"
+                handleChat(session, chatId, fakeUserMessage)
+                return
+            }
+            data.startsWith("retry:") -> {
+                val token = data.removePrefix("retry:")
+                val pending = session.state.pendingRetries.remove(token) ?: return
+
+                when (pending) {
+                    is PendingRetry.Chat -> {
+                        session.state.lastUserTextForChat = pending.userText
+                        handleChat(session, chatId, pending.userText)
+                    }
+
+                    is PendingRetry.Image -> {
+                        session.state.lastUserPromptForImage = pending.originalPrompt
+                        handleImage(session, chatId, "$imageTag ${pending.originalPrompt}")
+                    }
+                }
+            }
+
             data.startsWith("buy:plan:") -> createPlanInvoice(session, chatId, data.removePrefix("buy:plan:"))
             data.startsWith("buy:pack:") -> createPackInvoice(session, chatId, data.removePrefix("buy:pack:"))
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // UI messages: системные / ephemeral
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    /**
-     * СИСТЕМНОЕ сообщение:
-     * - перед отправкой удаляем только "последнее системное" (если оно не protected)
-     * - сохраняем новый id как lastSystemMessageId
-     */
-    private suspend fun sendSystemText(session: ChatSession, chatId: Long, text: String, html: Boolean = false, replyMarkup: Any? = null): Message {
+    private suspend fun sendSystemText(
+        session: ChatSession,
+        chatId: Long,
+        text: String,
+        html: Boolean = false,
+        replyMarkup: Any? = null
+    ): Message {
         deleteLastSystemMessage(session, chatId)
 
         val msg = SendMessage(chatId.toString(), text).apply {
@@ -373,7 +468,6 @@ Output ONLY the tags.
             if (replyMarkup != null) {
                 this.replyMarkup = replyMarkup as ReplyKeyboard?
             }
-
         }
         val sent = executeSafe(msg)
         session.state.lastSystemMessageId = sent.messageId
@@ -387,17 +481,10 @@ Output ONLY the tags.
             executeSafe(DeleteMessage(chatId.toString(), lastId))
         } catch (_: Exception) {
         } finally {
-            // даже если не удалилось (старое/прав нет) — не держим мусор
             if (session.state.lastSystemMessageId == lastId) session.state.lastSystemMessageId = null
         }
     }
 
-    /**
-     * EPHEMERAL:
-     * - отправляем
-     * - планируем удаление через ttl
-     * - jobs храним, чтобы не конфликтовали (например, если захотим отменять/чистить)
-     */
     private suspend fun sendEphemeral(
         session: ChatSession,
         chatId: Long,
@@ -414,27 +501,55 @@ Output ONLY the tags.
             delay(ttlSeconds * 1000)
             try {
                 executeSafe(DeleteMessage(chatId.toString(), sent.messageId))
-            } catch (_: Exception) {}
-            finally {
+            } catch (_: Exception) {
+            } finally {
                 session.state.ephemeralJobs.remove(sent.messageId)
             }
         }
         session.state.ephemeralJobs[sent.messageId] = job
     }
-    private fun logTokens(tag: String, chatId: Long, tokens: Int, extra: String = "") {
-        val ts = Instant.now().toString()
-        println("[TOKENS][$ts][$tag] chatId=$chatId tokensUsed=$tokens $extra")
+
+    fun sendWelcome(chatId: Long) {
+        val startButton = InlineKeyboardButton().apply {
+            text = "💬 Начать диалог"
+            callbackData = "START_DIALOG"
+        }
+
+        val keyboard = InlineKeyboardMarkup().apply {
+            keyboard = listOf(listOf(startButton))
+        }
+
+        val caption = Strings.get("welcome.text")
+
+        // 1) пробуем через file_id
+        val requestByFileId = SendPhoto().apply {
+            this.chatId = chatId.toString()
+            this.photo = InputFile(
+                "AgACAgIAAxkBAAFB6iBphlYViNPwpeloj47Y6obrhrbrrAACRBlrG8I2MEj60YRyUKXYyAEAAwIAA3kAAzgE"
+            )
+            this.caption = caption
+            this.replyMarkup = keyboard
+        }
+
+        try {
+            execute(requestByFileId)
+            return
+        } catch (e: Exception) {
+            // Важно увидеть причину, иначе кажется "ничего не приходит"
+            println("sendWelcome(file_id) error: ${e.message}")
+        }
+
+        // 2) fallback на URL (твой рабочий вариант)
+        val requestByUrl = SendPhoto().apply {
+            this.chatId = chatId.toString()
+            this.photo = InputFile("https://drive.google.com/uc?export=download&id=1IYIATc4zTZvKuXLfc5G08ALBZNG8fE32")
+            this.caption = caption
+            this.replyMarkup = keyboard
+        }
+
+        execute(requestByUrl)
     }
 
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Screens: welcome / balance / buy menu
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    private suspend fun sendWelcome(session: ChatSession, chatId: Long) {
-        val text = Strings.get("welcome.text")
-        sendSystemText(session, chatId, text, html = false, replyMarkup = mainMenuKeyboard())
-    }
 
     private suspend fun sendBalance(session: ChatSession, chatId: Long, balance: UserBalance) {
         val planTitle = when (balance.plan) {
@@ -452,7 +567,7 @@ Output ONLY the tags.
             balance.imageCreditsLeft,
             balance.dayImageUsed
         )
-        sendSystemText(session, chatId, text, html = true, replyMarkup = mainMenuKeyboard())
+        sendSystemText(session, chatId, text, html = true)
     }
 
     private suspend fun sendBuyMenu(session: ChatSession, chatId: Long) {
@@ -478,14 +593,9 @@ Output ONLY the tags.
                 callbackData = "buy:pack:${ImagePack.P50.code}"
             }
         )
-        val markup = InlineKeyboardMarkup().apply { keyboard = rows }
 
-        sendSystemText(session, chatId, Strings.get("buy.menu.text"), html = false, replyMarkup = markup)
+        sendSystemText(session, chatId, Strings.get("buy.menu.text"), html = false)
     }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Chat logic
-    // ─────────────────────────────────────────────────────────────────────────────
 
     private suspend fun handleChat(session: ChatSession, chatId: Long, text: String) {
         val isNewDialogue = memory.history(chatId).isEmpty()
@@ -513,15 +623,17 @@ Output ONLY the tags.
 
         val history = memory.history(chatId)
 
-        val result = withTyping(session, chatId) { chatService.generateReply(history) }
+        val genResult = retryOnceAfterDelayIfNetwork {
+            withTyping(session, chatId) { chatService.generateReply(history) }
+        }
 
-        logTokens(
-            tag = "CHAT",
-            chatId = chatId,
-            tokens = result.tokensUsed,
-            extra = "model=$chatModel historyTurns=${history.size} userTextChars=${text.length} replyChars=${result.text.length}"
-        )
+        if (genResult.isFailure) {
+            val token = putRetry(session, PendingRetry.Chat(userText = text))
+            sendRetryMessage(session, chatId, NETWORK_FAIL_TEXT_CHAT, token)
+            return
+        }
 
+        val result = genResult.getOrThrow()
 
         memory.append(chatId, "assistant", result.text)
         chatHistoryRepository.append(chatId, "assistant", result.text)
@@ -529,24 +641,17 @@ Output ONLY the tags.
         sendText(chatId, result.text)
 
         if (result.tokensUsed > 0) {
-            val before = balance.textTokensLeft
             balance.textTokensLeft -= result.tokensUsed
             if (balance.textTokensLeft < 0) balance.textTokensLeft = 0
             repository.put(balance)
 
-            println("[TOKENS][BALANCE] chatId=$chatId before=$before used=${result.tokensUsed} after=${balance.textTokensLeft}")
             repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to chatModel))
         }
-
 
         if (balance.plan == null && balance.textTokensLeft <= 0) {
             sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
         }
     }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Image logic
-    // ─────────────────────────────────────────────────────────────────────────────
 
     private suspend fun handleImage(session: ChatSession, chatId: Long, textRaw: String) {
         val balance = ensureUserBalance(chatId)
@@ -572,7 +677,19 @@ Output ONLY the tags.
             return
         }
 
-        val finalPrompt = withUploadPhoto(session, chatId) { buildImagePrompt(chatId, originalPrompt) }
+        session.state.lastUserPromptForImage = originalPrompt
+
+        val promptBuildResult = retryOnceAfterDelayIfNetwork {
+            withUploadPhoto(session, chatId) { buildImagePrompt(chatId, originalPrompt) }
+        }
+
+        if (promptBuildResult.isFailure) {
+            val token = putRetry(session, PendingRetry.Image(originalPrompt = originalPrompt))
+            sendRetryMessage(session, chatId, NETWORK_FAIL_TEXT_IMAGE, token)
+            return
+        }
+
+        val finalPrompt = promptBuildResult.getOrThrow()
 
         val style = defaultImageStyle
         val (service, modelName) = when (style) {
@@ -580,16 +697,30 @@ Output ONLY the tags.
             ImageStyle.REALISTIC -> realisticImageService to realisticImageModelName
         }
 
-        val bytes: ByteArray? = try {
+        val imageResult: Result<ByteArray?> = retryOnceAfterDelayIfNetwork {
             withUploadPhoto(session, chatId) {
                 withContext(Dispatchers.IO) { service.generateImage(finalPrompt, defaultPersona) }
             }
-        } catch (_: Exception) {
-            null
         }
 
+        if (imageResult.isFailure) {
+            val token = putRetry(session, PendingRetry.Image(originalPrompt = originalPrompt))
+            sendRetryMessage(session, chatId, NETWORK_FAIL_TEXT_IMAGE, token)
+            return
+        }
+
+        val bytes: ByteArray? = imageResult.getOrThrow()
+
         if (bytes == null) {
-            sendEphemeral(session, chatId, "❌ Не удалось сгенерировать изображение (ошибка API/токена/сети).", ttlSeconds = 20)
+            val token = putRetry(session, PendingRetry.Image(originalPrompt = originalPrompt))
+            sendRetryMessage(
+                session,
+                chatId,
+                "😈 Ну вооооот… картинка не вылезла.\n" +
+                        "Похоже, сервер решил сделать вид, что он занят.\n\n" +
+                        "Жми кнопку — попробуем ещё раз.",
+                token
+            )
             return
         }
 
@@ -618,7 +749,6 @@ Output ONLY the tags.
         if (prompt.isBlank() || prompt == Strings.get("chat.connection.issue")) {
             prompt = normalizePrompt(originalPrompt)
         }
-
 
         if (hasCyrillic(prompt)) {
             val translated = translateRuToEn(prompt)
@@ -651,10 +781,6 @@ Output ONLY the tags.
             null
         }
     }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Payments / invoices (protected messages)
-    // ─────────────────────────────────────────────────────────────────────────────
 
     private suspend fun createPlanInvoice(session: ChatSession, chatId: Long, planCode: String) {
         val plan = Plan.byCode(planCode) ?: return
@@ -719,13 +845,17 @@ Output ONLY the tags.
     private suspend fun safeExecuteInvoice(session: ChatSession, chatId: Long, invoice: SendInvoice) {
         try {
             val message = executeSafe(invoice)
-            // счета защищаем от удаления "системного"
             session.state.protectedMessageIds.add(message.messageId)
         } catch (ex: TelegramApiRequestException) {
             val details = Strings.get("invoice.error.details", ex.message, ex.apiResponse, ex.parameters)
             sendEphemeral(session, chatId, "❌ $details", ttlSeconds = 20)
         } catch (ex: Exception) {
-            sendEphemeral(session, chatId, Strings.get("invoice.error.unexpected", ex.message ?: ex.toString()), ttlSeconds = 20)
+            sendEphemeral(
+                session,
+                chatId,
+                Strings.get("invoice.error.unexpected", ex.message ?: ex.toString()),
+                ttlSeconds = 20
+            )
         }
     }
 
@@ -779,10 +909,6 @@ Output ONLY the tags.
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Balance / limits
-    // ─────────────────────────────────────────────────────────────────────────────
-
     private suspend fun ensureUserBalance(userId: Long): UserBalance {
         val balance = repository.get(userId)
         val now = System.currentTimeMillis()
@@ -806,10 +932,6 @@ Output ONLY the tags.
         else -> 1
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Command deletion
-    // ─────────────────────────────────────────────────────────────────────────────
-
     private fun isDeletableCommand(text: String): Boolean {
         val t = text.trim().lowercase()
         return t == "/start" || t == "/buy" || t == "/balance" || t == "/reset" || t == "/pic"
@@ -823,10 +945,6 @@ Output ONLY the tags.
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Provider data / helpers
-    // ─────────────────────────────────────────────────────────────────────────────
-
     private fun makeProviderData(desc: String, rub: Int, includeVat: Boolean = true): String {
         val item = JSONObject()
             .put("description", desc.take(128))
@@ -839,11 +957,12 @@ Output ONLY the tags.
 
     private fun rubToStr(rub: Int) = String.format(Locale.US, "%.2f", rub.toDouble())
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Chat actions (typing/uploadphoto)
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    private suspend fun <T> withChatAction(session: ChatSession, chatId: Long, action: ActionType, block: suspend () -> T): T {
+    private suspend fun <T> withChatAction(
+        session: ChatSession,
+        chatId: Long,
+        action: ActionType,
+        block: suspend () -> T
+    ): T {
         val job = session.scope.launch {
             while (isActive) {
                 try {
@@ -870,10 +989,6 @@ Output ONLY the tags.
     private suspend fun <T> withUploadPhoto(session: ChatSession, chatId: Long, block: suspend () -> T): T =
         withChatAction(session, chatId, ActionType.UPLOADPHOTO, block)
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // "Normal" messages (не системные)
-    // ─────────────────────────────────────────────────────────────────────────────
-
     private suspend fun sendText(chatId: Long, text: String, html: Boolean = false) {
         val message = SendMessage(chatId.toString(), text).apply {
             if (html) parseMode = "HTML"
@@ -889,10 +1004,6 @@ Output ONLY the tags.
         }
         executeSafe(photo)
     }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Telegram executeSafe
-    // ─────────────────────────────────────────────────────────────────────────────
 
     private suspend fun executeSafe(method: SendMessage): Message =
         withContext(Dispatchers.IO) { execute(method) }
