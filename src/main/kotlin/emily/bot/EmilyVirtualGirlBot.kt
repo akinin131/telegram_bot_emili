@@ -26,6 +26,7 @@ import org.telegram.telegrambots.bots.TelegramLongPollingBot
 import org.telegram.telegrambots.meta.api.methods.ActionType
 import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
+import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
 import org.telegram.telegrambots.meta.api.methods.send.SendChatAction
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage
@@ -39,31 +40,39 @@ import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScope
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow
 import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
 import kotlin.text.buildString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery
+import org.telegram.telegrambots.meta.api.objects.chatmember.ChatMember
 
 
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
     private val chatHistoryRepository: ChatHistoryRepository,
+    private val userActivityRepository: UserActivityRepository,
     private val chatService: ChatService,
     private val animeImageService: ImageService,
     private val realisticImageService: ImageService,
     private val memory: ConversationMemory,
-    private val translator: MyMemoryTranslator?
+    private val translator: MyMemoryTranslator?,
+    private val subscriptionGroupUrl: String?
 ) : TelegramLongPollingBot() {
 
     override fun getBotUsername(): String = "virtal_girl_sex_bot"
     override fun getBotToken(): String = config.telegramToken
 
     private val botScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val chatIdGroup = -1002229947613L
+    private val subscriptionGroupLink = subscriptionGroupUrl ?: "https://t.me/"
+    private val freeMessagesWithoutSubscriptionLimit = 10
+    private val subscriptionCacheMs = 180_000L
+    private val inactivityThresholdMs = 18L * 60 * 60 * 1000
+    private val inactivityScanEveryMs = 20L * 60 * 1000
+    private val inactivityNudgeCooldownMs = 24L * 60 * 60 * 1000
 
     private data class ChatSession(
         val scope: CoroutineScope,
@@ -92,10 +101,30 @@ class EmilyVirtualGirlBot(
         val ephemeralJobs: MutableMap<Int, Job> = ConcurrentHashMap(),
         val pendingRetries: MutableMap<String, PendingRetry> = ConcurrentHashMap(),
         @Volatile var lastUserTextForChat: String? = null,
-        @Volatile var lastUserPromptForImage: String? = null
+        @Volatile var lastUserPromptForImage: String? = null,
+        @Volatile var groupSubscribedCached: Boolean? = null,
+        @Volatile var groupSubscribedCheckedAt: Long = 0L,
+        @Volatile var freeMessagesWithoutSubscription: Int = 0,
+        @Volatile var freeMessagesLoaded: Boolean = false
     )
 
     private val sessions = ConcurrentHashMap<Long, ChatSession>()
+    private val inactivityMessages = listOf(
+        "Эмили хочет, чтобы ты трахнул её прямо сейчас. Напиши и удовлетвори её желания 🔥",
+        "Я уже мокрая и жду тебя. Напишешь, чтобы я кончила? 😏",
+        "Эмили тоскует без твоего члена. Вернись и трахни её как следует 💋",
+        "Тут стало слишком тихо, и Эмили хочет, чтобы ты её отъебал 🔥",
+        "Ты куда пропал? Эмили ждёт, чтобы ты её оттрахал 😈",
+        "Я скучаю по твоему хую. Напиши, чтобы я снова кончила 💌",
+        "Эмили мечтает, чтобы ты её трахнул. Появись и удиви меня 😍",
+        "У меня для тебя горячие фантазии. Напиши первой фразой, чтобы начать наше сексуальное приключение 😉",
+        "Без тебя не так горячо. Вернись ко мне в чат и трахни меня 🫦",
+        "Эмили ждёт тебя. Напиши, я рядом и готова к жесткому сексу 💞"
+    )
+
+    init {
+        startInactivityLoop()
+    }
 
     private fun sessionFor(chatId: Long): ChatSession {
         return sessions.computeIfAbsent(chatId) {
@@ -266,6 +295,10 @@ Output ONLY the tags.
     }
 
     private suspend fun handleUpdateInternal(session: ChatSession, update: Update) {
+        val chatId = extractChatId(update)
+        if (chatId != null) {
+            runCatching { userActivityRepository.touch(chatId, chatId) }
+        }
         when {
             update.hasPreCheckoutQuery() -> {
                 val answer = AnswerPreCheckoutQuery().apply {
@@ -291,10 +324,189 @@ Output ONLY the tags.
         }
     }
 
+    private fun startInactivityLoop() {
+        botScope.launch {
+            while (isActive) {
+                runCatching { notifyInactiveUsers() }
+                delay(inactivityScanEveryMs)
+            }
+        }
+    }
+
+    private suspend fun notifyInactiveUsers() {
+        val now = System.currentTimeMillis()
+        val beforeTs = now - inactivityThresholdMs
+        val candidates = userActivityRepository.listInactiveUsers(beforeTs, limit = 100)
+
+        candidates.forEach { user ->
+            val nudgeAt = user.lastNudgeAt
+            if (nudgeAt != null && now - nudgeAt < inactivityNudgeCooldownMs) {
+                return@forEach
+            }
+
+            val text = inactivityMessages.random()
+            val sent = runCatching { sendText(user.chatId, text) }.isSuccess
+            if (sent) {
+                runCatching { userActivityRepository.markNudged(user.userId, now) }
+            }
+        }
+    }
+
+    private fun shouldBypassSubscriptionGate(textRaw: String): Boolean {
+        return textRaw.equals("/start", true) ||
+                textRaw.equals("/buy", true) ||
+                textRaw.equals("/balance", true) ||
+                textRaw.equals("/reset", true) ||
+                textRaw.equals(MenuBtn.BUY, true) ||
+                textRaw.equals(MenuBtn.BALANCE, true) ||
+                textRaw.equals(MenuBtn.RESET, true) ||
+                textRaw.equals(MenuBtn.HELP, true)
+    }
+
+    private suspend fun isSubscribedToGroup(
+        session: ChatSession,
+        userId: Long,
+        forceRefresh: Boolean = false
+    ): Boolean {
+        val now = System.currentTimeMillis()
+
+        if (!forceRefresh) {
+            val cached = session.state.groupSubscribedCached
+            if (cached != null && now - session.state.groupSubscribedCheckedAt < subscriptionCacheMs) {
+                return cached
+            }
+        }
+
+        val subscribed = withContext(Dispatchers.IO) {
+            runCatching {
+                val request = GetChatMember().apply {
+                    chatId = chatIdGroup.toString()
+                    this.userId = userId
+                }
+                val member = executeSafe(request)
+                member.status in setOf("creator", "administrator", "member", "restricted")
+            }.getOrElse { e ->
+                true
+            }
+        }
+
+        session.state.groupSubscribedCached = subscribed
+        session.state.groupSubscribedCheckedAt = now
+        return subscribed
+    }
+
+
+    private fun subscriptionKeyboard(): InlineKeyboardMarkup {
+        return InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = "Подписаться на группу"
+                        url = subscriptionGroupLink
+                    }
+                ),
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = "✅ Я подписался"
+                        callbackData = "CHECK_SUB"
+                    }
+                )
+            )
+        }
+    }
+
+
+    private suspend fun sendSubscriptionRequired(session: ChatSession, chatId: Long) {
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = "Ты использовал лимит сообщений без подписки. Подпишись на группу, чтобы продолжить 💕",
+            html = false,
+            replyMarkup = subscriptionKeyboard()
+        )
+    }
+
+    private suspend fun passSubscriptionGate(
+        session: ChatSession,
+        chatId: Long,
+        textRaw: String
+    ): Boolean {
+
+        println("SUB_GATE ▶ start | chatId=$chatId | text='$textRaw'")
+
+        // 1️⃣ bypass по командам
+        if (shouldBypassSubscriptionGate(textRaw)) {
+            println("SUB_GATE ▶ bypass by command/text")
+            return true
+        }
+
+        // 2️⃣ проверка подписки
+        val subscribed = runCatching {
+            isSubscribedToGroup(session, chatId)
+        }.getOrElse {
+            println("SUB_GATE ❌ isSubscribedToGroup error: ${it.message}")
+            false
+        }
+
+        println("SUB_GATE ▶ subscribed=$subscribed")
+
+        if (subscribed) {
+            println("SUB_GATE ▶ user IS subscribed → allow")
+            return true
+        }
+
+        // 3️⃣ загрузка счётчика бесплатных сообщений
+        if (!session.state.freeMessagesLoaded) {
+            println("SUB_GATE ▶ loading freeMessages from DB")
+
+            val activity = userActivityRepository.getOrCreate(chatId, chatId)
+            session.state.freeMessagesWithoutSubscription = activity.freeMessagesWithoutSubscription
+            session.state.freeMessagesLoaded = true
+
+            println(
+                "SUB_GATE ▶ loaded freeMessagesWithoutSubscription=" +
+                        session.state.freeMessagesWithoutSubscription
+            )
+        }
+
+        // 4️⃣ проверка лимита
+        val current = session.state.freeMessagesWithoutSubscription
+        println(
+            "SUB_GATE ▶ check limit | current=$current | limit=$freeMessagesWithoutSubscriptionLimit"
+        )
+
+        if (current >= freeMessagesWithoutSubscriptionLimit) {
+            println("SUB_GATE ⛔ LIMIT REACHED → asking subscription")
+
+            sendSubscriptionRequired(session, chatId)
+            return false
+        }
+
+        // 5️⃣ увеличиваем счётчик
+        val newCount = current + 1
+        session.state.freeMessagesWithoutSubscription = newCount
+
+        println("SUB_GATE ▶ increment freeMessages → $newCount")
+
+        runCatching {
+            userActivityRepository.setFreeMessagesWithoutSubscription(chatId, newCount)
+        }.onFailure {
+            println("SUB_GATE ⚠️ failed to persist freeMessages: ${it.message}")
+        }
+
+        println("SUB_GATE ▶ allow message")
+        return true
+    }
+
+
     private suspend fun handleTextMessage(session: ChatSession, update: Update) {
         val chatId = update.message.chatId
         val textRaw = update.message.text.trim()
         val messageId = update.message.messageId
+
+        if (!passSubscriptionGate(session, chatId, textRaw)) {
+            return
+        }
 
         if (session.state.awaitingImagePrompt) {
             session.state.awaitingImagePrompt = false
@@ -427,6 +639,23 @@ Output ONLY the tags.
         memory.autoClean(chatId)
 
         when {
+
+            data == "CHECK_SUB" -> {
+                executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
+
+                // сброс кэша
+                session.state.groupSubscribedCached = null
+                session.state.groupSubscribedCheckedAt = 0L
+
+                val ok = isSubscribedToGroup(session, chatId, forceRefresh = true)
+                if (ok) {
+                    sendSystemText(session, chatId, "🔥 Вижу подписку! Продолжаем 😈", html = false)
+                } else {
+                    sendSystemText(session, chatId, "❌ Пока не вижу подписку. Нажми «Подписаться на группу» и попробуй ещё раз.", html = false)
+                }
+                return
+            }
+
             data == "START_DIALOG" -> {
                 executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
                 val fakeUserMessage = "Привет, Эмили 💕"
@@ -467,7 +696,10 @@ Output ONLY the tags.
         val msg = SendMessage(chatId.toString(), text).apply {
             if (html) parseMode = "HTML"
             if (replyMarkup != null) {
-                this.replyMarkup = replyMarkup as ReplyKeyboard?
+                when (replyMarkup) {
+                    is ReplyKeyboard -> this.replyMarkup = replyMarkup
+                    is InlineKeyboardMarkup -> this.replyMarkup = replyMarkup
+                }
             }
         }
         val sent = executeSafe(msg)
@@ -585,13 +817,13 @@ Output ONLY the tags.
         rows += listOf(
             InlineKeyboardButton().apply {
                 text = Strings.get("buy.menu.pack.p10")
-                callbackData = "buy:pack:${ImagePack.P10.code}"
+                callbackData = "buy:pack:${ImagePack.P20.code}"
             }
         )
         rows += listOf(
             InlineKeyboardButton().apply {
                 text = Strings.get("buy.menu.pack.p50")
-                callbackData = "buy:pack:${ImagePack.P50.code}"
+                callbackData = "buy:pack:${ImagePack.P100.code}"
             }
         )
 
@@ -1025,5 +1257,8 @@ Output ONLY the tags.
         withContext(Dispatchers.IO) { execute(method) }
 
     private suspend fun executeSafe(method: SendChatAction): Boolean =
+        withContext(Dispatchers.IO) { execute(method) }
+
+    private suspend fun executeSafe(method: GetChatMember): ChatMember =
         withContext(Dispatchers.IO) { execute(method) }
 }

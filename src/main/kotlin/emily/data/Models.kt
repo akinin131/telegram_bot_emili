@@ -11,28 +11,40 @@ enum class Plan(
     val monthlyImageCredits: Int,
     val photoUrl: String
 ) {
+    /**
+     * Рыночный вход (чуть ниже конкурентов), но с огромной маржой для тебя.
+     * Минимум 800k токенов соблюдён.
+     */
     BASIC(
         code = "basic",
         title = Strings.get("plan.title.basic"),
-        priceRub = 299,
-        monthlyTextTokens = 150_000,
-        monthlyImageCredits = 15,
+        priceRub = 399,
+        monthlyTextTokens = 800_000,
+        monthlyImageCredits = 25,
         photoUrl = "https://drive.google.com/uc?export=download&id=1TCRXGBCDeju4zjER_lUvsn5yZPcv-V7s"
     ),
+
+    /**
+     * Средний план — рыночный по ощущению, чуть ниже конкурентов по цене.
+     */
     PRO(
         code = "pro",
         title = Strings.get("plan.title.pro"),
-        priceRub = 449,
-        monthlyTextTokens = 300_000,
-        monthlyImageCredits = 50,
+        priceRub = 899,
+        monthlyTextTokens = 2_000_000,
+        monthlyImageCredits = 80,
         photoUrl = "https://drive.google.com/uc?export=download&id=1a3kI5IXbX95QMSpRb72vj0RRIKaXs9T6"
     ),
+
+    /**
+     * Топ — премиум по рынку, но чуть дешевле большинства верхних тиров.
+     */
     ULTRA(
         code = "ultra",
         title = Strings.get("plan.title.ultra"),
-        priceRub = 899,
-        monthlyTextTokens = 800_000,
-        monthlyImageCredits = 150,
+        priceRub = 1499,
+        monthlyTextTokens = 4_000_000,
+        monthlyImageCredits = 180,
         photoUrl = "https://drive.google.com/uc?export=download&id=1IYIATc4zTZvKuXLfc5G08ALBZNG8fE32"
     );
 
@@ -48,18 +60,21 @@ enum class ImagePack(
     val images: Int,
     val photoUrl: String
 ) {
-    P10(
-        code = "pack10",
-        title = Strings.get("pack.title.p10"),
-        priceRub = 100,
-        images = 10,
+    /**
+     * Пакеты картинок — очень маржинальный продукт при цене генерации ~$0.01/картинка.
+     */
+    P20(
+        code = "pack20",
+        title = Strings.get("pack.title.p20"),
+        priceRub = 149,
+        images = 20,
         photoUrl = "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
     ),
-    P50(
-        code = "pack50",
-        title = Strings.get("pack.title.p50"),
-        priceRub = 249,
-        images = 50,
+    P100(
+        code = "pack100",
+        title = Strings.get("pack.title.p100"),
+        priceRub = 349,
+        images = 100,
         photoUrl = "https://drive.google.com/uc?export=download&id=1f67uMVIMFWCe4DvQU4GlgnI5vx0cH6iC"
     );
 
@@ -68,8 +83,11 @@ enum class ImagePack(
     }
 }
 
+/**
+ * Free-пакет: достаточно, чтобы зацепить, но чтобы быстро упереться в лимит и конвертнуться.
+ */
 const val FREE_TEXT_TOKENS = 50_000
-const val FREE_IMAGE_CREDITS = 2
+const val FREE_IMAGE_CREDITS = 1
 
 const val DAILY_IMAGE_CAP_BASIC = 10
 const val DAILY_IMAGE_CAP_PRO = 25

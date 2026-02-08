@@ -20,4 +20,6 @@ object Secrets {
     fun get(key: String): String =
         props.getProperty(key)
             ?: error("Secret '$key' not found in secrets.properties")
+
+    fun getOrNull(key: String): String? = props.getProperty(key)
 }

@@ -3,6 +3,7 @@ package emily.app
 import emily.bot.EmilyVirtualGirlBot
 import emily.data.BalanceRepository
 import emily.data.ChatHistoryRepository
+import emily.data.UserActivityRepository
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
@@ -45,6 +46,7 @@ fun main() {
 
     val balanceRepository = BalanceRepository()
     val chatHistoryRepository = ChatHistoryRepository()
+    val userActivityRepository = UserActivityRepository()
     val chatService = ChatService(okHttpClient, config.veniceToken, CHAT_MODEL)
 
     val animeImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_ANIME)
@@ -56,11 +58,13 @@ fun main() {
         config = config,
         repository = balanceRepository,
         chatHistoryRepository= chatHistoryRepository,
+        userActivityRepository = userActivityRepository,
         chatService = chatService,
         animeImageService = animeImageService,
         realisticImageService = realisticImageService,
         memory = memory,
-        translator = translator
+        translator = translator,
+        subscriptionGroupUrl = "https://t.me/+_rSsi7FUDtYyM2Uy"
     )
 
     val botsApi = TelegramBotsApi(DefaultBotSession::class.java)
