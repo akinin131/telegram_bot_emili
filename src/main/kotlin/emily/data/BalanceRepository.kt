@@ -8,7 +8,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 class BalanceRepository(
-    private val database: FirebaseDatabase = FirebaseDatabase.getInstance()
+    private val database: FirebaseDatabase = FirebaseDatabase.getInstance(),
+    private val enableDetailedUsageLog: Boolean = false
 ) {
     private val balancesRef by lazy { database.getReference("balances") }
     private val paymentsRef by lazy { database.getReference("payments") }
@@ -46,6 +47,7 @@ class BalanceRepository(
     }
 
     suspend fun logUsage(userId: Long, tokens: Int, meta: Map<String, Any?> = emptyMap()): Any? = withContext(Dispatchers.IO) {
+        if (!enableDetailedUsageLog) return@withContext null
         val id = UUID.randomUUID().toString()
         val payload = mutableMapOf<String, Any?>(
             "tokens" to tokens,

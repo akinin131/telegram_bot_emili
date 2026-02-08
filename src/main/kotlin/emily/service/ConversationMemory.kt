@@ -13,13 +13,19 @@ class ConversationMemory(
     private val systemPromptProvider: () -> String
 ) {
     private val contexts = ConcurrentHashMap<Long, MutableList<Pair<String, String>>>()
+    private fun defaultSystemPrompt(): String = systemPromptProvider().orEmpty()
+    private fun safeSystemPrompt(existing: String?): String {
+        val prompt = existing?.takeIf { it.isNotBlank() } ?: defaultSystemPrompt()
+        return prompt.takeIf { it.isNotBlank() } ?: "You are Emily."
+    }
 
     fun setSystem(chatId: Long, content: String) {
-        val conversationEntries = contexts.computeIfAbsent(chatId) { mutableListOf("system" to "") }
+        val conversationEntries = contexts.computeIfAbsent(chatId) { mutableListOf("system" to safeSystemPrompt(null)) }
+        val safe = safeSystemPrompt(content)
         if (conversationEntries.isEmpty() || conversationEntries.first().first != "system") {
-            conversationEntries.add(0, "system" to content)
+            conversationEntries.add(0, "system" to safe)
         } else {
-            conversationEntries[0] = "system" to content
+            conversationEntries[0] = "system" to safe
         }
     }
 
@@ -29,9 +35,11 @@ class ConversationMemory(
     fun initIfNeeded(chatId: Long) {
         val contextEntries = contexts.computeIfAbsent(chatId) { mutableListOf() }
         if (contextEntries.isEmpty()) {
-            contextEntries += "system" to systemPromptProvider().orEmpty()
+            contextEntries += "system" to safeSystemPrompt(null)
         } else if (contextEntries.first().first != "system") {
-            contextEntries.add(0, "system" to systemPromptProvider().orEmpty())
+            contextEntries.add(0, "system" to safeSystemPrompt(null))
+        } else if (contextEntries.first().second.isBlank()) {
+            contextEntries[0] = "system" to safeSystemPrompt(null)
         }
     }
 
@@ -40,6 +48,7 @@ class ConversationMemory(
     }
 
     fun append(chatId: Long, role: String, content: String) {
+        if (role == "system") return
         val context = contexts.computeIfAbsent(chatId) { mutableListOf() }
         if (role == "user" && shouldSkip(content)) return
         context += role to content
@@ -61,17 +70,17 @@ class ConversationMemory(
                 if (shouldSkip(content)) continue
                 cleaned += role to content
             }
-            if (!seenSystem) cleaned.add(0, "system" to systemPromptProvider())
+            if (!seenSystem) cleaned.add(0, "system" to safeSystemPrompt(null))
             contexts[chatId] = trim(cleaned)
         }
     }
 
     private fun trim(history: List<Pair<String, String>>): MutableList<Pair<String, String>> {
-        val system = history.firstOrNull { it.first == "system" }
+        val system = safeSystemPrompt(history.firstOrNull { it.first == "system" }?.second)
         val rest = history.filter { it.first != "system" }
         val trimmedRest = if (rest.size > MAX_CONTEXT_MESSAGES) rest.takeLast(MAX_CONTEXT_MESSAGES) else rest
         return buildList {
-            if (system != null) add(system)
+            add("system" to system)
             addAll(trimmedRest)
         }.toMutableList()
     }

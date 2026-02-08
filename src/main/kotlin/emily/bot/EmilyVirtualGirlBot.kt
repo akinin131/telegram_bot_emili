@@ -52,6 +52,7 @@ import org.telegram.telegrambots.meta.api.objects.chatmember.ChatMember
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
+    private val analyticsRepository: AnalyticsRepository,
     private val chatHistoryRepository: ChatHistoryRepository,
     private val userActivityRepository: UserActivityRepository,
     private val chatService: ChatService,
@@ -838,7 +839,9 @@ Output ONLY the tags.
             val lastTurns = chatHistoryRepository.getLast(chatId, limit = 20)
             if (lastTurns.isNotEmpty()) {
                 lastTurns.forEach { turn ->
-                    memory.append(chatId, turn.role, turn.text)
+                    if (turn.role == "user" || turn.role == "assistant") {
+                        memory.append(chatId, turn.role, turn.text)
+                    }
                 }
             }
         }
@@ -874,11 +877,24 @@ Output ONLY the tags.
         sendText(chatId, result.text)
 
         if (result.tokensUsed > 0) {
+            val textBefore = balance.textTokensLeft
+            val imageBefore = balance.imageCreditsLeft
             balance.textTokensLeft -= result.tokensUsed
             if (balance.textTokensLeft < 0) balance.textTokensLeft = 0
             repository.put(balance)
 
             repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to chatModel))
+            analyticsRepository.logSpend(
+                userId = chatId,
+                plan = balance.plan,
+                spentTextTokens = result.tokensUsed,
+                spentImageCredits = 0,
+                textAvailableBefore = textBefore,
+                imageAvailableBefore = imageBefore,
+                textLeftAfter = balance.textTokensLeft,
+                imageLeftAfter = balance.imageCreditsLeft,
+                source = "chat"
+            )
         }
 
         if (balance.plan == null && balance.textTokensLeft <= 0) {
@@ -959,11 +975,24 @@ Output ONLY the tags.
 
         sendPhoto(chatId, bytes, caption = null)
 
+        val textBefore = balance.textTokensLeft
+        val imageBefore = balance.imageCreditsLeft
         balance.imageCreditsLeft -= 1
         balance.dayImageUsed += 1
         repository.put(balance)
 
         repository.logUsage(chatId, 0, mapOf("type" to "image", "model" to modelName, "credits_used" to 1))
+        analyticsRepository.logSpend(
+            userId = chatId,
+            plan = balance.plan,
+            spentTextTokens = 0,
+            spentImageCredits = 1,
+            textAvailableBefore = textBefore,
+            imageAvailableBefore = imageBefore,
+            textLeftAfter = balance.textTokensLeft,
+            imageLeftAfter = balance.imageCreditsLeft,
+            source = "image:$modelName"
+        )
 
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
             sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
@@ -1112,6 +1141,14 @@ Output ONLY the tags.
                 balance.imageCreditsLeft += plan.monthlyImageCredits
                 repository.put(balance)
                 repository.addPayment(chatId, payload, totalRub)
+                analyticsRepository.logTopUp(
+                    userId = chatId,
+                    plan = balance.plan,
+                    topupTextTokens = plan.monthlyTextTokens,
+                    topupImageCredits = plan.monthlyImageCredits,
+                    source = "payment:plan:${plan.code}",
+                    amountRub = totalRub
+                )
                 sendEphemeral(
                     session,
                     chatId,
@@ -1132,6 +1169,14 @@ Output ONLY the tags.
                 balance.imageCreditsLeft += pack.images
                 repository.put(balance)
                 repository.addPayment(chatId, payload, totalRub)
+                analyticsRepository.logTopUp(
+                    userId = chatId,
+                    plan = balance.plan,
+                    topupTextTokens = 0,
+                    topupImageCredits = pack.images,
+                    source = "payment:pack:${pack.code}",
+                    amountRub = totalRub
+                )
                 sendEphemeral(
                     session,
                     chatId,
@@ -1145,16 +1190,21 @@ Output ONLY the tags.
     private suspend fun ensureUserBalance(userId: Long): UserBalance {
         val balance = repository.get(userId)
         val now = System.currentTimeMillis()
+        var changed = false
         if (balance.planExpiresAt?.let { now > it } == true) {
             balance.plan = null
             balance.planExpiresAt = null
+            changed = true
         }
         val today = LocalDate.now().toString()
         if (balance.dayStamp != today) {
             balance.dayStamp = today
             balance.dayImageUsed = 0
+            changed = true
         }
-        repository.put(balance)
+        if (changed) {
+            repository.put(balance)
+        }
         return balance
     }
 

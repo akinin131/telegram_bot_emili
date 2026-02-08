@@ -11,10 +11,6 @@ enum class Plan(
     val monthlyImageCredits: Int,
     val photoUrl: String
 ) {
-    /**
-     * Рыночный вход (чуть ниже конкурентов), но с огромной маржой для тебя.
-     * Минимум 800k токенов соблюдён.
-     */
     BASIC(
         code = "basic",
         title = Strings.get("plan.title.basic"),
@@ -24,9 +20,6 @@ enum class Plan(
         photoUrl = "https://drive.google.com/uc?export=download&id=1TCRXGBCDeju4zjER_lUvsn5yZPcv-V7s"
     ),
 
-    /**
-     * Средний план — рыночный по ощущению, чуть ниже конкурентов по цене.
-     */
     PRO(
         code = "pro",
         title = Strings.get("plan.title.pro"),
@@ -36,9 +29,6 @@ enum class Plan(
         photoUrl = "https://drive.google.com/uc?export=download&id=1a3kI5IXbX95QMSpRb72vj0RRIKaXs9T6"
     ),
 
-    /**
-     * Топ — премиум по рынку, но чуть дешевле большинства верхних тиров.
-     */
     ULTRA(
         code = "ultra",
         title = Strings.get("plan.title.ultra"),
@@ -60,9 +50,6 @@ enum class ImagePack(
     val images: Int,
     val photoUrl: String
 ) {
-    /**
-     * Пакеты картинок — очень маржинальный продукт при цене генерации ~$0.01/картинка.
-     */
     P20(
         code = "pack20",
         title = Strings.get("pack.title.p20"),
@@ -82,10 +69,6 @@ enum class ImagePack(
         fun byCode(code: String?): ImagePack? = entries.firstOrNull { it.code == code }
     }
 }
-
-/**
- * Free-пакет: достаточно, чтобы зацепить, но чтобы быстро упереться в лимит и конвертнуться.
- */
 const val FREE_TEXT_TOKENS = 50_000
 const val FREE_IMAGE_CREDITS = 1
 
