@@ -50,6 +50,13 @@ enum class ImagePack(
     val images: Int,
     val photoUrl: String
 ) {
+    P10(
+        code = "pack10",
+        title = Strings.get("pack.title.p10"),
+        priceRub = 99,
+        images = 10,
+        photoUrl = "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
+    ),
     P20(
         code = "pack20",
         title = Strings.get("pack.title.p20"),

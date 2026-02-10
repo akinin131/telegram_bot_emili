@@ -93,6 +93,7 @@ class EmilyVirtualGirlBot(
     private sealed class PendingRetry {
         data class Chat(val userText: String) : PendingRetry()
         data class Image(val originalPrompt: String) : PendingRetry()
+        data object Scene : PendingRetry()
     }
 
     private data class SessionState(
@@ -177,11 +178,11 @@ class EmilyVirtualGirlBot(
 
     fun registerBotMenu() = runBlocking {
         val commands = listOf(
-            BotCommand("/start", Strings.get("command.start")),
+            BotCommand("/pic", Strings.get("command.pic")),
+            BotCommand("/scene", Strings.get("command.scene")),
             BotCommand("/buy", Strings.get("command.buy")),
             BotCommand("/balance", Strings.get("command.balance")),
             BotCommand("/reset", Strings.get("command.reset")),
-            BotCommand("/pic", Strings.get("command.pic"))
         )
         executeSafe(SetMyCommands(commands, BotCommandScopeDefault(), null))
     }
@@ -206,6 +207,24 @@ rating:general, masterpiece, absurdres, highly detailed, very aesthetic, newest,
 Output ONLY the tags.
 """.trimIndent()
 
+    private val scenePromptSystem = """
+You generate prompts for a Stable Diffusion image model from dialogue context.
+
+Rules:
+- Output ONE line only
+- Output ONLY comma-separated tags
+- No sentences, no explanations, no instructions
+- Use short visual tags (1–3 words)
+- Prefer danbooru-style tags
+- Prioritize the latest dialogue messages; they define the current scene now
+- If earlier and later messages conflict, use the later messages
+
+Order:
+rating, quality/style, subject count, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action
+
+Output ONLY the tags.
+""".trimIndent()
+
     private val chatModel = "venice-uncensored"
     private val animeImageModelName = "wai-Illustrious"
     private val realisticImageModelName = "lustify-v7"
@@ -220,6 +239,7 @@ Output ONLY the tags.
         const val BALANCE = "💰 Баланс"
         const val BUY = "🛍 Купить"
         const val PIC = "🖼 Картинка"
+        const val SCENE = "🎬 Показать сцену"
         const val RESET = "♻️ Сброс"
         const val HELP = "ℹ️ Помощь"
     }
@@ -358,8 +378,10 @@ Output ONLY the tags.
                 textRaw.equals("/buy", true) ||
                 textRaw.equals("/balance", true) ||
                 textRaw.equals("/reset", true) ||
+                textRaw.equals("/scene", true) ||
                 textRaw.equals(MenuBtn.BUY, true) ||
                 textRaw.equals(MenuBtn.BALANCE, true) ||
+                textRaw.equals(MenuBtn.SCENE, true) ||
                 textRaw.equals(MenuBtn.RESET, true) ||
                 textRaw.equals(MenuBtn.HELP, true)
     }
@@ -432,70 +454,42 @@ Output ONLY the tags.
         chatId: Long,
         textRaw: String
     ): Boolean {
-
-        println("SUB_GATE ▶ start | chatId=$chatId | text='$textRaw'")
-
-        // 1️⃣ bypass по командам
         if (shouldBypassSubscriptionGate(textRaw)) {
-            println("SUB_GATE ▶ bypass by command/text")
             return true
         }
 
-        // 2️⃣ проверка подписки
         val subscribed = runCatching {
             isSubscribedToGroup(session, chatId)
         }.getOrElse {
-            println("SUB_GATE ❌ isSubscribedToGroup error: ${it.message}")
             false
         }
 
-        println("SUB_GATE ▶ subscribed=$subscribed")
-
         if (subscribed) {
-            println("SUB_GATE ▶ user IS subscribed → allow")
             return true
         }
 
-        // 3️⃣ загрузка счётчика бесплатных сообщений
         if (!session.state.freeMessagesLoaded) {
-            println("SUB_GATE ▶ loading freeMessages from DB")
 
             val activity = userActivityRepository.getOrCreate(chatId, chatId)
             session.state.freeMessagesWithoutSubscription = activity.freeMessagesWithoutSubscription
             session.state.freeMessagesLoaded = true
-
-            println(
-                "SUB_GATE ▶ loaded freeMessagesWithoutSubscription=" +
-                        session.state.freeMessagesWithoutSubscription
-            )
         }
 
-        // 4️⃣ проверка лимита
         val current = session.state.freeMessagesWithoutSubscription
-        println(
-            "SUB_GATE ▶ check limit | current=$current | limit=$freeMessagesWithoutSubscriptionLimit"
-        )
 
         if (current >= freeMessagesWithoutSubscriptionLimit) {
-            println("SUB_GATE ⛔ LIMIT REACHED → asking subscription")
-
             sendSubscriptionRequired(session, chatId)
             return false
         }
 
-        // 5️⃣ увеличиваем счётчик
         val newCount = current + 1
         session.state.freeMessagesWithoutSubscription = newCount
-
-        println("SUB_GATE ▶ increment freeMessages → $newCount")
 
         runCatching {
             userActivityRepository.setFreeMessagesWithoutSubscription(chatId, newCount)
         }.onFailure {
-            println("SUB_GATE ⚠️ failed to persist freeMessages: ${it.message}")
         }
 
-        println("SUB_GATE ▶ allow message")
         return true
     }
 
@@ -543,6 +537,12 @@ Output ONLY the tags.
                 )
             }
 
+            textRaw.equals(MenuBtn.SCENE, true) -> {
+                ensureUserBalance(chatId)
+                memory.autoClean(chatId)
+                handleSceneImage(session, chatId)
+            }
+
             textRaw.equals(MenuBtn.RESET, true) -> {
                 memory.reset(chatId)
                 chatHistoryRepository.clear(chatId)
@@ -556,12 +556,14 @@ Output ONLY the tags.
                     appendLine("• ${MenuBtn.BUY} — купить план/пакет")
                     appendLine("• ${MenuBtn.BALANCE} — посмотреть баланс")
                     appendLine("• ${MenuBtn.PIC} — генерация картинки")
+                    appendLine("• ${MenuBtn.SCENE} — текущая сцена диалога")
                     appendLine("• ${MenuBtn.RESET} — сбросить диалог")
                     appendLine()
                     appendLine("🖼 Можно так:")
                     appendLine("• нажми ${MenuBtn.PIC} и отправь описание")
                     appendLine("• или: $imageTag котёнок в дождь")
                     appendLine("• или: /pic котёнок в дождь")
+                    appendLine("• или: /scene")
                 }
                 sendEphemeral(session, chatId, help, ttlSeconds = 35)
             }
@@ -604,6 +606,13 @@ Output ONLY the tags.
                     "✅ Отлично! Введите описание изображения одним сообщением 🙂",
                     ttlSeconds = 35
                 )
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            textRaw.equals("/scene", true) -> {
+                ensureUserBalance(chatId)
+                memory.autoClean(chatId)
+                handleSceneImage(session, chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -676,6 +685,10 @@ Output ONLY the tags.
                     is PendingRetry.Image -> {
                         session.state.lastUserPromptForImage = pending.originalPrompt
                         handleImage(session, chatId, "$imageTag ${pending.originalPrompt}")
+                    }
+
+                    PendingRetry.Scene -> {
+                        handleSceneImage(session, chatId)
                     }
                 }
             }
@@ -818,17 +831,33 @@ Output ONLY the tags.
         rows += listOf(
             InlineKeyboardButton().apply {
                 text = Strings.get("buy.menu.pack.p10")
+                callbackData = "buy:pack:${ImagePack.P10.code}"
+            }
+        )
+        rows += listOf(
+            InlineKeyboardButton().apply {
+                text = Strings.get("buy.menu.pack.p20")
                 callbackData = "buy:pack:${ImagePack.P20.code}"
             }
         )
         rows += listOf(
             InlineKeyboardButton().apply {
-                text = Strings.get("buy.menu.pack.p50")
+                text = Strings.get("buy.menu.pack.p100")
                 callbackData = "buy:pack:${ImagePack.P100.code}"
             }
         )
 
-        sendSystemText(session, chatId, Strings.get("buy.menu.text"), html = false)
+        val keyboard = InlineKeyboardMarkup().apply {
+            this.keyboard = rows
+        }
+
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = Strings.get("buy.menu.text"),
+            html = false,
+            replyMarkup = keyboard
+        )
     }
 
     private suspend fun handleChat(session: ChatSession, chatId: Long, text: String) {
@@ -906,7 +935,7 @@ Output ONLY the tags.
         val balance = ensureUserBalance(chatId)
         val cap = dailyCap(balance.plan)
 
-        if (balance.plan == null && balance.imageCreditsLeft < 1) {
+        if (balance.plan != null && balance.dayImageUsed >= cap) {
             sendEphemeral(session, chatId, Strings.get("image.daily.limit", cap), ttlSeconds = 20)
             return
         }
@@ -999,6 +1028,93 @@ Output ONLY the tags.
         }
     }
 
+    private suspend fun handleSceneImage(session: ChatSession, chatId: Long) {
+        val balance = ensureUserBalance(chatId)
+        val cap = dailyCap(balance.plan)
+
+        if (balance.plan != null && balance.dayImageUsed >= cap) {
+            sendEphemeral(session, chatId, Strings.get("image.daily.limit", cap), ttlSeconds = 20)
+            return
+        }
+        if (balance.imageCreditsLeft <= 0) {
+            sendEphemeral(session, chatId, Strings.get("image.no.credits"), ttlSeconds = 20)
+            return
+        }
+
+        val promptBuildResult = retryOnceAfterDelayIfNetwork {
+            withUploadPhoto(session, chatId) { buildScenePrompt(chatId) }
+        }
+
+        if (promptBuildResult.isFailure) {
+            val token = putRetry(session, PendingRetry.Scene)
+            sendRetryMessage(session, chatId, NETWORK_FAIL_TEXT_IMAGE, token)
+            return
+        }
+
+        val finalPrompt = promptBuildResult.getOrThrow()
+        if (finalPrompt.isBlank()) {
+            sendEphemeral(session, chatId, Strings.get("scene.context.empty"), ttlSeconds = 15)
+            return
+        }
+
+        val style = defaultImageStyle
+        val (service, modelName) = when (style) {
+            ImageStyle.ANIME -> animeImageService to animeImageModelName
+            ImageStyle.REALISTIC -> realisticImageService to realisticImageModelName
+        }
+
+        val imageResult: Result<ByteArray?> = retryOnceAfterDelayIfNetwork {
+            withUploadPhoto(session, chatId) {
+                withContext(Dispatchers.IO) { service.generateImage(finalPrompt, defaultPersona) }
+            }
+        }
+
+        if (imageResult.isFailure) {
+            val token = putRetry(session, PendingRetry.Scene)
+            sendRetryMessage(session, chatId, NETWORK_FAIL_TEXT_IMAGE, token)
+            return
+        }
+
+        val bytes: ByteArray? = imageResult.getOrThrow()
+        if (bytes == null) {
+            val token = putRetry(session, PendingRetry.Scene)
+            sendRetryMessage(
+                session,
+                chatId,
+                "😈 Ну вооооот… картинка не вылезла.\n" +
+                        "Похоже, сервер решил сделать вид, что он занят.\n\n" +
+                        "Жми кнопку — попробуем ещё раз.",
+                token
+            )
+            return
+        }
+
+        sendPhoto(chatId, bytes, caption = null)
+
+        val textBefore = balance.textTokensLeft
+        val imageBefore = balance.imageCreditsLeft
+        balance.imageCreditsLeft -= 1
+        balance.dayImageUsed += 1
+        repository.put(balance)
+
+        repository.logUsage(chatId, 0, mapOf("type" to "image", "model" to modelName, "credits_used" to 1))
+        analyticsRepository.logSpend(
+            userId = chatId,
+            plan = balance.plan,
+            spentTextTokens = 0,
+            spentImageCredits = 1,
+            textAvailableBefore = textBefore,
+            imageAvailableBefore = imageBefore,
+            textLeftAfter = balance.textTokensLeft,
+            imageLeftAfter = balance.imageCreditsLeft,
+            source = "image:scene:$modelName"
+        )
+
+        if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
+            sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
+        }
+    }
+
     private fun hasCyrillic(text: String): Boolean = Regex("[а-яА-ЯёЁ]").containsMatchIn(text)
 
     private suspend fun buildImagePrompt(chatId: Long, originalPrompt: String): String {
@@ -1020,6 +1136,54 @@ Output ONLY the tags.
         }
 
         return limitPromptLength(prompt, 1000)
+    }
+
+    private suspend fun buildScenePrompt(chatId: Long): String {
+        val recentTurns = recentDialogueTurns(chatId, limit = 7)
+        if (recentTurns.isEmpty()) return ""
+
+        val dialogue = recentTurns.joinToString("\n") { (role, text) ->
+            "${role.uppercase(Locale.ROOT)}: ${text.trim()}"
+        }
+
+        val history = listOf(
+            "system" to scenePromptSystem,
+            "user" to """
+Conversation (oldest to newest):
+$dialogue
+
+Generate image tags for the CURRENT scene at the latest dialogue moment.
+Prioritize the newest messages if older messages conflict.
+""".trimIndent()
+        )
+        val result = chatService.generateReply(history)
+        var prompt = normalizePrompt(result.text)
+        if (prompt.isBlank() || prompt == Strings.get("chat.connection.issue")) {
+            prompt = normalizePrompt(recentTurns.last().second)
+        }
+
+        if (hasCyrillic(prompt)) {
+            val translated = translateRuToEn(prompt)
+            if (!translated.isNullOrBlank()) {
+                prompt = normalizePrompt(translated)
+            }
+        }
+
+        return limitPromptLength(prompt, 1000)
+    }
+
+    private suspend fun recentDialogueTurns(chatId: Long, limit: Int): List<Pair<String, String>> {
+        val fromMemory = memory.history(chatId)
+            .filter { (role, _) -> role == "user" || role == "assistant" }
+            .takeLast(limit)
+        if (fromMemory.isNotEmpty()) return fromMemory
+
+        val fromDb = runCatching { chatHistoryRepository.getLast(chatId, limit = maxOf(20, limit)) }
+            .getOrElse { emptyList() }
+            .filter { it.role == "user" || it.role == "assistant" }
+            .takeLast(limit)
+
+        return fromDb.map { it.role to it.text }
     }
 
     private fun normalizePrompt(text: String): String {
@@ -1217,7 +1381,7 @@ Output ONLY the tags.
 
     private fun isDeletableCommand(text: String): Boolean {
         val t = text.trim().lowercase()
-        return t == "/start" || t == "/buy" || t == "/balance" || t == "/reset" || t == "/pic"
+        return t == "/start" || t == "/buy" || t == "/balance" || t == "/reset" || t == "/pic" || t == "/scene"
     }
 
     private suspend fun deleteUserCommand(chatId: Long, messageId: Int, text: String) {
