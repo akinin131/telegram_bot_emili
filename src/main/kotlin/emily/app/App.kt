@@ -6,6 +6,7 @@ import emily.data.ChatHistoryRepository
 import emily.data.AnalyticsRepository
 import emily.data.DataRetentionService
 import emily.data.UserActivityRepository
+import emily.data.UserSettingsRepository
 import emily.service.ChatService
 import emily.service.ConversationMemory
 import emily.service.ImageService
@@ -55,6 +56,7 @@ fun main() {
     val retentionService = DataRetentionService()
     val chatHistoryRepository = ChatHistoryRepository()
     val userActivityRepository = UserActivityRepository()
+    val userSettingsRepository = UserSettingsRepository()
     val chatService = ChatService(okHttpClient, config.veniceToken, CHAT_MODEL)
 
     val animeImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_ANIME)
@@ -68,6 +70,7 @@ fun main() {
         analyticsRepository = analyticsRepository,
         chatHistoryRepository= chatHistoryRepository,
         userActivityRepository = userActivityRepository,
+        userSettingsRepository = userSettingsRepository,
         chatService = chatService,
         animeImageService = animeImageService,
         realisticImageService = realisticImageService,

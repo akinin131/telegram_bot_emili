@@ -5,7 +5,7 @@ import java.time.LocalDate
 
 enum class Plan(
     val code: String,
-    val title: String,
+    private val titleKey: String,
     val priceRub: Int,
     val monthlyTextTokens: Int,
     val monthlyImageCredits: Int,
@@ -13,7 +13,7 @@ enum class Plan(
 ) {
     BASIC(
         code = "basic",
-        title = Strings.get("plan.title.basic"),
+        titleKey = "plan.title.basic",
         priceRub = 399,
         monthlyTextTokens = 800_000,
         monthlyImageCredits = 25,
@@ -22,7 +22,7 @@ enum class Plan(
 
     PRO(
         code = "pro",
-        title = Strings.get("plan.title.pro"),
+        titleKey = "plan.title.pro",
         priceRub = 899,
         monthlyTextTokens = 2_000_000,
         monthlyImageCredits = 80,
@@ -31,7 +31,7 @@ enum class Plan(
 
     ULTRA(
         code = "ultra",
-        title = Strings.get("plan.title.ultra"),
+        titleKey = "plan.title.ultra",
         priceRub = 1499,
         monthlyTextTokens = 4_000_000,
         monthlyImageCredits = 180,
@@ -41,32 +41,35 @@ enum class Plan(
     companion object {
         fun byCode(code: String?): Plan? = entries.firstOrNull { it.code == code }
     }
+
+    val title: String
+        get() = Strings.get(titleKey)
 }
 
 enum class ImagePack(
     val code: String,
-    val title: String,
+    private val titleKey: String,
     val priceRub: Int,
     val images: Int,
     val photoUrl: String
 ) {
     P10(
         code = "pack10",
-        title = Strings.get("pack.title.p10"),
+        titleKey = "pack.title.p10",
         priceRub = 99,
         images = 10,
         photoUrl = "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
     ),
     P20(
         code = "pack20",
-        title = Strings.get("pack.title.p20"),
+        titleKey = "pack.title.p20",
         priceRub = 149,
         images = 20,
         photoUrl = "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
     ),
     P100(
         code = "pack100",
-        title = Strings.get("pack.title.p100"),
+        titleKey = "pack.title.p100",
         priceRub = 349,
         images = 100,
         photoUrl = "https://drive.google.com/uc?export=download&id=1f67uMVIMFWCe4DvQU4GlgnI5vx0cH6iC"
@@ -75,6 +78,9 @@ enum class ImagePack(
     companion object {
         fun byCode(code: String?): ImagePack? = entries.firstOrNull { it.code == code }
     }
+
+    val title: String
+        get() = Strings.get(titleKey)
 }
 const val FREE_TEXT_TOKENS = 50_000
 const val FREE_IMAGE_CREDITS = 1
