@@ -45,3 +45,5 @@ secrets.properties
 emilyvirtualgirlbot-firebase-adminsdk-fbsvc-2b1c251dfd.json
 youemilybot-firebase-adminsdk-fbsvc-2e41c00bf2.json
 youemilybot-firebase-adminsdk-fbsvc-2efef1cc11.json
+
+deploy.sh
