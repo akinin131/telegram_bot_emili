@@ -10,6 +10,7 @@ class UserSettingsRepository(
 ) {
     private val settingsRef by lazy { database.getReference("userSettings") }
     private val selectedCharacterKey = "selectedCharacter"
+    private val selectedStoryKey = "selectedStory"
 
     suspend fun getLanguage(userId: Long): String? = withContext(Dispatchers.IO) {
         val snapshot = settingsRef.child(userId.toString()).child("language").awaitSingle()
@@ -44,6 +45,28 @@ class UserSettingsRepository(
         val normalized = characterId.trim().lowercase(Locale.ROOT)
         val payload = mapOf(
             selectedCharacterKey to normalized,
+            "updatedAt" to System.currentTimeMillis()
+        )
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+    }
+
+    suspend fun getSelectedStory(userId: Long): String? = withContext(Dispatchers.IO) {
+        val snapshot = settingsRef.child(userId.toString()).child(selectedStoryKey).awaitSingle()
+        snapshot.getValue(String::class.java)?.trim()?.lowercase(Locale.ROOT)
+    }
+
+    suspend fun setSelectedStory(userId: Long, storyId: String): Any? = withContext(Dispatchers.IO) {
+        val normalized = storyId.trim().lowercase(Locale.ROOT)
+        val payload = mapOf(
+            selectedStoryKey to normalized,
+            "updatedAt" to System.currentTimeMillis()
+        )
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+    }
+
+    suspend fun clearSelectedStory(userId: Long): Any? = withContext(Dispatchers.IO) {
+        val payload = mapOf<String, Any?>(
+            selectedStoryKey to null,
             "updatedAt" to System.currentTimeMillis()
         )
         settingsRef.child(userId.toString()).updateChildrenAsync(payload)

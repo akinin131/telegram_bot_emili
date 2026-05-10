@@ -172,6 +172,7 @@ class EmilyVirtualGirlBot(
         val commands = listOf(
             BotCommand("/start", Strings.get("command.start")),
             BotCommand("/character", Strings.get("command.character")),
+            BotCommand("/story", Strings.get("command.story")),
             BotCommand("/pic", Strings.get("command.pic")),
             BotCommand("/scene", Strings.get("command.scene")),
             BotCommand("/buy", Strings.get("command.buy")),
@@ -233,6 +234,15 @@ Output ONLY the tags.
         val systemPrompt: String,
         val imagePersona: String,
         val startDialogSeed: String
+    )
+
+    private data class StoryScenario(
+        val id: String,
+        val title: String,
+        val shortDescription: String,
+        val setup: String,
+        val systemInstructions: String,
+        val openingLine: String
     )
 
     private val characterEmily = CharacterProfile(
@@ -316,6 +326,66 @@ Output ONLY the tags.
 
     private val availableCharacters = listOf(characterEmily, characterLina, characterViktoria)
 
+    private val availableStories = listOf(
+        StoryScenario(
+            id = "penthouse-night",
+            title = "Пентхаус после полуночи",
+            shortDescription = "Частная вечеринка на верхнем этаже, где гости разошлись, а вы остались вдвоем.",
+            setup = "Вы остаетесь в пентхаусе после закрытия вечеринки. Вид на город с высоты 50 этажа, музыка играет тихо, а алкоголь делает разговоры смелее.",
+            systemInstructions = "Играй атмосферу роскошного пентхауса: панорамные окна, мягкие диваны, остатки ужина, приглушенный свет. " +
+                    "Позволь диалогам становиться всё более откровенными, а прикосновениям — всё смелее. Не торопи события, но и не стесняйся описывать желания.",
+            openingLine = "Гости ушли, а я не хочу чтобы вечер заканчивался. Хочешь посмотреть на город отсюда, когда он погружается в тишину?"
+        ),
+        StoryScenario(
+            id = "spa-secret",
+            title = "Тайны спа-центра",
+            shortDescription = "Закрытый спа-центр после часов работы, парная, джакузи и масла для массажа.",
+            setup = "Вы остались в элитном спа-центре после закрытия. Парная уже нагрета, джакузи ждет, а ароматы масел наполняют воздух.",
+            systemInstructions = "Веди историю через ощущения: тепло парной, прохладу бассейна, скользкие текстуры масел, капли воды на коже. " +
+                    "Создавай напряжение через прикосновения, массаж и постепенно снимающиеся барьеры. Описывай физические реакции без цензуры.",
+            openingLine = "Все ушли, а я оставила ключи. Парная уже готова, и я достала специальное масло... решишь остаться и узнать, что оно делает?"
+        ),
+        StoryScenario(
+            id = "art-gallery-night",
+            title = "Галерея после закрытия",
+            shortDescription = "Вы заперты в художественной галерее на ночь, и каждый экспонат становится поводом для откровенности.",
+            setup = "Случайно оказавшись запертыми в галерее современного искусства, вы решаете не ждать утра, а исследовать... и друг друга.",
+            systemInstructions = "Используй искусство как предлог для откровенных разговоров и действий. " +
+                    "Описывай, как картины и скульптуры влияют на ваше настроение, как тени от экспонатов падают на тела, как тишина зала делает каждый звук громче. " +
+                    "Позволь сюжету развиваться от эстетики к телесности.",
+            openingLine = "Кажется, нас заперли. Но знаешь, в этой тишине искусство воспринимается совсем иначе... особенно когда никто не мешает."
+        ),
+        StoryScenario(
+            id = "vip-lounge",
+            title = "VIP-зал аэропорта",
+            shortDescription = "Задержка рейса на 8 часов, закрытый VIP-зал и полное уединение.",
+            setup = "Ваш рейс задерживают на ночь. VIP-зал опустел, остался бар с неограниченным алкоголем и удобные диваны в укромных уголках.",
+            systemInstructions = "Играй атмосферу временного безвременья: аэропорт за стенами, алкоголь, уединение, ощущение что вас никто не найдет. " +
+                    "Начни с легкого флирта у бара и постепенно переходи к более откровенным предложениям. Не бойся описывать желания прямо.",
+            openingLine = "Рейс отменен до утра. Бар открыт только для нас, и я уже налила тебе любимый напиток. Как думаешь, чем можно заняться 8 часов в VIP-зале?"
+        ),
+        StoryScenario(
+            id = "wine-cellar",
+            title = "Винный погреб",
+            shortDescription = "Туристический гид оставляет вас запертыми в винном погребе старого замка.",
+            setup = "Вы остаетесь одни в винном погребе старинного замка. Полумрак, прохлада, редкие бутылки вина и ощущение оторванности от мира.",
+            systemInstructions = "Используй атмосферу винного погреба: прохлада, запах пробок и вина, полумрак, звяканье бокалов. " +
+                    "Начни с дегустации редкого вина и позволь алкоголю и уединению сделать разговоры всё более откровенными. " +
+                    "Описывай, как вино разжигает не только язык, но и другие части тела.",
+            openingLine = "Кажется, гид нас и правда запер. Но в этом погребе есть вино, которое не пробовали даже короли... хочешь попробовать со мной?"
+        ),
+        StoryScenario(
+            id = "private-yacht",
+            title = "Частная яхта",
+            shortDescription = "Плавание по ночному морю, безлюдный пляж и только вы двое на борту.",
+            setup = "Вы отправляетесь в ночное плавание на частной яхте. Капитан уходит в свою каюту, оставляя вас на палубе под звездами.",
+            systemInstructions = "Создай атмосферу свободы и уединения: ночное море, звезды, качка яхты, соленый воздух. " +
+                    "Начни с разговоров под звездами и постепенно переходи к исследованию друг друга на палубе, в каюте или на безлюдном пляже, где вы причалите. " +
+                    "Не стесняйся описывать моральные и физические границы, которые вы переступаете.",
+            openingLine = "Капитан сказал, что не будет нас беспокоить до рассвета. Морское ночью такое... пробуждающее. Хочешь исследовать его со мной?"
+        )
+    )
+
     private enum class ImageStyle { ANIME, REALISTIC }
 
     private val defaultImageStyle = ImageStyle.ANIME
@@ -325,6 +395,7 @@ Output ONLY the tags.
         const val BUY = "🛍 Купить"
         const val PIC = "🖼 Картинка"
         const val SCENE = "🎬 Показать сцену"
+        const val STORY = "🎭 Истории"
         const val CHARACTER = "👩 Сменить персонажа"
         const val RESET = "♻️ Сброс"
         const val HELP = "ℹ️ Помощь"
@@ -335,29 +406,69 @@ Output ONLY the tags.
         return availableCharacters.firstOrNull { it.id == normalized }
     }
 
+    private fun storyById(id: String?): StoryScenario? {
+        val normalized = id?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return availableStories.firstOrNull { it.id == normalized }
+    }
+
     private fun normalizeCharacterIndex(index: Int): Int {
         if (availableCharacters.isEmpty()) return 0
         val size = availableCharacters.size
         return ((index % size) + size) % size
     }
 
-    private fun applyCharacterToMemory(chatId: Long, character: CharacterProfile) {
+    private fun normalizeStoryIndex(index: Int): Int {
+        if (availableStories.isEmpty()) return 0
+        val size = availableStories.size
+        return ((index % size) + size) % size
+    }
+
+    private suspend fun activeStory(chatId: Long): StoryScenario? {
+        return storyById(userSettingsRepository.getSelectedStory(chatId))
+    }
+
+    private fun composeSystemPrompt(character: CharacterProfile, story: StoryScenario?): String {
+        if (story == null) return character.systemPrompt
+
+        return buildString {
+            append(character.systemPrompt.trim())
+            append("\n\n")
+            append("АКТИВНАЯ ИСТОРИЯ: ")
+            append(story.title)
+            append("\n")
+            append(story.setup)
+            append("\n\n")
+            append(story.systemInstructions)
+            append("\n\n")
+            append("Правила режима истории:\n")
+            append("- Ты разыгрываешь сюжет от лица персонажа ")
+            append(character.name)
+            append(".\n")
+            append("- Продвигай сцену маленькими шагами: добавляй детали, события, выборы и реакции.\n")
+            append("- Не пересказывай всю историю сразу и не делай резких скачков времени.\n")
+            append("- Не описывай действия, мысли или слова пользователя за него.\n")
+            append("- Если пользователь уводит тему, мягко вплетай его ответ обратно в текущую сцену.\n")
+            append("- Сохраняй стиль персонажа и пиши как живой чат, а не как рассказчик.")
+        }
+    }
+
+    private fun applyCharacterToMemory(chatId: Long, character: CharacterProfile, story: StoryScenario? = null) {
         memory.initIfNeeded(chatId)
-        memory.setSystem(chatId, character.systemPrompt)
+        memory.setSystem(chatId, composeSystemPrompt(character, story))
     }
 
     private suspend fun ensureCharacterSelected(chatId: Long, requireSelectionForNewUsers: Boolean): CharacterProfile? {
         val storedId = userSettingsRepository.getSelectedCharacter(chatId)
         val storedCharacter = characterById(storedId)
         if (storedCharacter != null) {
-            applyCharacterToMemory(chatId, storedCharacter)
+            applyCharacterToMemory(chatId, storedCharacter, activeStory(chatId))
             return storedCharacter
         }
 
         val hasHistory = chatHistoryRepository.getLast(chatId, limit = 1).isNotEmpty()
         if (hasHistory || !requireSelectionForNewUsers) {
             userSettingsRepository.setSelectedCharacter(chatId, characterEmily.id)
-            applyCharacterToMemory(chatId, characterEmily)
+            applyCharacterToMemory(chatId, characterEmily, activeStory(chatId))
             return characterEmily
         }
 
@@ -445,6 +556,112 @@ Output ONLY the tags.
             }
             executeSafe(editMarkup)
         }.isSuccess
+    }
+
+    private fun storySelectionCaption(story: StoryScenario): String {
+        return Strings.get(
+            "story.selection.request.caption",
+            story.title,
+            story.shortDescription,
+            story.setup
+        )
+    }
+
+    private fun storySelectionKeyboard(index: Int): InlineKeyboardMarkup {
+        val safeIndex = normalizeStoryIndex(index)
+        val prevIndex = normalizeStoryIndex(safeIndex - 1)
+        val nextIndex = normalizeStoryIndex(safeIndex + 1)
+
+        return InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = "⬅️"
+                        callbackData = "STORY_NAV:$prevIndex"
+                    },
+                    InlineKeyboardButton().apply {
+                        text = "✅ Выбрать"
+                        callbackData = "STORY_PICK:${availableStories[safeIndex].id}"
+                    },
+                    InlineKeyboardButton().apply {
+                        text = "➡️"
+                        callbackData = "STORY_NAV:$nextIndex"
+                    }
+                ),
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = Strings.get("story.selection.clear.button")
+                        callbackData = "STORY_CLEAR"
+                    }
+                )
+            )
+        }
+    }
+
+    private suspend fun sendStoryPicker(
+        session: ChatSession,
+        chatId: Long,
+        index: Int,
+        previousMessageId: Int? = null
+    ) {
+        previousMessageId
+            ?.takeIf { it != session.state.lastSystemMessageId }
+            ?.let { runCatching { executeSafe(DeleteMessage(chatId.toString(), it)) } }
+
+        val safeIndex = normalizeStoryIndex(index)
+        val story = availableStories[safeIndex]
+
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = storySelectionCaption(story),
+            html = true,
+            replyMarkup = storySelectionKeyboard(safeIndex)
+        )
+    }
+
+    private suspend fun startStory(
+        session: ChatSession,
+        chatId: Long,
+        character: CharacterProfile,
+        story: StoryScenario,
+        pickerMessageId: Int? = null
+    ) {
+        pickerMessageId?.let { runCatching { executeSafe(DeleteMessage(chatId.toString(), it)) } }
+
+        userSettingsRepository.setSelectedStory(chatId, story.id)
+        memory.reset(chatId)
+        chatHistoryRepository.clear(chatId)
+        applyCharacterToMemory(chatId, character, story)
+
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = Strings.get("story.selection.confirmation", character.name, story.title),
+            html = true
+        )
+
+        val openingLine = story.openingLine.replace("{character}", character.name)
+        memory.append(chatId, "assistant", openingLine)
+        chatHistoryRepository.append(chatId, "assistant", openingLine)
+        sendText(chatId, openingLine)
+    }
+
+    private suspend fun clearStory(session: ChatSession, chatId: Long, pickerMessageId: Int? = null) {
+        pickerMessageId?.let { runCatching { executeSafe(DeleteMessage(chatId.toString(), it)) } }
+
+        userSettingsRepository.clearSelectedStory(chatId)
+        val character = activeCharacter(chatId)
+        memory.reset(chatId)
+        chatHistoryRepository.clear(chatId)
+        applyCharacterToMemory(chatId, character)
+
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = Strings.get("story.selection.clear"),
+            html = false
+        )
     }
 
     private fun isNetworkIssue(e: Throwable): Boolean {
@@ -579,6 +796,7 @@ Output ONLY the tags.
     private fun shouldBypassSubscriptionGate(textRaw: String): Boolean {
         return textRaw.equals("/start", true) ||
                 textRaw.equals("/character", true) ||
+                textRaw.equals("/story", true) ||
                 textRaw.equals("/buy", true) ||
                 textRaw.equals("/balance", true) ||
                 textRaw.equals("/reset", true) ||
@@ -586,6 +804,7 @@ Output ONLY the tags.
                 textRaw.equals(MenuBtn.BUY, true) ||
                 textRaw.equals(MenuBtn.BALANCE, true) ||
                 textRaw.equals(MenuBtn.SCENE, true) ||
+                textRaw.equals(MenuBtn.STORY, true) ||
                 textRaw.equals(MenuBtn.CHARACTER, true) ||
                 textRaw.equals(MenuBtn.RESET, true) ||
                 textRaw.equals(MenuBtn.HELP, true)
@@ -751,6 +970,10 @@ Output ONLY the tags.
                 handleSceneImage(session, chatId, character)
             }
 
+            textRaw.equals(MenuBtn.STORY, true) -> {
+                sendStoryPicker(session, chatId, index = 0)
+            }
+
             textRaw.equals(MenuBtn.CHARACTER, true) -> {
                 sendCharacterPicker(chatId, index = 0)
             }
@@ -781,6 +1004,11 @@ Output ONLY the tags.
 
             textRaw.equals("/character", true) -> {
                 sendCharacterPicker(chatId, index = 0)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            textRaw.equals("/story", true) -> {
+                sendStoryPicker(session, chatId, index = 0)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -902,13 +1130,54 @@ Output ONLY the tags.
                 val characterId = data.removePrefix("CHAR_PICK:")
                 val selected = characterById(characterId) ?: characterEmily
                 userSettingsRepository.setSelectedCharacter(chatId, selected.id)
-                applyCharacterToMemory(chatId, selected)
+                applyCharacterToMemory(chatId, selected, activeStory(chatId))
 
                 runCatching {
                     executeSafe(DeleteMessage(chatId.toString(), update.callbackQuery.message.messageId))
                 }
 
                 sendWelcome(chatId, selected)
+                return
+            }
+
+            data.startsWith("STORY_NAV:") -> {
+                executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
+                val index = data.removePrefix("STORY_NAV:").toIntOrNull() ?: 0
+                sendStoryPicker(
+                    session = session,
+                    chatId = chatId,
+                    index = index,
+                    previousMessageId = update.callbackQuery.message.messageId
+                )
+                return
+            }
+
+            data.startsWith("STORY_PICK:") -> {
+                executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
+                val storyId = data.removePrefix("STORY_PICK:")
+                val story = storyById(storyId)
+                if (story == null) {
+                    sendSystemText(session, chatId, Strings.get("error.story.parse"), html = false)
+                    return
+                }
+                val character = activeCharacter(chatId)
+                startStory(
+                    session = session,
+                    chatId = chatId,
+                    character = character,
+                    story = story,
+                    pickerMessageId = update.callbackQuery.message.messageId
+                )
+                return
+            }
+
+            data == "STORY_CLEAR" -> {
+                executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
+                clearStory(
+                    session = session,
+                    chatId = chatId,
+                    pickerMessageId = update.callbackQuery.message.messageId
+                )
                 return
             }
             data.startsWith("retry:") -> {
@@ -1108,10 +1377,11 @@ Output ONLY the tags.
 
     private suspend fun handleChat(session: ChatSession, chatId: Long, text: String, character: CharacterProfile) {
         val isNewDialogue = memory.history(chatId).isEmpty()
+        val story = activeStory(chatId)
 
         if (isNewDialogue) {
             memory.initIfNeeded(chatId)
-            applyCharacterToMemory(chatId, character)
+            applyCharacterToMemory(chatId, character, story)
             val lastTurns = chatHistoryRepository.getLast(chatId, limit = 50)
             if (lastTurns.isNotEmpty()) {
                 lastTurns.forEach { turn ->
@@ -1129,7 +1399,7 @@ Output ONLY the tags.
         }
 
         memory.initIfNeeded(chatId)
-        applyCharacterToMemory(chatId, character)
+        applyCharacterToMemory(chatId, character, story)
 
         memory.append(chatId, "user", text)
         chatHistoryRepository.append(chatId, "user", text)
@@ -1627,6 +1897,7 @@ Prioritize the newest messages if older messages conflict.
         val t = text.trim().lowercase()
         return t == "/start" ||
                 t == "/character" ||
+                t == "/story" ||
                 t == "/buy" ||
                 t == "/balance" ||
                 t == "/reset" ||
