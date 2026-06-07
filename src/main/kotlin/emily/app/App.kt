@@ -5,6 +5,7 @@ import emily.data.BalanceRepository
 import emily.data.ChatHistoryRepository
 import emily.data.AnalyticsRepository
 import emily.data.DataRetentionService
+import emily.data.ReferralRepository
 import emily.data.UserActivityRepository
 import emily.data.UserSettingsRepository
 import emily.service.ChatService
@@ -23,7 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-private const val CHAT_MODEL = "venice-uncensored"
+private const val CHAT_MODEL = "qwen-3-6-plus"
 private const val IMAGE_MODEL_ANIME = "wai-Illustrious"
 private const val IMAGE_MODEL_REALISTIC = "lustify-v7"
 
@@ -53,6 +54,7 @@ fun main() {
 
     val balanceRepository = BalanceRepository()
     val analyticsRepository = AnalyticsRepository()
+    val referralRepository = ReferralRepository()
     val retentionService = DataRetentionService()
     val chatHistoryRepository = ChatHistoryRepository()
     val userActivityRepository = UserActivityRepository()
@@ -68,6 +70,7 @@ fun main() {
         config = config,
         repository = balanceRepository,
         analyticsRepository = analyticsRepository,
+        referralRepository = referralRepository,
         chatHistoryRepository= chatHistoryRepository,
         userActivityRepository = userActivityRepository,
         userSettingsRepository = userSettingsRepository,

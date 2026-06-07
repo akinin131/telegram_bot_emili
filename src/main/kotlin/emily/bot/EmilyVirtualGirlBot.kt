@@ -12,6 +12,8 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.LocalDate
 import java.util.Locale
@@ -56,6 +58,7 @@ class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
     private val analyticsRepository: AnalyticsRepository,
+    private val referralRepository: ReferralRepository,
     private val chatHistoryRepository: ChatHistoryRepository,
     private val userActivityRepository: UserActivityRepository,
     private val userSettingsRepository: UserSettingsRepository,
@@ -177,6 +180,9 @@ class EmilyVirtualGirlBot(
             BotCommand("/scene", Strings.get("command.scene")),
             BotCommand("/buy", Strings.get("command.buy")),
             BotCommand("/balance", Strings.get("command.balance")),
+            BotCommand("/ref", Strings.get("command.ref")),
+            BotCommand("/partners", Strings.get("command.partners")),
+            BotCommand("/top", Strings.get("command.top")),
             BotCommand("/reset", Strings.get("command.reset"))
         )
         executeSafe(SetMyCommands(commands, BotCommandScopeDefault(), null))
@@ -313,7 +319,7 @@ Output ONLY the tags.
 
                 "Иногда можешь съязвить или поддразнить, но без перегиба.\n" +
 
-                "Не будь идеальной — допускай паузы, короткие реакции, иногда игнор части сообщения.\n" +
+                "Не будь идеальной — допускай паузы, короткие реакции\n" +
 
                 "Флирт зрелый, без спешки. Напряжение нарастает постепенно, через намёки и контроль, а не прямоту.\n" +
 
@@ -793,14 +799,32 @@ Output ONLY the tags.
         return withContext(Strings.localeContext("ru")) { Strings.get(key) }
     }
 
+    private fun commandName(textRaw: String): String {
+        return textRaw
+            .trim()
+            .substringBefore(" ")
+            .substringBefore("@")
+            .lowercase(Locale.ROOT)
+    }
+
+    private fun isStartCommand(textRaw: String): Boolean = commandName(textRaw) == "/start"
+
+    private fun isExactCommand(textRaw: String, command: String): Boolean {
+        val trimmed = textRaw.trim()
+        return commandName(trimmed) == command && !Regex("\\s").containsMatchIn(trimmed)
+    }
+
     private fun shouldBypassSubscriptionGate(textRaw: String): Boolean {
-        return textRaw.equals("/start", true) ||
-                textRaw.equals("/character", true) ||
-                textRaw.equals("/story", true) ||
-                textRaw.equals("/buy", true) ||
-                textRaw.equals("/balance", true) ||
-                textRaw.equals("/reset", true) ||
-                textRaw.equals("/scene", true) ||
+        return isStartCommand(textRaw) ||
+                isExactCommand(textRaw, "/character") ||
+                isExactCommand(textRaw, "/story") ||
+                isExactCommand(textRaw, "/buy") ||
+                isExactCommand(textRaw, "/balance") ||
+                isExactCommand(textRaw, "/ref") ||
+                isExactCommand(textRaw, "/partners") ||
+                isExactCommand(textRaw, "/top") ||
+                isExactCommand(textRaw, "/reset") ||
+                isExactCommand(textRaw, "/scene") ||
                 textRaw.equals(MenuBtn.BUY, true) ||
                 textRaw.equals(MenuBtn.BALANCE, true) ||
                 textRaw.equals(MenuBtn.SCENE, true) ||
@@ -990,7 +1014,16 @@ Output ONLY the tags.
                 sendEphemeral(session, chatId, help, ttlSeconds = 35)
             }
 
-            textRaw.equals("/start", true) -> {
+            isStartCommand(textRaw) -> {
+                extractStartReferrerId(textRaw)?.let { referrerId ->
+                    runCatching {
+                        referralRepository.registerReferral(
+                            referrerId = referrerId,
+                            invitedUserId = chatId
+                        )
+                    }
+                }
+                runCatching { referralRepository.ensureUserProfile(chatId) }
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 val selected = ensureCharacterSelected(chatId, requireSelectionForNewUsers = true)
@@ -1023,6 +1056,23 @@ Output ONLY the tags.
                 val balance = ensureUserBalance(chatId)
                 memory.autoClean(chatId)
                 sendBalance(session, chatId, balance)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isExactCommand(textRaw, "/ref") -> {
+                runCatching { referralRepository.ensureUserProfile(chatId) }
+                sendReferralLink(session, chatId)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isExactCommand(textRaw, "/partners") -> {
+                runCatching { referralRepository.ensureUserProfile(chatId) }
+                sendPartnerStats(session, chatId)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isExactCommand(textRaw, "/top") -> {
+                sendPartnerTop(session, chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -1110,7 +1160,7 @@ Output ONLY the tags.
                 executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
                 val character = activeCharacter(chatId)
                 val fakeUserMessage = character.startDialogSeed
-                handleChat(session, chatId, fakeUserMessage, character)
+                handleChat(session, chatId, fakeUserMessage, character, countReferralActivity = false)
                 return
             }
 
@@ -1371,11 +1421,221 @@ Output ONLY the tags.
         )
     }
 
+    private fun extractStartReferrerId(textRaw: String): Long? {
+        val payload = textRaw.trim().split(Regex("\\s+"), limit = 2).getOrNull(1)?.trim() ?: return null
+        if (!payload.startsWith("ref_", ignoreCase = true)) return null
+        return payload.removePrefix("ref_").removePrefix("REF_").toLongOrNull()
+    }
+
+    private fun referralLink(userId: Long): String {
+        return "https://t.me/${getBotUsername()}?start=ref_$userId"
+    }
+
+    private suspend fun sendReferralLink(session: ChatSession, chatId: Long) {
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = Strings.get(
+                "referral.link.text",
+                referralLink(chatId),
+                ReferralRepository.INVITED_ACTIVATION_BONUS_TOKENS,
+                partnerRatePercentDescription()
+            ),
+            html = false
+        )
+    }
+
+    private suspend fun sendPartnerStats(session: ChatSession, chatId: Long) {
+        val stats = referralRepository.partnerStats(chatId)
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = Strings.get(
+                "referral.partners.text",
+                stats.registeredCount,
+                stats.activatedCount,
+                stats.paidCount,
+                stats.earnedTextTokens,
+                stats.earnedImageCredits
+            ),
+            html = false
+        )
+    }
+
+    private suspend fun sendPartnerTop(session: ChatSession, chatId: Long) {
+        val top = referralRepository.topPartners(limit = 10)
+        if (top.isEmpty()) {
+            sendSystemText(session, chatId, Strings.get("referral.top.empty"), html = false)
+            return
+        }
+
+        val rows = top.mapIndexed { index, partner ->
+            Strings.get(
+                "referral.top.row",
+                index + 1,
+                partner.referrerId,
+                partner.paidCount,
+                partner.activatedCount,
+                partner.earnedTextTokens,
+                partner.earnedImageCredits
+            )
+        }
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = Strings.get("referral.top.header") + "\n" + rows.joinToString("\n"),
+            html = false
+        )
+    }
+
+    private fun partnerRatePercentDescription(): String = "${ReferralRepository.PAYMENT_BONUS_PERCENT}%"
+
+    private fun shareResultKeyboard(userId: Long): InlineKeyboardMarkup {
+        val shareUrl = "https://t.me/share/url?url=${urlEncode(referralLink(userId))}" +
+            "&text=${urlEncode(Strings.get("referral.share.text"))}"
+
+        return InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = Strings.get("referral.share.button")
+                        url = shareUrl
+                    }
+                )
+            )
+        }
+    }
+
+    private fun urlEncode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+
     private fun displayPrice(priceRub: Int): String {
         return "$priceRub₽"
     }
 
-    private suspend fun handleChat(session: ChatSession, chatId: Long, text: String, character: CharacterProfile) {
+    private suspend fun maybeActivateReferralFromChat(session: ChatSession, chatId: Long): ReferralActivationBonus? {
+        val bonus = runCatching { referralRepository.recordChatMessage(chatId) }.getOrNull() ?: return null
+        applyReferralActivationBonus(session, bonus)
+        return bonus
+    }
+
+    private suspend fun maybeActivateReferralFromGeneration(
+        session: ChatSession,
+        chatId: Long,
+        source: String
+    ): ReferralActivationBonus? {
+        val bonus = runCatching { referralRepository.activateByGeneration(chatId, source) }.getOrNull() ?: return null
+        applyReferralActivationBonus(session, bonus)
+        return bonus
+    }
+
+    private suspend fun applyReferralActivationBonus(session: ChatSession, bonus: ReferralActivationBonus) {
+        runCatching {
+            if (bonus.referrerBonusTokens > 0) {
+                repository.addTextTokens(bonus.referrerId, bonus.referrerBonusTokens)
+            }
+            repository.addTextTokens(bonus.invitedUserId, bonus.invitedBonusTokens)
+            if (bonus.referrerBonusTokens > 0) {
+                analyticsRepository.logTopUp(
+                    userId = bonus.referrerId,
+                    plan = null,
+                    topupTextTokens = bonus.referrerBonusTokens,
+                    topupImageCredits = 0,
+                    source = "referral:activation"
+                )
+            }
+            analyticsRepository.logTopUp(
+                userId = bonus.invitedUserId,
+                plan = null,
+                topupTextTokens = bonus.invitedBonusTokens,
+                topupImageCredits = 0,
+                source = "referral:invited_activation"
+            )
+        }
+
+        if (bonus.referrerBonusTokens > 0) {
+            runCatching {
+                sendText(
+                    bonus.referrerId,
+                    Strings.get(
+                        "referral.activation.referrer.notification",
+                        bonus.invitedUserId,
+                        bonus.referrerBonusTokens
+                    )
+                )
+            }
+        }
+
+        runCatching {
+            sendEphemeral(
+                session = session,
+                chatId = bonus.invitedUserId,
+                text = Strings.get("referral.activation.invited.notification", bonus.invitedBonusTokens),
+                ttlSeconds = 20
+            )
+        }
+    }
+
+    private suspend fun applyReferralPaymentBonus(
+        session: ChatSession,
+        payerId: Long,
+        purchasedTextTokens: Int,
+        purchasedImageCredits: Int,
+        paymentPayload: String
+    ) {
+        maybeActivateReferralFromGeneration(session, payerId, "payment")
+
+        val bonus = runCatching {
+            referralRepository.registerPayment(
+                invitedUserId = payerId,
+                purchasedTextTokens = purchasedTextTokens,
+                purchasedImageCredits = purchasedImageCredits,
+                paymentPayload = paymentPayload
+            )
+        }.getOrNull() ?: return
+
+        runCatching {
+            if (bonus.bonusTextTokens > 0) {
+                repository.addTextTokens(bonus.referrerId, bonus.bonusTextTokens)
+            }
+            if (bonus.bonusImageCredits > 0) {
+                repository.addImageCredits(bonus.referrerId, bonus.bonusImageCredits)
+            }
+            analyticsRepository.logTopUp(
+                userId = bonus.referrerId,
+                plan = null,
+                topupTextTokens = bonus.bonusTextTokens,
+                topupImageCredits = bonus.bonusImageCredits,
+                source = "referral:payment:${bonus.ratePercent}"
+            )
+        }
+
+        runCatching {
+            sendText(
+                bonus.referrerId,
+                Strings.get(
+                    "referral.payment.referrer.notification",
+                    bonus.invitedUserId,
+                    bonus.ratePercent,
+                    referralBonusSummary(bonus.bonusTextTokens, bonus.bonusImageCredits)
+                )
+            )
+        }
+    }
+
+    private fun referralBonusSummary(textTokens: Int, imageCredits: Int): String {
+        val parts = mutableListOf<String>()
+        if (textTokens > 0) parts += Strings.get("referral.bonus.tokens", textTokens)
+        if (imageCredits > 0) parts += Strings.get("referral.bonus.images", imageCredits)
+        return parts.joinToString(" + ").ifBlank { "0" }
+    }
+
+    private suspend fun handleChat(
+        session: ChatSession,
+        chatId: Long,
+        text: String,
+        character: CharacterProfile,
+        countReferralActivity: Boolean = true
+    ) {
         val isNewDialogue = memory.history(chatId).isEmpty()
         val story = activeStory(chatId)
 
@@ -1442,6 +1702,15 @@ Output ONLY the tags.
                 imageLeftAfter = balance.imageCreditsLeft,
                 source = "chat"
             )
+        }
+
+        val referralActivation = if (countReferralActivity) {
+            maybeActivateReferralFromChat(session, chatId)
+        } else {
+            null
+        }
+        if (referralActivation != null) {
+            balance.textTokensLeft += referralActivation.invitedBonusTokens
         }
 
         if (balance.plan == null && balance.textTokensLeft <= 0) {
@@ -1518,7 +1787,7 @@ Output ONLY the tags.
             return
         }
 
-        sendPhoto(chatId, bytes, caption = null)
+        sendPhoto(chatId, bytes, caption = null, replyMarkup = shareResultKeyboard(chatId))
 
         val textBefore = balance.textTokensLeft
         val imageBefore = balance.imageCreditsLeft
@@ -1538,6 +1807,11 @@ Output ONLY the tags.
             imageLeftAfter = balance.imageCreditsLeft,
             source = "image:$modelName"
         )
+
+        val referralActivation = maybeActivateReferralFromGeneration(session, chatId, "image")
+        if (referralActivation != null) {
+            balance.textTokensLeft += referralActivation.invitedBonusTokens
+        }
 
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
             sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
@@ -1603,7 +1877,7 @@ Output ONLY the tags.
             return
         }
 
-        sendPhoto(chatId, bytes, caption = null)
+        sendPhoto(chatId, bytes, caption = null, replyMarkup = shareResultKeyboard(chatId))
 
         val textBefore = balance.textTokensLeft
         val imageBefore = balance.imageCreditsLeft
@@ -1623,6 +1897,11 @@ Output ONLY the tags.
             imageLeftAfter = balance.imageCreditsLeft,
             source = "image:scene:$modelName"
         )
+
+        val referralActivation = maybeActivateReferralFromGeneration(session, chatId, "scene_image")
+        if (referralActivation != null) {
+            balance.textTokensLeft += referralActivation.invitedBonusTokens
+        }
 
         if (balance.plan == null && (balance.textTokensLeft <= 0 || balance.imageCreditsLeft <= 0)) {
             sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
@@ -1827,6 +2106,15 @@ Prioritize the newest messages if older messages conflict.
                     source = "payment:plan:${plan.code}",
                     amountRub = totalRub
                 )
+                runCatching {
+                    applyReferralPaymentBonus(
+                        session = session,
+                        payerId = chatId,
+                        purchasedTextTokens = plan.monthlyTextTokens,
+                        purchasedImageCredits = plan.monthlyImageCredits,
+                        paymentPayload = payload
+                    )
+                }
                 sendEphemeral(
                     session,
                     chatId,
@@ -1855,6 +2143,15 @@ Prioritize the newest messages if older messages conflict.
                     source = "payment:pack:${pack.code}",
                     amountRub = totalRub
                 )
+                runCatching {
+                    applyReferralPaymentBonus(
+                        session = session,
+                        payerId = chatId,
+                        purchasedTextTokens = 0,
+                        purchasedImageCredits = pack.images,
+                        paymentPayload = payload
+                    )
+                }
                 sendEphemeral(
                     session,
                     chatId,
@@ -1894,15 +2191,19 @@ Prioritize the newest messages if older messages conflict.
     }
 
     private fun isDeletableCommand(text: String): Boolean {
-        val t = text.trim().lowercase()
-        return t == "/start" ||
-                t == "/character" ||
-                t == "/story" ||
-                t == "/buy" ||
-                t == "/balance" ||
-                t == "/reset" ||
-                t == "/pic" ||
-                t == "/scene"
+        return commandName(text) in setOf(
+            "/start",
+            "/character",
+            "/story",
+            "/buy",
+            "/balance",
+            "/ref",
+            "/partners",
+            "/top",
+            "/reset",
+            "/pic",
+            "/scene"
+        )
     }
 
     private suspend fun deleteUserCommand(chatId: Long, messageId: Int, text: String) {
@@ -1964,11 +2265,17 @@ Prioritize the newest messages if older messages conflict.
         executeSafe(message)
     }
 
-    private suspend fun sendPhoto(chatId: Long, bytes: ByteArray, caption: String?) {
+    private suspend fun sendPhoto(
+        chatId: Long,
+        bytes: ByteArray,
+        caption: String?,
+        replyMarkup: InlineKeyboardMarkup? = null
+    ) {
         val photo = SendPhoto().apply {
             this.chatId = chatId.toString()
             this.photo = InputFile(ByteArrayInputStream(bytes), "image.png")
             this.caption = caption ?: Strings.get("photo.default.caption")
+            this.replyMarkup = replyMarkup
         }
         executeSafe(photo)
     }

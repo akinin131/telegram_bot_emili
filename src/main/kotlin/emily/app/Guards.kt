@@ -8,7 +8,10 @@ object BotRunGuard {
     private val registered = AtomicBoolean(false)
 
     fun tryLockOrExit() {
-        if (!registered.compareAndSet(false, true)) exitProcess(1)
+        if (!registered.compareAndSet(false, true)) {
+            System.err.println("BotRunGuard: application is already registered in this process.")
+            exitProcess(1)
+        }
     }
 }
 
@@ -18,7 +21,12 @@ object SingleInstance {
     fun acquire(port: Int) {
         try {
             lock = ServerSocket(port)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            System.err.println(
+                "SingleInstance: cannot acquire local port $port. " +
+                    "Another bot instance is likely already running."
+            )
+            System.err.println("Cause: ${e.message}")
             exitProcess(1)
         }
     }

@@ -36,6 +36,22 @@ class BalanceRepository(
         balancesRef.child(balance.userId.toString()).setValueAsync(payload)
     }
 
+    suspend fun addTextTokens(userId: Long, tokens: Int): UserBalance {
+        val balance = get(userId)
+        if (tokens <= 0) return balance
+        balance.textTokensLeft += tokens
+        put(balance)
+        return balance
+    }
+
+    suspend fun addImageCredits(userId: Long, credits: Int): UserBalance {
+        val balance = get(userId)
+        if (credits <= 0) return balance
+        balance.imageCreditsLeft += credits
+        put(balance)
+        return balance
+    }
+
     suspend fun addPayment(userId: Long, payload: String, amountRub: Int): Any? = withContext(Dispatchers.IO) {
         val id = UUID.randomUUID().toString()
         val payloadMap = mapOf(

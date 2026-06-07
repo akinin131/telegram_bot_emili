@@ -1,5 +1,9 @@
 # 🚀 Обновление сервера YouEmilyBot
 
+## Документация
+
+- Реферальная система: [docs/referral-system.md](/Users/ilya/telegram_bot_emili/docs/referral-system.md:1)
+
 ## 1. Остановить сервис на сервере
 
 sudo systemctl stop youemilybot
