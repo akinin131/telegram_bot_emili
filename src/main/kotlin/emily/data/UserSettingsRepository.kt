@@ -1,6 +1,7 @@
 package emily.data
 
 import com.google.firebase.database.FirebaseDatabase
+import emily.domain.AudiencePreference
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,6 +12,8 @@ class UserSettingsRepository(
     private val settingsRef by lazy { database.getReference("userSettings") }
     private val selectedCharacterKey = "selectedCharacter"
     private val selectedStoryKey = "selectedStory"
+    private val activeDialogKey = "activeDialogId"
+    private val audiencePreferenceKey = "audiencePreference"
 
     suspend fun getLanguage(userId: Long): String? = withContext(Dispatchers.IO) {
         val snapshot = settingsRef.child(userId.toString()).child("language").awaitSingle()
@@ -21,6 +24,20 @@ class UserSettingsRepository(
         val normalized = normalizeLanguage(language)
         val payload = mapOf(
             "language" to normalized,
+            "updatedAt" to System.currentTimeMillis()
+        )
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+    }
+
+    suspend fun getAudiencePreference(userId: Long): String? = withContext(Dispatchers.IO) {
+        val snapshot = settingsRef.child(userId.toString()).child(audiencePreferenceKey).awaitSingle()
+        AudiencePreference.normalize(snapshot.getValue(String::class.java))
+    }
+
+    suspend fun setAudiencePreference(userId: Long, audience: String): Any? = withContext(Dispatchers.IO) {
+        val normalized = AudiencePreference.normalize(audience) ?: AudiencePreference.FEMALE
+        val payload = mapOf(
+            audiencePreferenceKey to normalized,
             "updatedAt" to System.currentTimeMillis()
         )
         settingsRef.child(userId.toString()).updateChildrenAsync(payload)
@@ -67,6 +84,27 @@ class UserSettingsRepository(
     suspend fun clearSelectedStory(userId: Long): Any? = withContext(Dispatchers.IO) {
         val payload = mapOf<String, Any?>(
             selectedStoryKey to null,
+            "updatedAt" to System.currentTimeMillis()
+        )
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+    }
+
+    suspend fun getActiveDialogId(userId: Long): String? = withContext(Dispatchers.IO) {
+        val snapshot = settingsRef.child(userId.toString()).child(activeDialogKey).awaitSingle()
+        snapshot.getValue(String::class.java)?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun setActiveDialogId(userId: Long, dialogId: String): Any? = withContext(Dispatchers.IO) {
+        val payload = mapOf(
+            activeDialogKey to dialogId.trim(),
+            "updatedAt" to System.currentTimeMillis()
+        )
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+    }
+
+    suspend fun clearActiveDialogId(userId: Long): Any? = withContext(Dispatchers.IO) {
+        val payload = mapOf<String, Any?>(
+            activeDialogKey to null,
             "updatedAt" to System.currentTimeMillis()
         )
         settingsRef.child(userId.toString()).updateChildrenAsync(payload)

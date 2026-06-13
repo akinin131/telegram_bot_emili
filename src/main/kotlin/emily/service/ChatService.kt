@@ -18,7 +18,7 @@ import java.util.logging.Logger
 class ChatService(
     private val client: OkHttpClient,
     private val apiToken: String,
-    private val model: String
+    val model: String
 ) {
     private val json = "application/json".toMediaType()
 
@@ -31,14 +31,18 @@ class ChatService(
 
     data class ChatResult(val text: String, val tokensUsed: Int, val rawUsage: JSONObject? = null)
 
-    suspend fun generateReply(history: List<Pair<String, String>>): ChatResult = withContext(Dispatchers.IO) {
+    suspend fun generateReply(
+        history: List<Pair<String, String>>,
+        modelOverride: String? = null
+    ): ChatResult = withContext(Dispatchers.IO) {
+        val requestModel = modelOverride ?: model
         val messages = JSONArray().apply {
             history.forEach { (role, content) ->
                 put(JSONObject().put("role", role).put("content", content))
             }
         }
         val bodyStr = JSONObject()
-            .put("model", model)
+            .put("model", requestModel)
             .put("messages", messages)
             .toString()
 
@@ -55,7 +59,7 @@ class ChatService(
             logger.info(
                 """
                 ChatService → venice | id=$reqId
-                model=$model
+                model=$requestModel
                 Authorization=Bearer ${maskToken(apiToken)}
                 body=${trunc(bodyStr)}
                 """.trimIndent()

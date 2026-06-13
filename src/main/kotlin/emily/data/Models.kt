@@ -85,6 +85,14 @@ enum class ImagePack(
 const val FREE_TEXT_TOKENS = 50_000
 const val FREE_IMAGE_CREDITS = 1
 
+object CustomStoryPack {
+    const val code = "custom_story_3_stories"
+    const val priceRub = 150
+    const val storySlots = 3
+    const val title = "Своя история"
+    const val description = "Открой создание своих сценариев и добавь до 3 историй."
+}
+
 const val DAILY_IMAGE_CAP_BASIC = 10
 const val DAILY_IMAGE_CAP_PRO = 25
 const val DAILY_IMAGE_CAP_ULTRA = 60

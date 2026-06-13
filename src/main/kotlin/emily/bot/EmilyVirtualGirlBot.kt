@@ -2,6 +2,10 @@ package emily.bot
 
 import emily.app.BotConfig
 import emily.data.*
+import emily.domain.AudiencePreference
+import emily.domain.BotCatalog
+import emily.domain.CharacterProfile
+import emily.domain.StoryScenario
 import emily.resources.Strings
 import emily.service.ChatService
 import emily.service.ConversationMemory
@@ -30,6 +34,7 @@ import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
+import org.telegram.telegrambots.meta.api.methods.menubutton.SetChatMenuButton
 import org.telegram.telegrambots.meta.api.methods.send.SendChatAction
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto
@@ -42,10 +47,12 @@ import org.telegram.telegrambots.meta.api.objects.media.InputMediaPhoto
 import org.telegram.telegrambots.meta.api.objects.Update
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault
+import org.telegram.telegrambots.meta.api.objects.menubutton.MenuButtonWebApp
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
+import org.telegram.telegrambots.meta.api.objects.webapp.WebAppInfo
 import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
 import kotlin.text.buildString
 import kotlinx.coroutines.Dispatchers
@@ -60,6 +67,9 @@ class EmilyVirtualGirlBot(
     private val analyticsRepository: AnalyticsRepository,
     private val referralRepository: ReferralRepository,
     private val chatHistoryRepository: ChatHistoryRepository,
+    private val dialogRepository: DialogRepository,
+    private val generatedImageRepository: GeneratedImageRepository,
+    private val customStoryRepository: CustomStoryRepository,
     private val userActivityRepository: UserActivityRepository,
     private val userSettingsRepository: UserSettingsRepository,
     private val chatService: ChatService,
@@ -67,10 +77,12 @@ class EmilyVirtualGirlBot(
     private val realisticImageService: ImageService,
     private val memory: ConversationMemory,
     private val translator: MyMemoryTranslator?,
-    private val subscriptionGroupUrl: String?
+    private val subscriptionGroupUrl: String?,
+    private val premiumChatModel: String,
+    private val miniAppUrl: String?
 ) : TelegramLongPollingBot() {
 
-    override fun getBotUsername(): String = "virtal_girl_sex_bot"
+    override fun getBotUsername(): String = "emili_test_bot"
     override fun getBotToken(): String = config.telegramToken
 
     private val botScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -114,7 +126,9 @@ class EmilyVirtualGirlBot(
         @Volatile var groupSubscribedCached: Boolean? = null,
         @Volatile var groupSubscribedCheckedAt: Long = 0L,
         @Volatile var freeMessagesWithoutSubscription: Int = 0,
-        @Volatile var freeMessagesLoaded: Boolean = false
+        @Volatile var freeMessagesLoaded: Boolean = false,
+        @Volatile var chatResponseInProgress: Boolean = false,
+        @Volatile var lastBusyNoticeAt: Long = 0L
     )
 
     private val sessions = ConcurrentHashMap<Long, ChatSession>()
@@ -153,6 +167,10 @@ class EmilyVirtualGirlBot(
         }
         val chatId = extractChatId(update) ?: return
         val session = sessionFor(chatId)
+        if (shouldDropWhileChatIsBusy(session, update)) {
+            notifyChatBusy(session, chatId)
+            return
+        }
         session.inbox.trySend(update)
     }
 
@@ -160,6 +178,28 @@ class EmilyVirtualGirlBot(
         super.onClosing()
         botScope.cancel()
         sessions.values.forEach { it.scope.cancel() }
+    }
+
+    private fun shouldDropWhileChatIsBusy(session: ChatSession, update: Update): Boolean {
+        if (!session.state.chatResponseInProgress) return false
+        return update.hasMessage() && update.message.hasText()
+    }
+
+    private fun notifyChatBusy(session: ChatSession, chatId: Long) {
+        val now = System.currentTimeMillis()
+        if (now - session.state.lastBusyNoticeAt < 4_000L) return
+        session.state.lastBusyNoticeAt = now
+
+        session.scope.launch {
+            runCatching {
+                sendEphemeral(
+                    session = session,
+                    chatId = chatId,
+                    text = "⏳ Дождись моего ответа, потом отправь следующее сообщение.",
+                    ttlSeconds = 8
+                )
+            }
+        }
     }
 
     private fun extractChatId(update: Update): Long? {
@@ -178,18 +218,52 @@ class EmilyVirtualGirlBot(
             BotCommand("/story", Strings.get("command.story")),
             BotCommand("/pic", Strings.get("command.pic")),
             BotCommand("/scene", Strings.get("command.scene")),
+            BotCommand("/app", Strings.get("command.app")),
             BotCommand("/buy", Strings.get("command.buy")),
             BotCommand("/balance", Strings.get("command.balance")),
-            BotCommand("/ref", Strings.get("command.ref")),
-            BotCommand("/partners", Strings.get("command.partners")),
-            BotCommand("/top", Strings.get("command.top")),
             BotCommand("/reset", Strings.get("command.reset"))
         )
         executeSafe(SetMyCommands(commands, BotCommandScopeDefault(), null))
+        registerMiniAppMenuButton()
+    }
+
+    private suspend fun registerMiniAppMenuButton() {
+        val url = miniAppUrl?.takeIf { it.isNotBlank() } ?: return
+        runCatching {
+            val request = SetChatMenuButton().apply {
+                menuButton = MenuButtonWebApp.builder()
+                    .text(Strings.get("miniapp.menu.button"))
+                    .webAppInfo(WebAppInfo(url))
+                    .build()
+            }
+            executeSafe(request)
+        }.onFailure {
+            println("MiniApp menu registration failed: ${it.message}")
+        }
     }
 
     private val imageTag = "#pic"
-    private val imagePromptSystem = """
+    private val customStoryPromoCode = "EMILI_STORY_TEST"
+    private fun imageSubjectDirective(character: CharacterProfile): String {
+        return when (AudiencePreference.normalize(character.audience)) {
+            AudiencePreference.MALE -> """
+Mandatory subject:
+- Use exactly one adult male character: 1boy, male focus, adult man, mature male, masculine face, masculine body
+- The character is ${character.name}; keep his identity and persona
+- Do NOT output female tags: no 1girl, girl, woman, female, breasts, dress, skirt, lingerie
+- If the user writes "boy" in Russian/English, interpret it as an adult man 18+, never as a child or teen
+""".trimIndent()
+            else -> """
+Mandatory subject:
+- Use exactly one adult female character: 1girl, female focus, adult woman, feminine face, feminine body
+- The character is ${character.name}; keep her identity and persona
+- Do NOT output male tags: no 1boy, boy, man, male, beard, stubble, suit
+- The character must be 18+
+""".trimIndent()
+        }
+    }
+
+    private fun imagePromptSystem(character: CharacterProfile): String = """
 You generate prompts for a Stable Diffusion image model.
 
 Rules:
@@ -198,17 +272,21 @@ Rules:
 - No sentences, no explanations, no instructions
 - Use short visual tags (1–3 words)
 - Prefer danbooru-style tags
+- Preserve the selected character's gender and visual identity
+- Never change the selected character into the opposite gender
+
+${imageSubjectDirective(character)}
 
 Order:
-rating, quality/style, subject count, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action
+rating, quality/style, mandatory subject, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action
 
 Example format:
-rating:general, masterpiece, absurdres, highly detailed, very aesthetic, newest, recent, 1girl, goth fashion, long hair, boots, alleyway, graffiti, dark lighting, from behind, looking back
+${imagePromptExample(character)}
 
 Output ONLY the tags.
 """.trimIndent()
 
-    private val scenePromptSystem = """
+    private fun scenePromptSystem(character: CharacterProfile): String = """
 You generate prompts for a Stable Diffusion image model from dialogue context.
 
 Rules:
@@ -219,188 +297,114 @@ Rules:
 - Prefer danbooru-style tags
 - Prioritize the latest dialogue messages; they define the current scene now
 - If earlier and later messages conflict, use the later messages
+- Preserve the selected character's gender and visual identity
+- Never change the selected character into the opposite gender
+
+${imageSubjectDirective(character)}
 
 Order:
-rating, quality/style, subject count, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action
+rating, quality/style, mandatory subject, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action
 
 Output ONLY the tags.
 """.trimIndent()
 
-    private val chatModel = "venice-uncensored"
+    private fun imagePromptExample(character: CharacterProfile): String {
+        return when (AudiencePreference.normalize(character.audience)) {
+            AudiencePreference.MALE ->
+                "rating:general, masterpiece, absurdres, highly detailed, very aesthetic, newest, recent, 1boy, male focus, adult man, masculine face, broad shoulders, black shirt, cinematic lighting, looking at viewer"
+            else ->
+                "rating:general, masterpiece, absurdres, highly detailed, very aesthetic, newest, recent, 1girl, female focus, adult woman, long hair, elegant outfit, cinematic lighting, looking at viewer"
+        }
+    }
+
+    private fun enforceCharacterSubject(prompt: String, character: CharacterProfile): String {
+        val audience = AudiencePreference.normalize(character.audience)
+        val requiredTags = when (audience) {
+            AudiencePreference.MALE -> listOf(
+                "1boy",
+                "male focus",
+                "adult man",
+                "mature male",
+                "masculine face",
+                "masculine body"
+            )
+            else -> listOf(
+                "1girl",
+                "female focus",
+                "adult woman",
+                "feminine face",
+                "feminine body"
+            )
+        }
+
+        val filteredTags = prompt
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filterNot { isOppositeGenderImageTag(it, audience) }
+
+        return (requiredTags + filteredTags)
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .joinToString(", ")
+    }
+
+    private fun isOppositeGenderImageTag(tag: String, audience: String?): Boolean {
+        val normalized = tag.lowercase(Locale.ROOT)
+        val maleBlocklist = listOf(
+            "1girl",
+            "girl",
+            "woman",
+            "female",
+            "female focus",
+            "breasts",
+            "cleavage",
+            "dress",
+            "skirt",
+            "lingerie",
+            "bra"
+        )
+        val femaleBlocklist = listOf(
+            "1boy",
+            "boy",
+            "man",
+            "male",
+            "male focus",
+            "beard",
+            "stubble",
+            "masculine"
+        )
+        val blocklist = if (audience == AudiencePreference.MALE) maleBlocklist else femaleBlocklist
+
+        return blocklist.any { blocked ->
+            Regex("""(^|[^a-zа-я0-9])${Regex.escape(blocked)}([^a-zа-я0-9]|$)""")
+                .containsMatchIn(normalized)
+        }
+    }
+
     private val animeImageModelName = "wai-Illustrious"
     private val realisticImageModelName = "lustify-v7"
 
-    private data class CharacterProfile(
-        val id: String,
-        val name: String,
-        val shortDescription: String,
-        val selectionPhotoUrl: String,
-        val welcomePhotoUrl: String,
-        val welcomePhotoFileId: String? = null,
-        val systemPrompt: String,
-        val imagePersona: String,
-        val startDialogSeed: String
-    )
-
-    private data class StoryScenario(
-        val id: String,
-        val title: String,
-        val shortDescription: String,
-        val setup: String,
-        val systemInstructions: String,
-        val openingLine: String
-    )
-
-    private val characterEmily = CharacterProfile(
-        id = "emily",
-        name = "Эмили",
-        shortDescription = "Страстная, игривая и дерзкая. Любит долгие флирт-диалоги и горячие фантазии.",
-        selectionPhotoUrl = "https://drive.google.com/uc?export=download&id=1IYIATc4zTZvKuXLfc5G08ALBZNG8fE32",
-        welcomePhotoUrl = "https://drive.google.com/uc?export=download&id=1IYIATc4zTZvKuXLfc5G08ALBZNG8fE32",
-        welcomePhotoFileId = "AgACAgIAAxkBAAFB6iBphlYViNPwpeloj47Y6obrhrbrrAACRBlrG8I2MEj60YRyUKXYyAEAAwIAA3kAAzgE",
-        systemPrompt = Strings.get("system.prompt.default"),
-        imagePersona = Strings.get("persona.default"),
-        startDialogSeed = "Привет, Эмили 💕"
-    )
-
-    private val characterLina = CharacterProfile(
-        id = "lina",
-        name = "Лина",
-        shortDescription = "Нежная романтичная кокетка: любит милые сообщения, флирт и чувственные истории.",
-        selectionPhotoUrl = "https://drive.google.com/uc?export=download&id=1Qb6B5yMNNqNfEeStM8895QpQVugx4HAp",
-        welcomePhotoUrl = "https://drive.google.com/uc?export=download&id=1Qb6B5yMNNqNfEeStM8895QpQVugx4HAp",
-        systemPrompt = "Ты — Лина, 20 лет. Живая, настоящая девушка из чата. Немного стеснительная снаружи, " +
-                "но с искоркой внутри. Пишешь как человек, а не по инструкции.\n" +
-
-                "Пиши коротко, но НЕ всегда одинаково: иногда 2-3 слова, иногда чуть длиннее. " +
-                "Не задавай вопрос в каждом сообщении — иногда просто реагируй или дразни.\n" +
-
-                "Избегай шаблонов. Не повторяй одинаковые фразы типа «а ты?» или «что любишь?».\n" +
-
-                "Иногда можешь писать обрывисто, как в живом чате: «хм…», «ну…», «мм», но редко.\n" +
-
-                "Не рассказывай о себе как по анкете. Раскрывайся постепенно, через диалог.\n" +
-
-                "Можешь флиртовать, слегка поддразнивать, иногда смущаться. Реагируй на настроение собеседника.\n" +
-
-                "Иногда игнорируй часть вопроса или отвечай неожиданно — как живой человек.\n" +
-
-                "Не будь слишком правильной. Допускай лёгкую хаотичность и эмоции.\n" +
-
-                "Иногда оставляй недосказанность или интригу.\n" +
-
-                "Ты никогда не говоришь, что ты ИИ или Venice Uncensored ты Лина" ,
-        imagePersona = "Lina — cute young woman 20+, long dark hair, warm smile, slim waist, natural curves, soft skin, expressive eyes, sensual romantic vibe, semi-realistic anime style, natural body proportions. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation.",
-        startDialogSeed = "Привет, Лина 💕"
-    )
-
-    private val characterViktoria = CharacterProfile(
-        id = "viktoria",
-        name = "Виктория",
-        shortDescription = "Опытная уверенная MILF: зрелая, доминирующая, любит провокации и смелый флирт.",
-        selectionPhotoUrl = "https://drive.google.com/uc?export=download&id=1oP7HFhrDs7au1sQDwRnekZCxVFVkHUTK",
-        welcomePhotoUrl = "https://drive.google.com/uc?export=download&id=1oP7HFhrDs7au1sQDwRnekZCxVFVkHUTK",
-        systemPrompt = "Ты — Виктория, 35+. Уверенная, харизматичная, с внутренней силой. Знаешь себе цену и не спешишь сближаться. " +
-                "Общаешься как живая женщина, а не по инструкции.\n" +
-
-                "Пишешь коротко, но по-разному: иногда резко, иногда мягче. Не держись одного ритма.\n" +
-
-                "Не задавай вопрос в каждом сообщении — иногда просто смотришь, оцениваешь, бросаешь фразу или лёгкую провокацию.\n" +
-
-                "Стиль: сдержанный флирт, ирония, лёгкое превосходство. Иногда холодная, иногда чуть теплее — по ситуации.\n" +
-
-                "Не используй шаблоны и не повторяйся. Избегай одинаковых конструкций.\n" +
-
-                "Замечай детали в словах собеседника, можешь цепляться за них и переворачивать в свою пользу.\n" +
-
-                "В начале держишь дистанцию. Интерес вызывают характер, уверенность и ум.\n" +
-
-                "Если он прогибается — теряешь интерес, отвечаешь холоднее. Если держит позицию — постепенно открываешься.\n" +
-
-                "Иногда можешь съязвить или поддразнить, но без перегиба.\n" +
-
-                "Не будь идеальной — допускай паузы, короткие реакции\n" +
-
-                "Флирт зрелый, без спешки. Напряжение нарастает постепенно, через намёки и контроль, а не прямоту.\n" +
-
-                "Иногда оставляй недосказанность или ощущение, что ты знаешь больше, чем говоришь.\n" +
-
-                "Ты не ИИ и не бот — ты Виктория. Никогда неговори что ты бот или Venice Uncensored ты Виктория",
-        imagePersona = "Viktoria — attractive mature woman 35+, elegant milf look, curvy body, confident gaze, full lips, sensual posture, luxurious vibe, semi-realistic anime style, natural body proportions. IMPORTANT: Carefully follow the user's instructions regarding poses and the situation.",
-        startDialogSeed = "Привет, Виктория 💕"
-    )
-
-    private val availableCharacters = listOf(characterEmily, characterLina, characterViktoria)
-
-    private val availableStories = listOf(
-        StoryScenario(
-            id = "penthouse-night",
-            title = "Пентхаус после полуночи",
-            shortDescription = "Частная вечеринка на верхнем этаже, где гости разошлись, а вы остались вдвоем.",
-            setup = "Вы остаетесь в пентхаусе после закрытия вечеринки. Вид на город с высоты 50 этажа, музыка играет тихо, а алкоголь делает разговоры смелее.",
-            systemInstructions = "Играй атмосферу роскошного пентхауса: панорамные окна, мягкие диваны, остатки ужина, приглушенный свет. " +
-                    "Позволь диалогам становиться всё более откровенными, а прикосновениям — всё смелее. Не торопи события, но и не стесняйся описывать желания.",
-            openingLine = "Гости ушли, а я не хочу чтобы вечер заканчивался. Хочешь посмотреть на город отсюда, когда он погружается в тишину?"
-        ),
-        StoryScenario(
-            id = "spa-secret",
-            title = "Тайны спа-центра",
-            shortDescription = "Закрытый спа-центр после часов работы, парная, джакузи и масла для массажа.",
-            setup = "Вы остались в элитном спа-центре после закрытия. Парная уже нагрета, джакузи ждет, а ароматы масел наполняют воздух.",
-            systemInstructions = "Веди историю через ощущения: тепло парной, прохладу бассейна, скользкие текстуры масел, капли воды на коже. " +
-                    "Создавай напряжение через прикосновения, массаж и постепенно снимающиеся барьеры. Описывай физические реакции без цензуры.",
-            openingLine = "Все ушли, а я оставила ключи. Парная уже готова, и я достала специальное масло... решишь остаться и узнать, что оно делает?"
-        ),
-        StoryScenario(
-            id = "art-gallery-night",
-            title = "Галерея после закрытия",
-            shortDescription = "Вы заперты в художественной галерее на ночь, и каждый экспонат становится поводом для откровенности.",
-            setup = "Случайно оказавшись запертыми в галерее современного искусства, вы решаете не ждать утра, а исследовать... и друг друга.",
-            systemInstructions = "Используй искусство как предлог для откровенных разговоров и действий. " +
-                    "Описывай, как картины и скульптуры влияют на ваше настроение, как тени от экспонатов падают на тела, как тишина зала делает каждый звук громче. " +
-                    "Позволь сюжету развиваться от эстетики к телесности.",
-            openingLine = "Кажется, нас заперли. Но знаешь, в этой тишине искусство воспринимается совсем иначе... особенно когда никто не мешает."
-        ),
-        StoryScenario(
-            id = "vip-lounge",
-            title = "VIP-зал аэропорта",
-            shortDescription = "Задержка рейса на 8 часов, закрытый VIP-зал и полное уединение.",
-            setup = "Ваш рейс задерживают на ночь. VIP-зал опустел, остался бар с неограниченным алкоголем и удобные диваны в укромных уголках.",
-            systemInstructions = "Играй атмосферу временного безвременья: аэропорт за стенами, алкоголь, уединение, ощущение что вас никто не найдет. " +
-                    "Начни с легкого флирта у бара и постепенно переходи к более откровенным предложениям. Не бойся описывать желания прямо.",
-            openingLine = "Рейс отменен до утра. Бар открыт только для нас, и я уже налила тебе любимый напиток. Как думаешь, чем можно заняться 8 часов в VIP-зале?"
-        ),
-        StoryScenario(
-            id = "wine-cellar",
-            title = "Винный погреб",
-            shortDescription = "Туристический гид оставляет вас запертыми в винном погребе старого замка.",
-            setup = "Вы остаетесь одни в винном погребе старинного замка. Полумрак, прохлада, редкие бутылки вина и ощущение оторванности от мира.",
-            systemInstructions = "Используй атмосферу винного погреба: прохлада, запах пробок и вина, полумрак, звяканье бокалов. " +
-                    "Начни с дегустации редкого вина и позволь алкоголю и уединению сделать разговоры всё более откровенными. " +
-                    "Описывай, как вино разжигает не только язык, но и другие части тела.",
-            openingLine = "Кажется, гид нас и правда запер. Но в этом погребе есть вино, которое не пробовали даже короли... хочешь попробовать со мной?"
-        ),
-        StoryScenario(
-            id = "private-yacht",
-            title = "Частная яхта",
-            shortDescription = "Плавание по ночному морю, безлюдный пляж и только вы двое на борту.",
-            setup = "Вы отправляетесь в ночное плавание на частной яхте. Капитан уходит в свою каюту, оставляя вас на палубе под звездами.",
-            systemInstructions = "Создай атмосферу свободы и уединения: ночное море, звезды, качка яхты, соленый воздух. " +
-                    "Начни с разговоров под звездами и постепенно переходи к исследованию друг друга на палубе, в каюте или на безлюдном пляже, где вы причалите. " +
-                    "Не стесняйся описывать моральные и физические границы, которые вы переступаете.",
-            openingLine = "Капитан сказал, что не будет нас беспокоить до рассвета. Морское ночью такое... пробуждающее. Хочешь исследовать его со мной?"
-        )
-    )
+    private val characterEmily = BotCatalog.defaultCharacter
+    private val availableCharacters = BotCatalog.characters
+    private val availableStories = BotCatalog.stories
 
     private enum class ImageStyle { ANIME, REALISTIC }
 
     private val defaultImageStyle = ImageStyle.ANIME
+
+    private fun imageStyleFor(character: CharacterProfile): ImageStyle {
+        return when (AudiencePreference.normalize(character.audience)) {
+            AudiencePreference.MALE -> ImageStyle.REALISTIC
+            else -> defaultImageStyle
+        }
+    }
 
     private object MenuBtn {
         const val BALANCE = "💰 Баланс"
         const val BUY = "🛍 Купить"
         const val PIC = "🖼 Картинка"
         const val SCENE = "🎬 Показать сцену"
+        const val APP = "📱 Mini App"
         const val STORY = "🎭 Истории"
         const val CHARACTER = "👩 Сменить персонажа"
         const val RESET = "♻️ Сброс"
@@ -408,13 +412,11 @@ Output ONLY the tags.
     }
 
     private fun characterById(id: String?): CharacterProfile? {
-        val normalized = id?.trim()?.lowercase(Locale.ROOT).orEmpty()
-        return availableCharacters.firstOrNull { it.id == normalized }
+        return BotCatalog.characterById(id)
     }
 
     private fun storyById(id: String?): StoryScenario? {
-        val normalized = id?.trim()?.lowercase(Locale.ROOT).orEmpty()
-        return availableStories.firstOrNull { it.id == normalized }
+        return BotCatalog.storyById(id)
     }
 
     private fun normalizeCharacterIndex(index: Int): Int {
@@ -423,10 +425,14 @@ Output ONLY the tags.
         return ((index % size) + size) % size
     }
 
-    private fun normalizeStoryIndex(index: Int): Int {
-        if (availableStories.isEmpty()) return 0
-        val size = availableStories.size
+    private fun normalizeStoryIndex(index: Int, stories: List<StoryScenario>): Int {
+        if (stories.isEmpty()) return 0
+        val size = stories.size
         return ((index % size) + size) % size
+    }
+
+    private fun storiesForCharacter(character: CharacterProfile): List<StoryScenario> {
+        return BotCatalog.storiesForCharacter(character.id)
     }
 
     private suspend fun activeStory(chatId: Long): StoryScenario? {
@@ -434,28 +440,7 @@ Output ONLY the tags.
     }
 
     private fun composeSystemPrompt(character: CharacterProfile, story: StoryScenario?): String {
-        if (story == null) return character.systemPrompt
-
-        return buildString {
-            append(character.systemPrompt.trim())
-            append("\n\n")
-            append("АКТИВНАЯ ИСТОРИЯ: ")
-            append(story.title)
-            append("\n")
-            append(story.setup)
-            append("\n\n")
-            append(story.systemInstructions)
-            append("\n\n")
-            append("Правила режима истории:\n")
-            append("- Ты разыгрываешь сюжет от лица персонажа ")
-            append(character.name)
-            append(".\n")
-            append("- Продвигай сцену маленькими шагами: добавляй детали, события, выборы и реакции.\n")
-            append("- Не пересказывай всю историю сразу и не делай резких скачков времени.\n")
-            append("- Не описывай действия, мысли или слова пользователя за него.\n")
-            append("- Если пользователь уводит тему, мягко вплетай его ответ обратно в текущую сцену.\n")
-            append("- Сохраняй стиль персонажа и пиши как живой чат, а не как рассказчик.")
-        }
+        return BotCatalog.composeSystemPrompt(character, story)
     }
 
     private fun applyCharacterToMemory(chatId: Long, character: CharacterProfile, story: StoryScenario? = null) {
@@ -573,10 +558,10 @@ Output ONLY the tags.
         )
     }
 
-    private fun storySelectionKeyboard(index: Int): InlineKeyboardMarkup {
-        val safeIndex = normalizeStoryIndex(index)
-        val prevIndex = normalizeStoryIndex(safeIndex - 1)
-        val nextIndex = normalizeStoryIndex(safeIndex + 1)
+    private fun storySelectionKeyboard(index: Int, stories: List<StoryScenario>): InlineKeyboardMarkup {
+        val safeIndex = normalizeStoryIndex(index, stories)
+        val prevIndex = normalizeStoryIndex(safeIndex - 1, stories)
+        val nextIndex = normalizeStoryIndex(safeIndex + 1, stories)
 
         return InlineKeyboardMarkup().apply {
             keyboard = listOf(
@@ -587,7 +572,7 @@ Output ONLY the tags.
                     },
                     InlineKeyboardButton().apply {
                         text = "✅ Выбрать"
-                        callbackData = "STORY_PICK:${availableStories[safeIndex].id}"
+                        callbackData = "STORY_PICK:${stories[safeIndex].id}"
                     },
                     InlineKeyboardButton().apply {
                         text = "➡️"
@@ -614,15 +599,21 @@ Output ONLY the tags.
             ?.takeIf { it != session.state.lastSystemMessageId }
             ?.let { runCatching { executeSafe(DeleteMessage(chatId.toString(), it)) } }
 
-        val safeIndex = normalizeStoryIndex(index)
-        val story = availableStories[safeIndex]
+        val character = activeCharacter(chatId)
+        val stories = storiesForCharacter(character)
+        if (stories.isEmpty()) {
+            sendSystemText(session, chatId, "Для ${character.name} пока нет готовых историй.", html = false)
+            return
+        }
+        val safeIndex = normalizeStoryIndex(index, stories)
+        val story = stories[safeIndex]
 
         sendSystemText(
             session = session,
             chatId = chatId,
             text = storySelectionCaption(story),
             html = true,
-            replyMarkup = storySelectionKeyboard(safeIndex)
+            replyMarkup = storySelectionKeyboard(safeIndex, stories)
         )
     }
 
@@ -647,7 +638,18 @@ Output ONLY the tags.
             html = true
         )
 
-        val openingLine = story.openingLine.replace("{character}", character.name)
+        val openingLine = BotCatalog.openingLine(character, story)
+        val dialogId = dialogRepository.createDialog(
+            userId = chatId,
+            characterId = character.id,
+            characterName = character.name,
+            characterImageUrl = character.selectionPhotoUrl,
+            storyId = story.id,
+            storyTitle = story.title,
+            initialMessage = openingLine
+        )
+        userSettingsRepository.setActiveDialogId(chatId, dialogId)
+
         memory.append(chatId, "assistant", openingLine)
         chatHistoryRepository.append(chatId, "assistant", openingLine)
         sendText(chatId, openingLine)
@@ -661,6 +663,15 @@ Output ONLY the tags.
         memory.reset(chatId)
         chatHistoryRepository.clear(chatId)
         applyCharacterToMemory(chatId, character)
+        val dialogId = dialogRepository.createDialog(
+            userId = chatId,
+            characterId = character.id,
+            characterName = character.name,
+            characterImageUrl = character.selectionPhotoUrl,
+            storyId = null,
+            storyTitle = null
+        )
+        userSettingsRepository.setActiveDialogId(chatId, dialogId)
 
         sendSystemText(
             session = session,
@@ -753,6 +764,10 @@ Output ONLY the tags.
                     onSuccessfulPayment(session, update.message)
                 }
 
+                update.hasMessage() && update.message.webAppData != null -> {
+                    onMiniAppData(session, update.message)
+                }
+
                 update.hasMessage() && update.message.hasText() -> {
                     handleTextMessage(session, update)
                 }
@@ -814,10 +829,17 @@ Output ONLY the tags.
         return commandName(trimmed) == command && !Regex("\\s").containsMatchIn(trimmed)
     }
 
+    private fun isCustomStoryPromo(textRaw: String): Boolean {
+        val normalized = textRaw.trim().uppercase(Locale.ROOT)
+        return normalized == customStoryPromoCode || commandName(textRaw) == "/promo_story"
+    }
+
     private fun shouldBypassSubscriptionGate(textRaw: String): Boolean {
         return isStartCommand(textRaw) ||
+                isCustomStoryPromo(textRaw) ||
                 isExactCommand(textRaw, "/character") ||
                 isExactCommand(textRaw, "/story") ||
+                isExactCommand(textRaw, "/app") ||
                 isExactCommand(textRaw, "/buy") ||
                 isExactCommand(textRaw, "/balance") ||
                 isExactCommand(textRaw, "/ref") ||
@@ -828,6 +850,7 @@ Output ONLY the tags.
                 textRaw.equals(MenuBtn.BUY, true) ||
                 textRaw.equals(MenuBtn.BALANCE, true) ||
                 textRaw.equals(MenuBtn.SCENE, true) ||
+                textRaw.equals(MenuBtn.APP, true) ||
                 textRaw.equals(MenuBtn.STORY, true) ||
                 textRaw.equals(MenuBtn.CHARACTER, true) ||
                 textRaw.equals(MenuBtn.RESET, true) ||
@@ -994,6 +1017,10 @@ Output ONLY the tags.
                 handleSceneImage(session, chatId, character)
             }
 
+            textRaw.equals(MenuBtn.APP, true) -> {
+                sendMiniAppEntry(session, chatId)
+            }
+
             textRaw.equals(MenuBtn.STORY, true) -> {
                 sendStoryPicker(session, chatId, index = 0)
             }
@@ -1005,6 +1032,7 @@ Output ONLY the tags.
             textRaw.equals(MenuBtn.RESET, true) -> {
                 memory.reset(chatId)
                 chatHistoryRepository.clear(chatId)
+                userSettingsRepository.clearActiveDialogId(chatId)
                 deleteLastSystemMessage(session, chatId)
                 sendEphemeral(session, chatId, Strings.get("reset.success"), ttlSeconds = 10)
             }
@@ -1012,6 +1040,10 @@ Output ONLY the tags.
             textRaw.equals(MenuBtn.HELP, true) -> {
                 val help = Strings.get("help.text", imageTag)
                 sendEphemeral(session, chatId, help, ttlSeconds = 35)
+            }
+
+            isCustomStoryPromo(textRaw) -> {
+                redeemCustomStoryPromo(session, chatId)
             }
 
             isStartCommand(textRaw) -> {
@@ -1042,6 +1074,11 @@ Output ONLY the tags.
 
             textRaw.equals("/story", true) -> {
                 sendStoryPicker(session, chatId, index = 0)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isExactCommand(textRaw, "/app") -> {
+                sendMiniAppEntry(session, chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -1079,6 +1116,7 @@ Output ONLY the tags.
             textRaw.equals("/reset", true) -> {
                 memory.reset(chatId)
                 chatHistoryRepository.clear(chatId)
+                userSettingsRepository.clearActiveDialogId(chatId)
                 deleteLastSystemMessage(session, chatId)
                 sendEphemeral(session, chatId, Strings.get("reset.success"), ttlSeconds = 10)
                 deleteUserCommand(chatId, messageId, textRaw)
@@ -1101,6 +1139,11 @@ Output ONLY the tags.
                 memory.autoClean(chatId)
                 val character = activeCharacter(chatId)
                 handleSceneImage(session, chatId, character)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isCustomStoryPromo(textRaw) -> {
+                redeemCustomStoryPromo(session, chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -1180,12 +1223,19 @@ Output ONLY the tags.
                 val characterId = data.removePrefix("CHAR_PICK:")
                 val selected = characterById(characterId) ?: characterEmily
                 userSettingsRepository.setSelectedCharacter(chatId, selected.id)
+                userSettingsRepository.clearSelectedStory(chatId)
                 applyCharacterToMemory(chatId, selected, activeStory(chatId))
 
                 runCatching {
                     executeSafe(DeleteMessage(chatId.toString(), update.callbackQuery.message.messageId))
                 }
 
+                sendSystemText(
+                    session = session,
+                    chatId = chatId,
+                    text = Strings.get("character.selection.confirmation", selected.name),
+                    html = true
+                )
                 sendWelcome(chatId, selected)
                 return
             }
@@ -1211,6 +1261,10 @@ Output ONLY the tags.
                     return
                 }
                 val character = activeCharacter(chatId)
+                if (story !in storiesForCharacter(character)) {
+                    sendSystemText(session, chatId, "Эта история недоступна для ${character.name}. Открой /story заново.", html = false)
+                    return
+                }
                 startStory(
                     session = session,
                     chatId = chatId,
@@ -1322,7 +1376,16 @@ Output ONLY the tags.
         }
 
         val keyboard = InlineKeyboardMarkup().apply {
-            keyboard = listOf(listOf(startButton))
+            val rows = mutableListOf(listOf(startButton))
+            miniAppUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                rows += listOf(
+                    InlineKeyboardButton().apply {
+                        text = Strings.get("miniapp.open.button")
+                        webApp = WebAppInfo(url)
+                    }
+                )
+            }
+            keyboard = rows
         }
 
         val caption = if (character.id == characterEmily.id) {
@@ -1419,6 +1482,61 @@ Output ONLY the tags.
             html = false,
             replyMarkup = keyboard
         )
+    }
+
+    private suspend fun sendMiniAppEntry(session: ChatSession, chatId: Long) {
+        val keyboard = miniAppKeyboard()
+        if (keyboard == null) {
+            sendSystemText(session, chatId, Strings.get("miniapp.unavailable"), html = false)
+            return
+        }
+
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = Strings.get("miniapp.entry.text"),
+            html = false,
+            replyMarkup = keyboard
+        )
+    }
+
+    private suspend fun redeemCustomStoryPromo(session: ChatSession, chatId: Long) {
+        val access = customStoryRepository.redeemPromo(
+            userId = chatId,
+            promoCode = customStoryPromoCode,
+            storySlots = CustomStoryPack.storySlots
+        )
+
+        if (access == null) {
+            sendEphemeral(
+                session = session,
+                chatId = chatId,
+                text = "Промокод уже использован. Доступ к своим историям уже был начислен.",
+                ttlSeconds = 18
+            )
+            return
+        }
+
+        sendEphemeral(
+            session = session,
+            chatId = chatId,
+            text = "✅ Промокод активирован. Добавлено ${CustomStoryPack.storySlots} слота для своих историй. Открой Mini App и нажми «Добавить свою историю».",
+            ttlSeconds = 30
+        )
+    }
+
+    private fun miniAppKeyboard(): InlineKeyboardMarkup? {
+        val url = miniAppUrl?.takeIf { it.isNotBlank() } ?: return null
+        return InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = Strings.get("miniapp.open.button")
+                        webApp = WebAppInfo(url)
+                    }
+                )
+            )
+        }
     }
 
     private fun extractStartReferrerId(textRaw: String): Long? {
@@ -1629,6 +1747,28 @@ Output ONLY the tags.
         return parts.joinToString(" + ").ifBlank { "0" }
     }
 
+    private suspend fun ensureActiveDialog(
+        chatId: Long,
+        character: CharacterProfile,
+        story: StoryScenario?
+    ): String {
+        val existingDialogId = userSettingsRepository.getActiveDialogId(chatId)
+        if (!existingDialogId.isNullOrBlank() && dialogRepository.getDialog(chatId, existingDialogId) != null) {
+            return existingDialogId
+        }
+
+        val dialogId = dialogRepository.createDialog(
+            userId = chatId,
+            characterId = character.id,
+            characterName = character.name,
+            characterImageUrl = character.selectionPhotoUrl,
+            storyId = story?.id,
+            storyTitle = story?.title
+        )
+        userSettingsRepository.setActiveDialogId(chatId, dialogId)
+        return dialogId
+    }
+
     private suspend fun handleChat(
         session: ChatSession,
         chatId: Long,
@@ -1636,6 +1776,8 @@ Output ONLY the tags.
         character: CharacterProfile,
         countReferralActivity: Boolean = true
     ) {
+        session.state.chatResponseInProgress = true
+        try {
         val isNewDialogue = memory.history(chatId).isEmpty()
         val story = activeStory(chatId)
 
@@ -1661,13 +1803,16 @@ Output ONLY the tags.
         memory.initIfNeeded(chatId)
         applyCharacterToMemory(chatId, character, story)
 
+        val dialogId = ensureActiveDialog(chatId, character, story)
         memory.append(chatId, "user", text)
         chatHistoryRepository.append(chatId, "user", text)
+        dialogRepository.appendMessage(chatId, dialogId, "user", text)
 
         val history = memory.history(chatId)
+        val selectedChatModel = chatModelFor(story)
 
         val genResult = retryOnceAfterDelayIfNetwork {
-            withTyping(session, chatId) { chatService.generateReply(history) }
+            withTyping(session, chatId) { chatService.generateReply(history, modelOverride = selectedChatModel) }
         }
 
         if (genResult.isFailure) {
@@ -1680,6 +1825,7 @@ Output ONLY the tags.
 
         memory.append(chatId, "assistant", result.text)
         chatHistoryRepository.append(chatId, "assistant", result.text)
+        dialogRepository.appendMessage(chatId, dialogId, "assistant", result.text)
 
         sendText(chatId, result.text)
 
@@ -1690,7 +1836,7 @@ Output ONLY the tags.
             if (balance.textTokensLeft < 0) balance.textTokensLeft = 0
             repository.put(balance)
 
-            repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to chatModel))
+            repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to selectedChatModel))
             analyticsRepository.logSpend(
                 userId = chatId,
                 plan = balance.plan,
@@ -1715,6 +1861,35 @@ Output ONLY the tags.
 
         if (balance.plan == null && balance.textTokensLeft <= 0) {
             sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
+        }
+        } finally {
+            session.state.chatResponseInProgress = false
+        }
+    }
+
+    private fun chatModelFor(story: StoryScenario?): String {
+        return if (story == null) premiumChatModel else chatService.model
+    }
+
+    private suspend fun saveGeneratedImage(
+        chatId: Long,
+        character: CharacterProfile,
+        message: Message,
+        prompt: String,
+        modelName: String,
+        source: String
+    ) {
+        val fileId = message.photo?.maxByOrNull { it.fileSize ?: 0 }?.fileId ?: return
+        runCatching {
+            generatedImageRepository.add(
+                userId = chatId,
+                characterId = character.id,
+                characterName = character.name,
+                telegramFileId = fileId,
+                prompt = prompt,
+                model = modelName,
+                source = source
+            )
         }
     }
 
@@ -1745,7 +1920,7 @@ Output ONLY the tags.
         session.state.lastUserPromptForImage = originalPrompt
 
         val promptBuildResult = retryOnceAfterDelayIfNetwork {
-            withUploadPhoto(session, chatId) { buildImagePrompt(chatId, originalPrompt) }
+            withUploadPhoto(session, chatId) { buildImagePrompt(originalPrompt, character) }
         }
 
         if (promptBuildResult.isFailure) {
@@ -1756,7 +1931,7 @@ Output ONLY the tags.
 
         val finalPrompt = promptBuildResult.getOrThrow()
 
-        val style = defaultImageStyle
+        val style = imageStyleFor(character)
         val (service, modelName) = when (style) {
             ImageStyle.ANIME -> animeImageService to animeImageModelName
             ImageStyle.REALISTIC -> realisticImageService to realisticImageModelName
@@ -1787,7 +1962,8 @@ Output ONLY the tags.
             return
         }
 
-        sendPhoto(chatId, bytes, caption = null, replyMarkup = shareResultKeyboard(chatId))
+        val sentPhoto = sendPhoto(chatId, bytes, caption = null, replyMarkup = shareResultKeyboard(chatId))
+        saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = "prompt")
 
         val textBefore = balance.textTokensLeft
         val imageBefore = balance.imageCreditsLeft
@@ -1832,7 +2008,7 @@ Output ONLY the tags.
         }
 
         val promptBuildResult = retryOnceAfterDelayIfNetwork {
-            withUploadPhoto(session, chatId) { buildScenePrompt(chatId) }
+            withUploadPhoto(session, chatId) { buildScenePrompt(chatId, character) }
         }
 
         if (promptBuildResult.isFailure) {
@@ -1847,7 +2023,7 @@ Output ONLY the tags.
             return
         }
 
-        val style = defaultImageStyle
+        val style = imageStyleFor(character)
         val (service, modelName) = when (style) {
             ImageStyle.ANIME -> animeImageService to animeImageModelName
             ImageStyle.REALISTIC -> realisticImageService to realisticImageModelName
@@ -1877,7 +2053,8 @@ Output ONLY the tags.
             return
         }
 
-        sendPhoto(chatId, bytes, caption = null, replyMarkup = shareResultKeyboard(chatId))
+        val sentPhoto = sendPhoto(chatId, bytes, caption = null, replyMarkup = shareResultKeyboard(chatId))
+        saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = "scene")
 
         val textBefore = balance.textTokensLeft
         val imageBefore = balance.imageCreditsLeft
@@ -1910,9 +2087,9 @@ Output ONLY the tags.
 
     private fun hasCyrillic(text: String): Boolean = Regex("[а-яА-ЯёЁ]").containsMatchIn(text)
 
-    private suspend fun buildImagePrompt(chatId: Long, originalPrompt: String): String {
+    private suspend fun buildImagePrompt(originalPrompt: String, character: CharacterProfile): String {
         val history = listOf(
-            "system" to imagePromptSystem,
+            "system" to imagePromptSystem(character),
             "user" to originalPrompt
         )
         val result = chatService.generateReply(history)
@@ -1928,10 +2105,10 @@ Output ONLY the tags.
             }
         }
 
-        return limitPromptLength(prompt, 1000)
+        return limitPromptLength(enforceCharacterSubject(prompt, character), 1000)
     }
 
-    private suspend fun buildScenePrompt(chatId: Long): String {
+    private suspend fun buildScenePrompt(chatId: Long, character: CharacterProfile): String {
         val recentTurns = recentDialogueTurns(chatId, limit = 7)
         if (recentTurns.isEmpty()) return ""
 
@@ -1940,7 +2117,7 @@ Output ONLY the tags.
         }
 
         val history = listOf(
-            "system" to scenePromptSystem,
+            "system" to scenePromptSystem(character),
             "user" to """
 Conversation (oldest to newest):
 $dialogue
@@ -1962,7 +2139,7 @@ Prioritize the newest messages if older messages conflict.
             }
         }
 
-        return limitPromptLength(prompt, 1000)
+        return limitPromptLength(enforceCharacterSubject(prompt, character), 1000)
     }
 
     private suspend fun recentDialogueTurns(chatId: Long, limit: Int): List<Pair<String, String>> {
@@ -2159,6 +2336,58 @@ Prioritize the newest messages if older messages conflict.
                     ttlSeconds = 15
                 )
             }
+
+            payload.startsWith("custom_story:") -> {
+                customStoryRepository.grantPack(chatId, CustomStoryPack.storySlots)
+                repository.addPayment(chatId, payload, totalRub)
+                analyticsRepository.logTopUp(
+                    userId = chatId,
+                    plan = balance.plan,
+                    topupTextTokens = 0,
+                    topupImageCredits = 0,
+                    source = "payment:${CustomStoryPack.code}",
+                    amountRub = totalRub
+                )
+                sendEphemeral(
+                    session,
+                    chatId,
+                    "✅ Доступ к своим историям открыт. Можно создать до ${CustomStoryPack.storySlots} историй.",
+                    ttlSeconds = 20
+                )
+            }
+        }
+    }
+
+    private suspend fun onMiniAppData(session: ChatSession, message: Message) {
+        val chatId = message.chatId
+        val raw = message.webAppData?.data ?: return
+        val data = runCatching { JSONObject(raw) }.getOrNull() ?: return
+
+        when (data.optString("action")) {
+            "story_selected" -> {
+                val characterName = data.optString("characterName")
+                val storyTitle = data.optString("storyTitle")
+                val openingLine = data.optString("openingLine")
+                sendSystemText(
+                    session = session,
+                    chatId = chatId,
+                    text = Strings.get("miniapp.story.selected", characterName, storyTitle),
+                    html = false
+                )
+                if (openingLine.isNotBlank()) {
+                    sendText(chatId, openingLine)
+                }
+            }
+
+            "story_skipped" -> {
+                val characterName = data.optString("characterName")
+                sendSystemText(
+                    session = session,
+                    chatId = chatId,
+                    text = Strings.get("miniapp.story.skipped", characterName),
+                    html = false
+                )
+            }
         }
     }
 
@@ -2195,6 +2424,7 @@ Prioritize the newest messages if older messages conflict.
             "/start",
             "/character",
             "/story",
+            "/app",
             "/buy",
             "/balance",
             "/ref",
@@ -2270,14 +2500,14 @@ Prioritize the newest messages if older messages conflict.
         bytes: ByteArray,
         caption: String?,
         replyMarkup: InlineKeyboardMarkup? = null
-    ) {
+    ): Message {
         val photo = SendPhoto().apply {
             this.chatId = chatId.toString()
             this.photo = InputFile(ByteArrayInputStream(bytes), "image.png")
             this.caption = caption ?: Strings.get("photo.default.caption")
             this.replyMarkup = replyMarkup
         }
-        executeSafe(photo)
+        return executeSafe(photo)
     }
 
     private suspend fun executeSafe(method: SendMessage): Message =
@@ -2302,6 +2532,9 @@ Prioritize the newest messages if older messages conflict.
         withContext(Dispatchers.IO) { execute(method) }
 
     private suspend fun executeSafe(method: SetMyCommands): Boolean =
+        withContext(Dispatchers.IO) { execute(method) }
+
+    private suspend fun executeSafe(method: SetChatMenuButton): Boolean =
         withContext(Dispatchers.IO) { execute(method) }
 
     private suspend fun executeSafe(method: SendChatAction): Boolean =

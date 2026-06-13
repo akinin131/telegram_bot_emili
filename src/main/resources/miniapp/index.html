@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>document.documentElement.setAttribute("data-inline-js", "ok");</script>
+  <link rel="stylesheet" href="/miniapp/app.css?v=20260613-character-fix">
+</head>
+<body>
+  <header class="appbar">
+    <div class="appbar-inner">
+      <div>
+        <h1 id="screenTitle" class="title">Персонажи</h1>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <section id="preferenceScreen" class="screen section" aria-label="Выбор формата игры">
+      <div class="preference-panel">
+        <h2>С кем хочешь играть?</h2>
+        <div class="preference-options">
+          <button class="preference-card" type="button" data-audience-choice="female">
+            <span class="preference-portraits" aria-hidden="true">
+              <img src="/miniapp/image/character/lina" alt="">
+            </span>
+            <span class="preference-card-copy">
+              <strong>Девушки</strong>
+              <small>романтика, флирт и визуальные истории</small>
+            </span>
+          </button>
+          <button class="preference-card" type="button" data-audience-choice="male">
+            <span class="preference-portraits" aria-hidden="true">
+              <img src="/miniapp/image/character/marcus" alt="">
+            </span>
+            <span class="preference-card-copy">
+              <strong>Мужчины</strong>
+              <small>атмосферные роли и взрослые сценарии</small>
+            </span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section id="charactersScreen" class="screen active section" aria-label="Выбор персонажа">
+      <div id="charactersGrid" class="character-grid"></div>
+    </section>
+
+    <section id="storiesScreen" class="screen section" aria-label="Выбор истории">
+      <div id="selectedCharacterPanel" class="selected-panel"></div>
+      <button id="skipStoryButton" class="primary-button skip-button" type="button">
+        Пропустить выбор истории
+      </button>
+      <div id="storiesList" class="story-list"></div>
+    </section>
+
+    <section id="dialogsScreen" class="screen section" aria-label="Диалоги">
+      <div id="dialogsList" class="dialogs-list"></div>
+    </section>
+
+    <section id="galleryScreen" class="screen section" aria-label="Галерея">
+      <button id="backFromGallery" class="text-button" type="button">← К персонажам</button>
+      <div id="galleryHeader" class="gallery-header"></div>
+      <div id="galleryGrid" class="gallery-grid"></div>
+    </section>
+
+    <section id="settingsScreen" class="screen section" aria-label="Настройки">
+
+      <div class="settings-stack">
+        <section class="settings-card tokens-card" aria-label="Токены">
+          <div class="settings-card-head">
+            <span class="settings-icon">T</span>
+            <span class="settings-kicker">Баланс</span>
+          </div>
+          <div class="settings-value" id="tokenBalanceText">...</div>
+          <p class="settings-note" id="tokenPlanText">...</p>
+        </section>
+
+        <section class="settings-card story-card-settings" aria-label="Выбранная история">
+          <div class="settings-card-head">
+            <span class="settings-icon">S</span>
+            <span class="settings-kicker">Выбранная история</span>
+          </div>
+          <div class="settings-value story-value" id="currentSelection">...</div>
+          <p class="settings-note" id="currentStoryHint">...</p>
+        </section>
+
+        <section class="settings-card audience-card-settings" aria-label="С кем играть">
+          <div class="settings-card-head">
+            <span class="settings-icon">P</span>
+            <span class="settings-kicker">С кем играть</span>
+          </div>
+          <div id="audienceSettings" class="audience-settings"></div>
+        </section>
+
+        <section class="settings-card payment-card" aria-label="Оплата">
+          <div class="settings-card-head">
+            <span class="settings-icon">₽</span>
+            <span class="settings-kicker">Оплата</span>
+          </div>
+          <div class="payment-hero">
+            <h2>Пополнить доступ</h2>
+            <p>Счет придет прямо в чат Telegram. Оплата и начисление работают через основной бот.</p>
+          </div>
+          <div id="paymentOptions" class="payment-options"></div>
+        </section>
+
+        <div id="statusPanel" hidden>
+          <strong id="balanceText">...</strong>
+        </div>
+      </div>
+    </section>
+
+    <section id="loadingScreen" class="loading-screen">
+      <div class="loader"></div>
+      <p>Загружаю данные бота...</p>
+    </section>
+  </main>
+
+  <nav class="pill-nav" role="tablist" aria-label="Навигация">
+    <button class="nav-pill active" type="button" data-target="characters" aria-label="Персонажи">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"/>
+      </svg>
+    </button>
+    <div class="nav-sep"></div>
+    <button class="nav-pill" type="button" data-target="dialogs" aria-label="Диалоги">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
+        <path d="M8 10h.01M12 10h.01M16 10h.01"/>
+      </svg>
+    </button>
+    <div class="nav-sep"></div>
+    <button class="nav-pill" type="button" data-target="settings" aria-label="Настройки">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1.82v.08a2 2 0 1 1-4 0v-.08A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33h-.08a2 2 0 1 1 0-4h.08A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06A2 2 0 1 1 7.7 4.3l.06.06A1.65 1.65 0 0 0 9 4.6c.31 0 .62-.1 .88-.27A1.65 1.65 0 0 0 10.9 2.5v-.08a2 2 0 1 1 4 0v.08c.08.33.27.62.52.83.26.17.57.27.88.27.53 0 1.04-.21 1.41-.59l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06c-.38.37-.59.88-.59 1.41 0 .31.1.62.27.88.22.25.5.44.83.52h.08a2 2 0 1 1 0 4h-.08a1.65 1.65 0 0 0-1.82.33c-.17.26-.27.57-.27.88Z"/>
+      </svg>
+    </button>
+  </nav>
+
+  <div class="brand-watermark">@emili_test_bot</div>
+
+  <div id="galleryViewer" class="gallery-viewer" hidden>
+    <button id="closeGalleryViewer" class="viewer-close" type="button" aria-label="Закрыть">×</button>
+    <button id="prevGalleryImage" class="viewer-nav viewer-prev" type="button" aria-label="Предыдущее фото">‹</button>
+    <img id="galleryViewerImage" alt="Сгенерированное фото">
+    <button id="nextGalleryImage" class="viewer-nav viewer-next" type="button" aria-label="Следующее фото">›</button>
+    <div id="galleryViewerMeta" class="viewer-meta"></div>
+  </div>
+
+  <script
+    src="/miniapp/app.compat.js?v=20260613-compat-fix"
+    onload="document.documentElement.setAttribute('data-app-script', 'loaded')"
+    onerror="document.documentElement.setAttribute('data-app-script', 'error')"></script>
+</body>
+</html>

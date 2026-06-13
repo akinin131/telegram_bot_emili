@@ -3,6 +3,7 @@
 ## Документация
 
 - Реферальная система: [docs/referral-system.md](/Users/ilya/telegram_bot_emili/docs/referral-system.md:1)
+- Telegram Mini App: [docs/mini-app-integration.md](/Users/ilya/telegram_bot_emili/docs/mini-app-integration.md:1)
 
 ## 1. Остановить сервис на сервере
 
