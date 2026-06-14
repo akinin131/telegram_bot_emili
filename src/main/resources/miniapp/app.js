@@ -1,5 +1,5 @@
 const tg = window.Telegram && window.Telegram.WebApp;
-const DEFAULT_BOT_URL = "https://t.me/emili_test_bot";
+const DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";

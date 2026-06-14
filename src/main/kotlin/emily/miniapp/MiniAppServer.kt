@@ -64,7 +64,7 @@ class MiniAppServer(
     private val telegramApi = TelegramBotApiClient(config.botToken)
     private val imageCache = ConcurrentHashMap<String, CachedImage>()
     private val generatedImageCache = ConcurrentHashMap<String, CachedImage>()
-    private val characterImageVersion = "20260613-male-generated"
+    private val characterImageVersion = "2026061412442-male-refresh"
 
     fun start() {
         val httpServer = HttpServer.create(InetSocketAddress(config.port), 0)
@@ -361,10 +361,6 @@ class MiniAppServer(
 
         userSettingsRepository.setSelectedCharacter(user.id, character.id)
         userSettingsRepository.clearSelectedStory(user.id)
-        val telegramResult = notifyCharacterSelected(user.id, character)
-        if (!telegramResult.ok) {
-            return@runBlocking sendTelegramFailure(exchange, telegramResult)
-        }
         sendJson(
             exchange = exchange,
             status = 200,
@@ -372,13 +368,6 @@ class MiniAppServer(
                 .put("ok", true)
                 .put("selectedCharacter", character.id)
                 .put("selectedStory", JSONObject.NULL)
-                .put("telegram", telegramResult.toJson())
-                .put("sendData", JSONObject()
-                    .put("action", "character_selected")
-                    .put("characterId", character.id)
-                    .put("characterName", character.name)
-                    .put("storyTitle", "История пока не выбрана")
-                )
                 .put("stories", storiesJson(user.id, character.id))
         )
     }
@@ -770,7 +759,8 @@ class MiniAppServer(
             ?: return sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Character image not found"))
 
         val imageUrl = character.welcomePhotoUrl.ifBlank { character.selectionPhotoUrl }
-        val image = imageCache.getOrPut(character.id) {
+        val cacheKey = "${character.id}:${imageUrl}"
+        val image = imageCache.getOrPut(cacheKey) {
             if (imageUrl.startsWith("/miniapp/assets/")) {
                 readLocalAssetImage(imageUrl.removePrefix("/miniapp/"))
             } else {

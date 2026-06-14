@@ -36,7 +36,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
     }
 };
 var tg = window.Telegram && window.Telegram.WebApp;
-var DEFAULT_BOT_URL = "https://t.me/emili_test_bot";
+var DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
 var state = {

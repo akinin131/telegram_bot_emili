@@ -82,7 +82,7 @@ class EmilyVirtualGirlBot(
     private val miniAppUrl: String?
 ) : TelegramLongPollingBot() {
 
-    override fun getBotUsername(): String = "emili_test_bot"
+    override fun getBotUsername(): String = "you_emily_bot"
     override fun getBotToken(): String = config.telegramToken
 
     private val botScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -1962,7 +1962,7 @@ Output ONLY the tags.
             return
         }
 
-        val sentPhoto = sendPhoto(chatId, bytes, caption = null, replyMarkup = shareResultKeyboard(chatId))
+        val sentPhoto = sendPhoto(chatId, bytes, caption = null, replyMarkup = null)
         saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = "prompt")
 
         val textBefore = balance.textTokensLeft
@@ -2053,7 +2053,7 @@ Output ONLY the tags.
             return
         }
 
-        val sentPhoto = sendPhoto(chatId, bytes, caption = null, replyMarkup = shareResultKeyboard(chatId))
+        val sentPhoto = sendPhoto(chatId, bytes, caption = null, replyMarkup = null)
         saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = "scene")
 
         val textBefore = balance.textTokensLeft
