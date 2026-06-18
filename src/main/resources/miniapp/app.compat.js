@@ -183,8 +183,8 @@ function on(element, eventName, handler) {
 }
 function loadBootstrap() {
     return __awaiter(this, arguments, void 0, function (nextScreen) {
-        var data, settings, error_1;
-        if (nextScreen === void 0) { nextScreen = "characters"; }
+        var data, targetScreen, settings, error_1;
+        if (nextScreen === void 0) { nextScreen = null; }
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -192,6 +192,7 @@ function loadBootstrap() {
                     return [4 /*yield*/, api("/miniapp/api/bootstrap")];
                 case 1:
                     data = _a.sent();
+                    targetScreen = nextScreen || state.currentScreen || "characters";
                     cacheBootstrap(data);
                     state.bootstrap = data;
                     syncStoriesByCharacter(data.storiesByCharacter);
@@ -205,7 +206,7 @@ function loadBootstrap() {
                     renderCharacters();
                     renderDialogs();
                     renderSettings();
-                    showScreen(state.audiencePreference ? nextScreen : "preference");
+                    showScreen(state.audiencePreference ? targetScreen : "preference");
                     setLoading(false);
                     document.documentElement.setAttribute("data-miniapp-stage", "ready");
                     return [3 /*break*/, 3];
@@ -404,10 +405,10 @@ function showScreen(name) {
         button.classList.toggle("active", active);
     });
     if (tg && tg.BackButton && typeof tg.BackButton.hide === "function" && typeof tg.BackButton.show === "function") {
-        if (name === "characters" || name === "preference")
-            safeTelegramCall(function () { return tg.BackButton.hide(); });
-        else
+        if (name === "stories")
             safeTelegramCall(function () { return tg.BackButton.show(); });
+        else
+            safeTelegramCall(function () { return tg.BackButton.hide(); });
     }
 }
 function safeTelegramCall(callback) {

@@ -149,9 +149,10 @@ function on(element, eventName, handler) {
   }
 }
 
-async function loadBootstrap(nextScreen = "characters") {
+async function loadBootstrap(nextScreen = null) {
   try {
     const data = await api("/miniapp/api/bootstrap");
+    const targetScreen = nextScreen || state.currentScreen || "characters";
     cacheBootstrap(data);
     state.bootstrap = data;
     syncStoriesByCharacter(data.storiesByCharacter);
@@ -166,7 +167,7 @@ async function loadBootstrap(nextScreen = "characters") {
     renderCharacters();
     renderDialogs();
     renderSettings();
-    showScreen(state.audiencePreference ? nextScreen : "preference");
+    showScreen(state.audiencePreference ? targetScreen : "preference");
     setLoading(false);
     document.documentElement.setAttribute("data-miniapp-stage", "ready");
   } catch (error) {
@@ -332,8 +333,8 @@ function showScreen(name) {
   });
 
   if (tg && tg.BackButton && typeof tg.BackButton.hide === "function" && typeof tg.BackButton.show === "function") {
-    if (name === "characters" || name === "preference") safeTelegramCall(() => tg.BackButton.hide());
-    else safeTelegramCall(() => tg.BackButton.show());
+    if (name === "stories") safeTelegramCall(() => tg.BackButton.show());
+    else safeTelegramCall(() => tg.BackButton.hide());
   }
 }
 

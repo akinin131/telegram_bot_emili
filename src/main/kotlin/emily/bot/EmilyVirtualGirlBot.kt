@@ -260,6 +260,7 @@ class EmilyVirtualGirlBot(
     private val customStoryPromoCode = "EMILI_STORY_TEST"
     private val gifPromoCode = "EMILI_GIF10"
     private val gifPromoCredits = 10
+    private val basicPlanPromoCode = "EMILI_BASIC_FREE"
     private fun imageSubjectDirective(character: CharacterProfile): String {
         return when (AudiencePreference.normalize(character.audience)) {
             AudiencePreference.MALE -> """
@@ -952,10 +953,16 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         return normalized == gifPromoCode || commandName(textRaw) == "/promo_gif"
     }
 
+    private fun isBasicPlanPromo(textRaw: String): Boolean {
+        val normalized = textRaw.trim().uppercase(Locale.ROOT)
+        return normalized == basicPlanPromoCode || commandName(textRaw) == "/promo_basic"
+    }
+
     private fun shouldBypassSubscriptionGate(textRaw: String): Boolean {
         return isStartCommand(textRaw) ||
                 isCustomStoryPromo(textRaw) ||
                 isGifPromo(textRaw) ||
+                isBasicPlanPromo(textRaw) ||
                 isExactCommand(textRaw, "/character") ||
                 isExactCommand(textRaw, "/story") ||
                 isExactCommand(textRaw, "/app") ||
@@ -1169,6 +1176,10 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 redeemGifPromo(session, chatId)
             }
 
+            isBasicPlanPromo(textRaw) -> {
+                redeemBasicPlanPromo(session, chatId)
+            }
+
             isStartCommand(textRaw) -> {
                 extractStartReferrerId(textRaw)?.let { referrerId ->
                     runCatching {
@@ -1272,6 +1283,11 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
             isGifPromo(textRaw) -> {
                 redeemGifPromo(session, chatId)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isBasicPlanPromo(textRaw) -> {
+                redeemBasicPlanPromo(session, chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -1710,6 +1726,59 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             chatId = chatId,
             text = "✅ Промокод активирован. Добавлено $gifPromoCredits GIF-кредитов.",
             ttlSeconds = 20
+        )
+    }
+
+    private suspend fun redeemBasicPlanPromo(session: ChatSession, chatId: Long) {
+        val plan = Plan.BASIC
+        val redeemed = promoRepository.redeem(
+            userId = chatId,
+            promoCode = basicPlanPromoCode,
+            payload = mapOf(
+                "type" to "plan",
+                "plan" to plan.code,
+                "textTokens" to plan.monthlyTextTokens,
+                "imageCredits" to plan.monthlyImageCredits,
+                "gifCredits" to plan.monthlyGifCredits
+            )
+        )
+
+        if (!redeemed) {
+            sendEphemeral(
+                session = session,
+                chatId = chatId,
+                text = "Промокод уже использован. Бесплатный тариф «${plan.title}» уже был начислен.",
+                ttlSeconds = 18
+            )
+            return
+        }
+
+        val balance = ensureUserBalance(chatId)
+        val monthMs = 30L * 24 * 60 * 60 * 1000
+        val now = System.currentTimeMillis()
+        val base = maxOf(balance.planExpiresAt ?: 0L, now)
+        balance.plan = plan.code
+        balance.planExpiresAt = base + monthMs
+        balance.textTokensLeft += plan.monthlyTextTokens
+        balance.imageCreditsLeft += plan.monthlyImageCredits
+        balance.gifCreditsLeft += plan.monthlyGifCredits
+        repository.put(balance)
+
+        analyticsRepository.logTopUp(
+            userId = chatId,
+            plan = balance.plan,
+            topupTextTokens = plan.monthlyTextTokens,
+            topupImageCredits = plan.monthlyImageCredits,
+            topupGifCredits = plan.monthlyGifCredits,
+            source = "promo:plan:${plan.code}:$basicPlanPromoCode",
+            amountRub = 0
+        )
+
+        sendEphemeral(
+            session = session,
+            chatId = chatId,
+            text = "✅ Промокод активирован. Тариф «${plan.title}» включён бесплатно на 30 дней.\nНачислено: ${plan.monthlyTextTokens} токенов, ${plan.monthlyImageCredits} фото и ${plan.monthlyGifCredits} GIF.",
+            ttlSeconds = 30
         )
     }
 
