@@ -9,6 +9,7 @@ enum class Plan(
     val priceRub: Int,
     val monthlyTextTokens: Int,
     val monthlyImageCredits: Int,
+    val monthlyGifCredits: Int,
     val photoUrl: String
 ) {
     BASIC(
@@ -17,24 +18,27 @@ enum class Plan(
         priceRub = 399,
         monthlyTextTokens = 800_000,
         monthlyImageCredits = 25,
+        monthlyGifCredits = 1,
         photoUrl = "https://drive.google.com/uc?export=download&id=1TCRXGBCDeju4zjER_lUvsn5yZPcv-V7s"
     ),
 
     PRO(
         code = "pro",
         titleKey = "plan.title.pro",
-        priceRub = 899,
+        priceRub = 999,
         monthlyTextTokens = 2_000_000,
         monthlyImageCredits = 80,
+        monthlyGifCredits = 3,
         photoUrl = "https://drive.google.com/uc?export=download&id=1a3kI5IXbX95QMSpRb72vj0RRIKaXs9T6"
     ),
 
     ULTRA(
         code = "ultra",
         titleKey = "plan.title.ultra",
-        priceRub = 1499,
+        priceRub = 1890,
         monthlyTextTokens = 4_000_000,
         monthlyImageCredits = 180,
+        monthlyGifCredits = 6,
         photoUrl = "https://drive.google.com/uc?export=download&id=1IYIATc4zTZvKuXLfc5G08ALBZNG8fE32"
     );
 
@@ -82,8 +86,42 @@ enum class ImagePack(
     val title: String
         get() = Strings.get(titleKey)
 }
+
+enum class GifPack(
+    val code: String,
+    private val titleKey: String,
+    val priceRub: Int,
+    val gifs: Int
+) {
+    G3(
+        code = "gif3",
+        titleKey = "gifpack.title.g3",
+        priceRub = 269,
+        gifs = 3
+    ),
+    G7(
+        code = "gif7",
+        titleKey = "gifpack.title.g7",
+        priceRub = 619,
+        gifs = 7
+    ),
+    G15(
+        code = "gif15",
+        titleKey = "gifpack.title.g15",
+        priceRub = 1309,
+        gifs = 15
+    );
+
+    companion object {
+        fun byCode(code: String?): GifPack? = entries.firstOrNull { it.code == code }
+    }
+
+    val title: String
+        get() = Strings.get(titleKey)
+}
 const val FREE_TEXT_TOKENS = 50_000
-const val FREE_IMAGE_CREDITS = 1
+const val FREE_IMAGE_CREDITS = 3
+const val FREE_GIF_CREDITS = 0
 
 object CustomStoryPack {
     const val code = "custom_story_3_stories"
@@ -93,17 +131,15 @@ object CustomStoryPack {
     const val description = "Открой создание своих сценариев и добавь до 3 историй."
 }
 
-const val DAILY_IMAGE_CAP_BASIC = 10
-const val DAILY_IMAGE_CAP_PRO = 25
-const val DAILY_IMAGE_CAP_ULTRA = 60
-
 data class UserBalance(
     val userId: Long = 0L,
     var plan: String? = null,
     var planExpiresAt: Long? = null,
     var textTokensLeft: Int = FREE_TEXT_TOKENS,
     var imageCreditsLeft: Int = FREE_IMAGE_CREDITS,
+    var gifCreditsLeft: Int = FREE_GIF_CREDITS,
     var dayImageUsed: Int = 0,
+    var dayGifUsed: Int = 0,
     var dayStamp: String = LocalDate.now().toString(),
     var createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis()

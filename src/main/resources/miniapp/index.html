@@ -6,7 +6,7 @@
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>document.documentElement.setAttribute("data-inline-js", "ok");</script>
-  <link rel="stylesheet" href="/miniapp/app.css?v=20260613-character-fix">
+  <link rel="stylesheet" href="/miniapp/app.css?v=20260618-character-shimmer">
 </head>
 <body>
   <header class="appbar">
@@ -45,7 +45,40 @@
     </section>
 
     <section id="charactersScreen" class="screen active section" aria-label="Выбор персонажа">
-      <div id="charactersGrid" class="character-grid"></div>
+      <div id="charactersGrid" class="character-grid">
+        <article class="character-card character-card-skeleton" aria-hidden="true">
+          <span class="skeleton-pill"></span>
+          <span class="skeleton-copy">
+            <span></span>
+            <span></span>
+            <span></span>
+          </span>
+        </article>
+        <article class="character-card character-card-skeleton" aria-hidden="true">
+          <span class="skeleton-pill"></span>
+          <span class="skeleton-copy">
+            <span></span>
+            <span></span>
+            <span></span>
+          </span>
+        </article>
+        <article class="character-card character-card-skeleton" aria-hidden="true">
+          <span class="skeleton-pill"></span>
+          <span class="skeleton-copy">
+            <span></span>
+            <span></span>
+            <span></span>
+          </span>
+        </article>
+        <article class="character-card character-card-skeleton" aria-hidden="true">
+          <span class="skeleton-pill"></span>
+          <span class="skeleton-copy">
+            <span></span>
+            <span></span>
+            <span></span>
+          </span>
+        </article>
+      </div>
     </section>
 
     <section id="storiesScreen" class="screen section" aria-label="Выбор истории">
@@ -100,10 +133,6 @@
             <span class="settings-icon">₽</span>
             <span class="settings-kicker">Оплата</span>
           </div>
-          <div class="payment-hero">
-            <h2>Пополнить доступ</h2>
-            <p>Счет придет прямо в чат Telegram. Оплата и начисление работают через основной бот.</p>
-          </div>
           <div id="paymentOptions" class="payment-options"></div>
         </section>
 
@@ -113,7 +142,7 @@
       </div>
     </section>
 
-    <section id="loadingScreen" class="loading-screen">
+    <section id="loadingScreen" class="loading-screen" hidden aria-hidden="true">
       <div class="loader"></div>
       <p>Загружаю данные бота...</p>
     </section>
@@ -152,7 +181,7 @@
   </div>
 
   <script
-    src="/miniapp/app.compat.js?v=20260613-compat-fix"
+    src="/miniapp/app.compat.js?v=20260618-character-shimmer"
     onload="document.documentElement.setAttribute('data-app-script', 'loaded')"
     onerror="document.documentElement.setAttribute('data-app-script', 'error')"></script>
 </body>

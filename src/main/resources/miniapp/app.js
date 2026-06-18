@@ -1,5 +1,6 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 const DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
+const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
 
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
@@ -14,6 +15,8 @@ const state = {
   galleryIndex: 0,
   lastNonSettingsScreen: "characters",
   finishTimer: null,
+  pendingCharacterRequestId: 0,
+  storiesByCharacter: {},
 };
 
 const els = {
@@ -67,6 +70,7 @@ try {
   document.documentElement.setAttribute("data-miniapp-stage", "bind");
   bindEvents();
   document.documentElement.setAttribute("data-miniapp-stage", "bootstrap");
+  hydrateCachedBootstrap();
   loadBootstrap();
 } catch (error) {
   document.documentElement.setAttribute("data-miniapp-stage", "crash");
@@ -146,10 +150,11 @@ function on(element, eventName, handler) {
 }
 
 async function loadBootstrap(nextScreen = "characters") {
-  setLoading(true);
   try {
     const data = await api("/miniapp/api/bootstrap");
+    cacheBootstrap(data);
     state.bootstrap = data;
+    syncStoriesByCharacter(data.storiesByCharacter);
     const settings = data.settings || {};
     state.audiencePreference = settings.audiencePreference || null;
     state.selectedCharacterId =
@@ -167,7 +172,54 @@ async function loadBootstrap(nextScreen = "characters") {
   } catch (error) {
     document.documentElement.setAttribute("data-miniapp-stage", "load-error");
     document.documentElement.setAttribute("data-miniapp-error", String(error && error.message || error));
-    showFatalError(error);
+    if (state.bootstrap) {
+      showToast(error.message || "Не удалось обновить данные");
+    } else {
+      showFatalError(error);
+    }
+  }
+}
+
+function hydrateCachedBootstrap() {
+  const cached = readCachedBootstrap();
+  if (!cached) return false;
+
+  state.bootstrap = cached;
+  syncStoriesByCharacter(cached.storiesByCharacter);
+  const settings = cached.settings || {};
+  state.audiencePreference = settings.audiencePreference || null;
+  state.selectedCharacterId =
+    settings.selectedCharacter ||
+    firstId(cached.characters) ||
+    null;
+
+  renderStatus();
+  renderCharacters();
+  renderDialogs();
+  renderSettings();
+  showScreen(state.audiencePreference ? "characters" : "preference");
+  setLoading(false);
+  document.documentElement.setAttribute("data-miniapp-stage", "cached");
+  return true;
+}
+
+function readCachedBootstrap() {
+  try {
+    const raw = localStorage.getItem(BOOTSTRAP_CACHE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    return data && Array.isArray(data.characters) ? data : null;
+  } catch (_error) {
+    localStorage.removeItem(BOOTSTRAP_CACHE_KEY);
+    return null;
+  }
+}
+
+function cacheBootstrap(data) {
+  try {
+    localStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify(data));
+  } catch (_error) {
+    // Cache is only a speed boost; the app still works without it.
   }
 }
 
@@ -306,7 +358,7 @@ function renderStatus() {
 
   if (els.statusPanel) els.statusPanel.hidden = true;
   els.balanceText.textContent = balance
-    ? `${balance.textTokensLeft} токенов / ${balance.imageCreditsLeft} фото`
+    ? `${balance.textTokensLeft} токенов / ${balance.imageCreditsLeft} фото / ${balance.gifCreditsLeft || 0} GIF`
     : "Нет данных";
 }
 
@@ -383,7 +435,9 @@ async function selectAudience(audience, options = {}) {
     state.bootstrap.settings.selectedStory = null;
     state.bootstrap.characters = data.characters || [];
     state.bootstrap.stories = data.stories || [];
+    syncStoriesByCharacter(data.storiesByCharacter);
     state.selectedCharacterId = data.selectedCharacter || firstId(state.bootstrap.characters) || null;
+    cacheBootstrap(state.bootstrap);
 
     renderCharacters();
     renderSelectedCharacter();
@@ -457,27 +511,63 @@ function showGalleryImage(index) {
 }
 
 async function selectCharacter(characterId) {
-  setLoading(true);
+  const previousCharacterId = state.selectedCharacterId;
+  const previousStories = state.bootstrap && state.bootstrap.stories
+    ? [...state.bootstrap.stories]
+    : [];
+  const requestId = ++state.pendingCharacterRequestId;
+  const character = (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === characterId);
+  const cachedStories = storiesForCharacterFromCache(characterId);
+
+  state.selectedCharacterId = characterId;
+  state.bootstrap.settings.selectedCharacter = characterId;
+  state.bootstrap.settings.selectedStory = null;
+  if (cachedStories) {
+    state.bootstrap.stories = cachedStories;
+  }
+
+  renderCharacters();
+  renderSelectedCharacter();
+  if (cachedStories) {
+    renderStories();
+  } else {
+    renderStoriesPending(character);
+  }
+  renderSettings();
+  showScreen("stories");
+
   try {
     const data = await api("/miniapp/api/select-character", {
       method: "POST",
       body: { characterId },
     });
 
+    if (requestId !== state.pendingCharacterRequestId) return;
+
     state.selectedCharacterId = data.selectedCharacter;
     state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
     state.bootstrap.settings.selectedStory = null;
     state.bootstrap.stories = data.stories || state.bootstrap.stories || [];
+    setCachedStories(data.selectedCharacter, state.bootstrap.stories);
+    cacheBootstrap(state.bootstrap);
 
     renderCharacters();
     renderSelectedCharacter();
     renderStories();
     renderSettings();
-    showScreen("stories");
   } catch (error) {
+    if (requestId !== state.pendingCharacterRequestId) return;
+
+    state.selectedCharacterId = previousCharacterId;
+    state.bootstrap.settings.selectedCharacter = previousCharacterId;
+    state.bootstrap.stories = previousStories;
+
+    renderCharacters();
+    renderSelectedCharacter();
+    renderStories();
+    renderSettings();
+    showScreen("characters");
     showToast(error.message || "Не удалось выбрать персонажа");
-  } finally {
-    setLoading(false);
   }
 }
 
@@ -497,6 +587,34 @@ function renderSelectedCharacter() {
   description.textContent = character.description;
 
   els.selectedCharacterPanel.append(title, description);
+}
+
+function renderStoriesPending(character) {
+  els.storiesList.replaceChildren();
+
+  const loading = document.createElement("div");
+  loading.className = "empty-dialogs";
+  loading.textContent = character
+    ? `Открываю истории для ${character.name}...`
+    : "Открываю истории...";
+
+  els.storiesList.append(loading);
+}
+
+function syncStoriesByCharacter(storiesByCharacter) {
+  state.storiesByCharacter = storiesByCharacter && typeof storiesByCharacter === "object"
+    ? { ...storiesByCharacter }
+    : {};
+}
+
+function setCachedStories(characterId, stories) {
+  if (!characterId || !Array.isArray(stories)) return;
+  state.storiesByCharacter[characterId] = [...stories];
+}
+
+function storiesForCharacterFromCache(characterId) {
+  const stories = state.storiesByCharacter && state.storiesByCharacter[characterId];
+  return Array.isArray(stories) ? [...stories] : null;
 }
 
 function renderStories() {
@@ -651,7 +769,9 @@ async function createCustomStory(payload) {
       body: payload,
     });
     state.bootstrap.stories = data.stories || state.bootstrap.stories;
+    setCachedStories(payload.characterId, state.bootstrap.stories);
     state.bootstrap.customStory = data.customStory || state.bootstrap.customStory;
+    cacheBootstrap(state.bootstrap);
     renderStories();
     showToast("История создана. Теперь её можно выбрать.");
   } catch (error) {
@@ -843,7 +963,7 @@ function renderSettings() {
   const balance = state.bootstrap.balance;
   if (balance) {
     els.tokenBalanceText.textContent = `${formatCompactNumber(balance.textTokensLeft)} токенов`;
-    els.tokenPlanText.textContent = `${formatNumber(balance.imageCreditsLeft)} фото · ${planTitle(balance.plan)}`;
+    els.tokenPlanText.textContent = `${formatNumber(balance.imageCreditsLeft)} фото · ${formatNumber(balance.gifCreditsLeft || 0)} GIF`;
   } else {
     els.tokenBalanceText.textContent = "Нет данных";
     els.tokenPlanText.textContent = "Баланс появится после загрузки бота.";
@@ -873,29 +993,85 @@ function renderPaymentOptions() {
   const payments = state.bootstrap && state.bootstrap.payments || {};
   const plans = payments.plans || [];
   const packs = payments.packs || [];
+  const gifPacks = payments.gifPacks || [];
   els.paymentOptions.replaceChildren();
 
-  plans.forEach((plan) => {
-    els.paymentOptions.append(paymentButton({
+  els.paymentOptions.append(paymentGroup({
+    title: "Подписки",
+    note: "Для частого общения и постоянного доступа.",
+    layout: "plans",
+    items: plans.map((plan) => ({
       type: "plan",
       code: plan.code,
       title: plan.title,
-      meta: `${formatNumber(plan.textTokens)} токенов · ${formatNumber(plan.imageCredits)} фото`,
+      caption: "30 дней доступа",
+      badges: [
+        `${formatCompactNumber(plan.textTokens)} токенов`,
+        `${formatNumber(plan.imageCredits)} фото`,
+        `${formatNumber(plan.gifCredits || 0)} GIF`,
+      ],
       price: `${plan.priceRub} ₽/мес`,
       featured: plan.code === "pro",
-    }));
-  });
+      badgeLabel: plan.code === "pro" ? "Популярный" : "",
+    })),
+  }));
 
-  packs.forEach((pack) => {
-    els.paymentOptions.append(paymentButton({
+  els.paymentOptions.append(paymentGroup({
+    title: "Фото",
+    note: "Разовые пакеты, если нужны только новые кадры.",
+    layout: "packs",
+    items: packs.map((pack) => ({
       type: "pack",
       code: pack.code,
       title: pack.title,
-      meta: `${formatNumber(pack.imageCredits)} фото`,
+      caption: "Разовый пакет",
+      badges: [`${formatNumber(pack.imageCredits)} фото`],
       price: `${pack.priceRub} ₽`,
       featured: false,
-    }));
+      badgeLabel: "",
+    })),
+  }));
+
+  els.paymentOptions.append(paymentGroup({
+    title: "GIF",
+    note: "Анимация уже созданных изображений.",
+    layout: "packs",
+    items: gifPacks.map((pack) => ({
+      type: "gif_pack",
+      code: pack.code,
+      title: pack.title,
+      caption: "Разовый пакет",
+      badges: [`${formatNumber(pack.gifCredits)} GIF`],
+      price: `${pack.priceRub} ₽`,
+      featured: false,
+      badgeLabel: "",
+    })),
+  }));
+}
+
+function paymentGroup(group) {
+  const section = document.createElement("section");
+  section.className = `payment-group payment-group--${group.layout}`;
+
+  const head = document.createElement("div");
+  head.className = "payment-group-head";
+
+  const title = document.createElement("h3");
+  title.textContent = group.title;
+
+  const note = document.createElement("p");
+  note.textContent = group.note;
+
+  const grid = document.createElement("div");
+  grid.className = `payment-group-grid payment-group-grid--${group.layout}`;
+
+  group.items.forEach((item) => {
+    grid.append(paymentButton(item));
   });
+
+  head.append(title, note);
+  section.append(head, grid);
+  return section;
 }
 
 function paymentButton(option) {
@@ -908,17 +1084,38 @@ function paymentButton(option) {
   const copy = document.createElement("span");
   copy.className = "payment-copy";
 
+  const titleRow = document.createElement("span");
+  titleRow.className = "payment-title-row";
+
   const title = document.createElement("strong");
   title.textContent = option.title;
+  titleRow.append(title);
 
-  const meta = document.createElement("small");
-  meta.textContent = option.meta;
+  if (option.badgeLabel) {
+    const badge = document.createElement("span");
+    badge.className = "payment-badge";
+    badge.textContent = option.badgeLabel;
+    titleRow.append(badge);
+  }
+
+  const caption = document.createElement("small");
+  caption.className = "payment-caption";
+  caption.textContent = option.caption;
+
+  const badges = document.createElement("span");
+  badges.className = "payment-badges";
+  (option.badges || []).forEach((item) => {
+    const chip = document.createElement("span");
+    chip.className = "payment-chip";
+    chip.textContent = item;
+    badges.append(chip);
+  });
 
   const price = document.createElement("span");
   price.className = "payment-price";
   price.textContent = option.price;
 
-  copy.append(title, meta);
+  copy.append(titleRow, caption, badges);
   button.append(copy, price);
   return button;
 }

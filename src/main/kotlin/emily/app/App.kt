@@ -8,11 +8,13 @@ import emily.data.CustomStoryRepository
 import emily.data.DataRetentionService
 import emily.data.DialogRepository
 import emily.data.GeneratedImageRepository
+import emily.data.PromoRepository
 import emily.data.ReferralRepository
 import emily.data.UserActivityRepository
 import emily.data.UserSettingsRepository
 import emily.service.ChatService
 import emily.service.ConversationMemory
+import emily.service.GifVideoService
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
 import emily.service.defaultSystemPrompt
@@ -29,10 +31,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-private const val ROLEPLAY_CHAT_MODEL = "venice-uncensored-role-play"
-private const val PREMIUM_CHAT_MODEL = "qwen-3-6-plus"
+private const val ROLEPLAY_CHAT_MODEL = "deepseek-v4-flash"
+private const val PREMIUM_CHAT_MODEL = "deepseek-v4-flash"
 private const val IMAGE_MODEL_ANIME = "wai-Illustrious"
 private const val IMAGE_MODEL_REALISTIC = "lustify-v7"
+private const val GIF_MODEL = "wan-2.5-preview-image-to-video"
 private const val DEFAULT_MINI_APP_PORT = 8080
 
 fun main() {
@@ -67,12 +70,14 @@ fun main() {
     val dialogRepository = DialogRepository()
     val generatedImageRepository = GeneratedImageRepository()
     val customStoryRepository = CustomStoryRepository()
+    val promoRepository = PromoRepository()
     val userActivityRepository = UserActivityRepository()
     val userSettingsRepository = UserSettingsRepository()
     val chatService = ChatService(okHttpClient, config.veniceToken, ROLEPLAY_CHAT_MODEL)
 
     val animeImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_ANIME)
     val realisticImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_REALISTIC)
+    val gifVideoService = GifVideoService(okHttpClient, config.veniceToken, GIF_MODEL)
 
     val memory = ConversationMemory { defaultSystemPrompt() }
     val miniAppPort = Secrets.getOrNull("MINI_APP_PORT")?.toIntOrNull() ?: DEFAULT_MINI_APP_PORT
@@ -90,11 +95,13 @@ fun main() {
         dialogRepository = dialogRepository,
         generatedImageRepository = generatedImageRepository,
         customStoryRepository = customStoryRepository,
+        promoRepository = promoRepository,
         userActivityRepository = userActivityRepository,
         userSettingsRepository = userSettingsRepository,
         chatService = chatService,
         animeImageService = animeImageService,
         realisticImageService = realisticImageService,
+        gifVideoService = gifVideoService,
         memory = memory,
         translator = translator,
         subscriptionGroupUrl = "https://t.me/+_rSsi7FUDtYyM2Uy",

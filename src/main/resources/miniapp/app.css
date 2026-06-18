@@ -351,6 +351,96 @@ p {
     0 12px 28px rgba(0, 0, 0, 0.55);
 }
 
+.character-card-skeleton {
+  overflow: hidden;
+  cursor: default;
+  background:
+    radial-gradient(circle at 48% 30%, rgba(255, 255, 255, 0.13), transparent 28%),
+    linear-gradient(135deg, rgba(30, 34, 44, 0.94), rgba(13, 14, 19, 0.98));
+  border-color: rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+}
+
+.character-card-skeleton::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(
+    105deg,
+    transparent 24%,
+    rgba(255, 255, 255, 0.12) 42%,
+    transparent 60%
+  );
+  transform: translateX(-120%);
+  animation: shimmer-sweep 1.35s ease-in-out infinite;
+}
+
+.character-card.character-card-skeleton::after {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0) 36%, rgba(12, 12, 14, 0.32) 60%, rgba(16, 16, 20, 0.9) 100%);
+}
+
+.skeleton-pill,
+.skeleton-copy {
+  position: absolute;
+  z-index: 2;
+}
+
+.skeleton-pill {
+  top: 10px;
+  right: 10px;
+  width: 58px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.skeleton-copy {
+  left: 12px;
+  right: 12px;
+  bottom: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.skeleton-copy span {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.skeleton-copy span:first-child {
+  width: 46%;
+  height: 18px;
+  margin-inline: auto;
+}
+
+.skeleton-copy span:nth-child(2) {
+  width: 78%;
+  margin-inline: auto;
+}
+
+.skeleton-copy span:nth-child(3) {
+  width: 58%;
+  margin-inline: auto;
+}
+
+@keyframes shimmer-sweep {
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .character-card-skeleton::before {
+    animation: none;
+    transform: none;
+    opacity: 0.35;
+  }
+}
+
 .character-card img {
   position: absolute;
   inset: 0;
@@ -935,70 +1025,71 @@ p {
 .tokens-card,
 .story-card-settings,
 .audience-card-settings {
-  min-height: 128px;
-  padding: 14px;
-  border-radius: 22px;
+  min-height: 100px;
+  padding: 11px;
+  border-radius: 20px;
 }
 
 .tokens-card::before,
 .story-card-settings::before,
 .audience-card-settings::before {
-  width: 120px;
-  height: 120px;
+  width: 108px;
+  height: 108px;
 }
 
 .tokens-card .settings-card-head,
 .story-card-settings .settings-card-head,
 .audience-card-settings .settings-card-head {
-  gap: 7px;
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-bottom: 7px;
 }
 
 .tokens-card .settings-icon,
 .story-card-settings .settings-icon,
 .audience-card-settings .settings-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 10px;
-  font-size: 13px;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  font-size: 12px;
 }
 
 .tokens-card .settings-kicker,
 .story-card-settings .settings-kicker,
 .audience-card-settings .settings-kicker {
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.12em;
 }
 
 .tokens-card .settings-value,
 .story-card-settings .settings-value {
-  margin-bottom: 6px;
-  font-size: clamp(20px, 3.8vw, 28px);
+  margin-bottom: 4px;
+  font-size: clamp(17px, 2.5vw, 23px);
   letter-spacing: -0.045em;
+  line-height: 1.05;
 }
 
 .tokens-card .settings-note,
 .story-card-settings .settings-note {
-  font-size: 11px;
-  line-height: 1.3;
+  font-size: 9px;
+  line-height: 1.18;
 }
 
 .audience-settings {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .audience-settings-button {
-  min-height: 34px;
-  padding: 7px 10px;
+  min-height: 36px;
+  padding: 8px 10px;
   color: rgba(255, 255, 255, 0.72);
   background: rgba(255, 255, 255, 0.065);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 900;
 }
 
@@ -1010,18 +1101,15 @@ p {
 
 .payment-card {
   grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: minmax(0, 0.78fr) minmax(280px, 1.22fr);
-  gap: 12px 18px;
-  padding: 18px;
+  display: block;
+  padding: 16px;
   background:
     radial-gradient(circle at 80% 0%, rgba(61, 219, 174, 0.12), transparent 38%),
     linear-gradient(145deg, rgba(15, 28, 28, 0.84), rgba(14, 14, 20, 0.98));
 }
 
 .payment-card .settings-card-head {
-  grid-column: 1 / -1;
-  margin-bottom: 0;
+  margin-bottom: 10px;
 }
 
 .settings-card-head {
@@ -1084,40 +1172,81 @@ p {
 .payment-hero {
   position: relative;
   z-index: 1;
-  margin-bottom: 0;
+  margin-bottom: 10px;
+  max-width: 560px;
 }
 
 .payment-hero h2 {
-  margin-bottom: 6px;
-  font-size: 22px;
+  margin-bottom: 2px;
+  font-size: 24px;
   font-weight: 950;
   letter-spacing: -0.04em;
 }
 
 .payment-hero p {
   color: rgba(231, 233, 239, 0.68);
-  font-size: 13px;
-  line-height: 1.42;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .payment-options {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 9px;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.payment-group {
+  display: grid;
+  gap: 8px;
+}
+
+.payment-group-head {
+  display: grid;
+  gap: 3px;
+}
+
+.payment-group-head h3 {
+  margin: 0;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.payment-group-head p {
+  margin: 0;
+  color: rgba(231, 233, 239, 0.58);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.payment-group-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.payment-group-grid--plans {
+  grid-template-columns: 1fr;
+}
+
+.payment-group-grid--packs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .payment-option {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   width: 100%;
-  min-height: 58px;
-  padding: 11px 12px;
+  min-height: 76px;
+  padding: 12px;
   color: #fff;
-  background: rgba(255, 255, 255, 0.065);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 18px;
   cursor: pointer;
@@ -1134,37 +1263,81 @@ p {
 .payment-option.featured {
   border-color: rgba(182, 136, 255, 0.46);
   background:
-    linear-gradient(135deg, rgba(138, 43, 226, 0.34), rgba(255, 255, 255, 0.07)),
+    linear-gradient(135deg, rgba(58, 120, 255, 0.22), rgba(138, 43, 226, 0.28)),
     rgba(255, 255, 255, 0.08);
   box-shadow: 0 12px 28px rgba(138, 43, 226, 0.18);
 }
 
 .payment-copy {
   display: grid;
-  gap: 4px;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.payment-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   min-width: 0;
 }
 
+.payment-badge {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .payment-copy strong {
+  display: -webkit-box;
+  min-width: 0;
   overflow: hidden;
   font-size: 14px;
   font-weight: 900;
+  line-height: 1.16;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.payment-copy small {
+.payment-caption {
   overflow: hidden;
-  color: rgba(231, 233, 239, 0.64);
-  font-size: 11px;
+  color: rgba(231, 233, 239, 0.52);
+  font-size: 10px;
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.payment-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.payment-chip {
+  padding: 4px 7px;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .payment-price {
   flex: 0 0 auto;
-  padding: 7px 10px;
+  margin-top: auto;
+  padding: 8px 12px;
   color: #101016;
   background: linear-gradient(135deg, #fff, #c8fff0);
   border-radius: 999px;
@@ -1373,16 +1546,8 @@ p {
     grid-column: 1 / -1;
   }
 
-  .audience-settings {
+  .payment-group-grid--packs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .payment-card {
-    grid-template-columns: 1fr;
-  }
-
-  .payment-options {
-    grid-template-columns: 1fr;
   }
 }
 
@@ -1488,7 +1653,7 @@ p {
   }
 
   .payment-card {
-    padding: 15px;
+    padding: 13px;
   }
 
   .payment-hero h2 {
@@ -1496,6 +1661,29 @@ p {
   }
 
   .payment-option {
-    min-height: 54px;
+    min-height: 72px;
+    padding: 11px;
+  }
+
+  .payment-group-grid--packs {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-title-row {
+    gap: 6px;
+  }
+
+  .payment-copy strong {
+    font-size: 13px;
+  }
+
+  .payment-price {
+    padding: 7px 10px;
+    font-size: 11px;
+  }
+
+  .payment-hero p,
+  .payment-group-head p {
+    display: none;
   }
 }

@@ -3,7 +3,7 @@ package emily.service
 import emily.resources.Strings
 import java.util.concurrent.ConcurrentHashMap
 
-private const val MAX_CONTEXT_MESSAGES = 20
+private const val MAX_CONTEXT_MESSAGES = 60
 private val noiseRegex = Regex(
     """^([/#][\p{L}\p{N}_@-]+.*|\s*)$""",
     setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)

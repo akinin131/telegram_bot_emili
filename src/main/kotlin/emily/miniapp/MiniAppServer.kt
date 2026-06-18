@@ -13,6 +13,7 @@ import emily.data.DialogRepository
 import emily.data.DialogSummary
 import emily.data.GeneratedImageItem
 import emily.data.GeneratedImageRepository
+import emily.data.GifPack
 import emily.data.ImagePack
 import emily.data.Plan
 import emily.data.ReferralRepository
@@ -162,15 +163,19 @@ class MiniAppServer(
                     .put("planExpiresAt", balance.planExpiresAt)
                     .put("textTokensLeft", balance.textTokensLeft)
                     .put("imageCreditsLeft", balance.imageCreditsLeft)
+                    .put("gifCreditsLeft", balance.gifCreditsLeft)
                     .put("dayImageUsed", balance.dayImageUsed)
+                    .put("dayGifUsed", balance.dayGifUsed)
                 )
                 .put("characters", JSONArray(characters.map { it.toMiniAppJson() }))
                 .put("stories", storiesJson(user.id, selectedCharacter.id))
+                .put("storiesByCharacter", storiesByCharacterJson(user.id, characters))
                 .put("dialogs", JSONArray(dialogs.map { it.toMiniAppJson() }))
                 .put("customStory", customStoryAccessJson(customStoryAccess))
                 .put("payments", JSONObject()
                     .put("plans", JSONArray(Plan.entries.map { it.toMiniAppJson() }))
                     .put("packs", JSONArray(ImagePack.entries.map { it.toMiniAppJson() }))
+                    .put("gifPacks", JSONArray(GifPack.entries.map { it.toMiniAppJson() }))
                 )
                 .put("progress", JSONObject()
                     .put("hasHistory", turns.isNotEmpty())
@@ -205,6 +210,7 @@ class MiniAppServer(
                 .put("selectedStory", JSONObject.NULL)
                 .put("characters", JSONArray(characters.map { it.toMiniAppJson() }))
                 .put("stories", storiesJson(user.id, selected.id))
+                .put("storiesByCharacter", storiesByCharacterJson(user.id, characters))
         )
     }
 
@@ -226,7 +232,8 @@ class MiniAppServer(
                     description = Strings.get(
                         "invoice.plan.description",
                         plan.monthlyTextTokens,
-                        plan.monthlyImageCredits
+                        plan.monthlyImageCredits,
+                        plan.monthlyGifCredits
                     ),
                     payload = "plan:${plan.code}:${UUID.randomUUID()}",
                     providerToken = config.providerToken,
@@ -243,7 +250,8 @@ class MiniAppServer(
                     description = Strings.get(
                         "invoice.plan.description",
                         plan.monthlyTextTokens,
-                        plan.monthlyImageCredits
+                        plan.monthlyImageCredits,
+                        plan.monthlyGifCredits
                     ),
                     payload = "plan:${plan.code}:${UUID.randomUUID()}",
                     providerToken = config.providerToken,
@@ -287,6 +295,37 @@ class MiniAppServer(
                     ),
                     photoUrl = pack.photoUrl,
                     startParameter = "pack-${pack.code}"
+                )
+            }
+            "gif_pack" -> {
+                val pack = GifPack.byCode(code)
+                    ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "GIF pack not found"))
+                if (sendToChat) telegramApi.sendInvoice(
+                    chatId = user.id,
+                    title = pack.title,
+                    description = Strings.get("invoice.gifpack.description", pack.gifs),
+                    payload = "gif_pack:${pack.code}:${UUID.randomUUID()}",
+                    providerToken = config.providerToken,
+                    priceLabel = pack.title,
+                    priceRub = pack.priceRub,
+                    providerData = makeProviderData(
+                        desc = Strings.get("invoice.gifpack.provider.desc", pack.title),
+                        rub = pack.priceRub
+                    ),
+                    photoUrl = null,
+                    startParameter = "gif-pack-${pack.code}"
+                ) else telegramApi.createInvoiceLink(
+                    title = pack.title,
+                    description = Strings.get("invoice.gifpack.description", pack.gifs),
+                    payload = "gif_pack:${pack.code}:${UUID.randomUUID()}",
+                    providerToken = config.providerToken,
+                    priceLabel = pack.title,
+                    priceRub = pack.priceRub,
+                    providerData = makeProviderData(
+                        desc = Strings.get("invoice.gifpack.provider.desc", pack.title),
+                        rub = pack.priceRub
+                    ),
+                    startParameter = "gif-pack-${pack.code}"
                 )
             }
             "custom_story" -> {
@@ -903,12 +942,19 @@ class MiniAppServer(
         .put("priceRub", priceRub)
         .put("textTokens", monthlyTextTokens)
         .put("imageCredits", monthlyImageCredits)
+        .put("gifCredits", monthlyGifCredits)
 
     private fun ImagePack.toMiniAppJson(): JSONObject = JSONObject()
         .put("code", code)
         .put("title", title)
         .put("priceRub", priceRub)
         .put("imageCredits", images)
+
+    private fun GifPack.toMiniAppJson(): JSONObject = JSONObject()
+        .put("code", code)
+        .put("title", title)
+        .put("priceRub", priceRub)
+        .put("gifCredits", gifs)
 
     private fun GeneratedImageItem.toMiniAppJson(userId: Long): JSONObject = JSONObject()
         .put("id", id)
@@ -939,6 +985,14 @@ class MiniAppServer(
         val builtInStories = BotCatalog.storiesForCharacter(characterId).map { it.toMiniAppJson() }
         val customStories = customStoryRepository.listStories(userId, characterId).map { it.toMiniAppJson() }
         return JSONArray(builtInStories + customStories)
+    }
+
+    private suspend fun storiesByCharacterJson(userId: Long, characters: List<CharacterProfile>): JSONObject {
+        val result = JSONObject()
+        characters.forEach { character ->
+            result.put(character.id, storiesJson(userId, character.id))
+        }
+        return result
     }
 
     private suspend fun resolveStory(userId: Long, storyId: String): StoryScenario? {

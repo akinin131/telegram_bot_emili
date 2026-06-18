@@ -17,10 +17,13 @@ class AnalyticsRepository(
         plan: String?,
         spentTextTokens: Int,
         spentImageCredits: Int,
+        spentGifCredits: Int,
         textAvailableBefore: Int,
         imageAvailableBefore: Int,
+        gifAvailableBefore: Int,
         textLeftAfter: Int,
         imageLeftAfter: Int,
+        gifLeftAfter: Int,
         source: String
     ): Any? = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
@@ -36,10 +39,13 @@ class AnalyticsRepository(
             node["spendEvents"] = number(node["spendEvents"]) + 1L
             node["spentTextTokens"] = number(node["spentTextTokens"]) + spentTextTokens.toLong()
             node["spentImageCredits"] = number(node["spentImageCredits"]) + spentImageCredits.toLong()
+            node["spentGifCredits"] = number(node["spentGifCredits"]) + spentGifCredits.toLong()
             node["textAvailableBeforeLast"] = textAvailableBefore
             node["imageAvailableBeforeLast"] = imageAvailableBefore
+            node["gifAvailableBeforeLast"] = gifAvailableBefore
             node["textLeftAfterLast"] = textLeftAfter
             node["imageLeftAfterLast"] = imageLeftAfter
+            node["gifLeftAfterLast"] = gifLeftAfter
         }
     }
 
@@ -48,6 +54,7 @@ class AnalyticsRepository(
         plan: String?,
         topupTextTokens: Int,
         topupImageCredits: Int,
+        topupGifCredits: Int,
         source: String,
         amountRub: Int? = null
     ): Any? = withContext(Dispatchers.IO) {
@@ -65,6 +72,7 @@ class AnalyticsRepository(
             node["topupEvents"] = number(node["topupEvents"]) + 1L
             node["topupTextTokens"] = number(node["topupTextTokens"]) + topupTextTokens.toLong()
             node["topupImageCredits"] = number(node["topupImageCredits"]) + topupImageCredits.toLong()
+            node["topupGifCredits"] = number(node["topupGifCredits"]) + topupGifCredits.toLong()
         }
     }
 

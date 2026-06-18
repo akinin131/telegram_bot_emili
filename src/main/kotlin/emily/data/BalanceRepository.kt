@@ -28,7 +28,9 @@ class BalanceRepository(
             "planExpiresAt" to balance.planExpiresAt,
             "textTokensLeft" to balance.textTokensLeft,
             "imageCreditsLeft" to balance.imageCreditsLeft,
+            "gifCreditsLeft" to balance.gifCreditsLeft,
             "dayImageUsed" to balance.dayImageUsed,
+            "dayGifUsed" to balance.dayGifUsed,
             "dayStamp" to balance.dayStamp,
             "createdAt" to balance.createdAt,
             "updatedAt" to balance.updatedAt
@@ -48,6 +50,14 @@ class BalanceRepository(
         val balance = get(userId)
         if (credits <= 0) return balance
         balance.imageCreditsLeft += credits
+        put(balance)
+        return balance
+    }
+
+    suspend fun addGifCredits(userId: Long, credits: Int): UserBalance {
+        val balance = get(userId)
+        if (credits <= 0) return balance
+        balance.gifCreditsLeft += credits
         put(balance)
         return balance
     }
@@ -84,7 +94,9 @@ class BalanceRepository(
         planExpiresAt = child("planExpiresAt").getValue(Long::class.java),
         textTokensLeft = child("textTokensLeft").getValue(Long::class.java)?.toInt() ?: FREE_TEXT_TOKENS,
         imageCreditsLeft = child("imageCreditsLeft").getValue(Long::class.java)?.toInt() ?: FREE_IMAGE_CREDITS,
+        gifCreditsLeft = child("gifCreditsLeft").getValue(Long::class.java)?.toInt() ?: FREE_GIF_CREDITS,
         dayImageUsed = child("dayImageUsed").getValue(Long::class.java)?.toInt() ?: 0,
+        dayGifUsed = child("dayGifUsed").getValue(Long::class.java)?.toInt() ?: 0,
         dayStamp = child("dayStamp").getValue(String::class.java) ?: LocalDate.now().toString(),
         createdAt = child("createdAt").getValue(Long::class.java) ?: System.currentTimeMillis(),
         updatedAt = child("updatedAt").getValue(Long::class.java) ?: System.currentTimeMillis()

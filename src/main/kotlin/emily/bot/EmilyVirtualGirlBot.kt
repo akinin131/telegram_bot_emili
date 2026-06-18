@@ -9,6 +9,7 @@ import emily.domain.StoryScenario
 import emily.resources.Strings
 import emily.service.ChatService
 import emily.service.ConversationMemory
+import emily.service.GifVideoService
 import emily.service.ImageService
 import emily.service.MyMemoryTranslator
 import java.io.ByteArrayInputStream
@@ -31,10 +32,12 @@ import org.json.JSONObject
 import org.telegram.telegrambots.bots.TelegramLongPollingBot
 import org.telegram.telegrambots.meta.api.methods.ActionType
 import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery
+import org.telegram.telegrambots.meta.api.methods.GetFile
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
 import org.telegram.telegrambots.meta.api.methods.menubutton.SetChatMenuButton
+import org.telegram.telegrambots.meta.api.methods.send.SendAnimation
 import org.telegram.telegrambots.meta.api.methods.send.SendChatAction
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto
@@ -70,18 +73,19 @@ class EmilyVirtualGirlBot(
     private val dialogRepository: DialogRepository,
     private val generatedImageRepository: GeneratedImageRepository,
     private val customStoryRepository: CustomStoryRepository,
+    private val promoRepository: PromoRepository,
     private val userActivityRepository: UserActivityRepository,
     private val userSettingsRepository: UserSettingsRepository,
     private val chatService: ChatService,
     private val animeImageService: ImageService,
     private val realisticImageService: ImageService,
+    private val gifVideoService: GifVideoService,
     private val memory: ConversationMemory,
     private val translator: MyMemoryTranslator?,
     private val subscriptionGroupUrl: String?,
     private val premiumChatModel: String,
     private val miniAppUrl: String?
 ) : TelegramLongPollingBot() {
-
     override fun getBotUsername(): String = "you_emily_bot"
     override fun getBotToken(): String = config.telegramToken
 
@@ -93,6 +97,8 @@ class EmilyVirtualGirlBot(
     private val inactivityThresholdMs = 18L * 60 * 60 * 1000
     private val inactivityScanEveryMs = 20L * 60 * 1000
     private val inactivityNudgeCooldownMs = 24L * 60 * 60 * 1000
+    private val autoImageCooldownMs = 60 * 1000
+    private val autoImageMinAssistantTurns = 8
 
     private data class ChatSession(
         val scope: CoroutineScope,
@@ -115,9 +121,15 @@ class EmilyVirtualGirlBot(
         data object Scene : PendingRetry()
     }
 
+    private data class AutoImageRequest(
+        val text: String,
+        val prompt: String?
+    )
+
     private data class SessionState(
         @Volatile var awaitingImagePrompt: Boolean = false,
         @Volatile var lastSystemMessageId: Int? = null,
+        @Volatile var lastAssistantTextMessageId: Int? = null,
         val protectedMessageIds: MutableSet<Int> = ConcurrentHashMap.newKeySet(),
         val ephemeralJobs: MutableMap<Int, Job> = ConcurrentHashMap(),
         val pendingRetries: MutableMap<String, PendingRetry> = ConcurrentHashMap(),
@@ -128,7 +140,9 @@ class EmilyVirtualGirlBot(
         @Volatile var freeMessagesWithoutSubscription: Int = 0,
         @Volatile var freeMessagesLoaded: Boolean = false,
         @Volatile var chatResponseInProgress: Boolean = false,
-        @Volatile var lastBusyNoticeAt: Long = 0L
+        @Volatile var lastBusyNoticeAt: Long = 0L,
+        @Volatile var lastAutoImageAt: Long = 0L,
+        @Volatile var assistantTurnsSinceAutoImage: Int = 100
     )
 
     private val sessions = ConcurrentHashMap<Long, ChatSession>()
@@ -244,68 +258,40 @@ class EmilyVirtualGirlBot(
 
     private val imageTag = "#pic"
     private val customStoryPromoCode = "EMILI_STORY_TEST"
+    private val gifPromoCode = "EMILI_GIF10"
+    private val gifPromoCredits = 10
     private fun imageSubjectDirective(character: CharacterProfile): String {
         return when (AudiencePreference.normalize(character.audience)) {
             AudiencePreference.MALE -> """
-Mandatory subject:
-- Use exactly one adult male character: 1boy, male focus, adult man, mature male, masculine face, masculine body
-- The character is ${character.name}; keep his identity and persona
-- Do NOT output female tags: no 1girl, girl, woman, female, breasts, dress, skirt, lingerie
-- If the user writes "boy" in Russian/English, interpret it as an adult man 18+, never as a child or teen
+Subject: exactly one adult male character, ${character.name}; keep identity/persona.
+Required tags: 1boy, male focus, adult man, mature male, masculine face, masculine body.
+Never output female/minor tags: 1girl, girl, woman, female, breasts, dress, skirt, lingerie, child, teen.
 """.trimIndent()
             else -> """
-Mandatory subject:
-- Use exactly one adult female character: 1girl, female focus, adult woman, feminine face, feminine body
-- The character is ${character.name}; keep her identity and persona
-- Do NOT output male tags: no 1boy, boy, man, male, beard, stubble, suit
-- The character must be 18+
+Subject: exactly one adult female character, ${character.name}; keep identity/persona.
+Required tags: 1girl, female focus, adult woman, feminine face, feminine body.
+Never output male/minor tags: 1boy, boy, man, male, beard, stubble, suit, child, teen.
 """.trimIndent()
         }
     }
 
     private fun imagePromptSystem(character: CharacterProfile): String = """
-You generate prompts for a Stable Diffusion image model.
-
-Rules:
-- Output ONE line only
-- Output ONLY comma-separated tags
-- No sentences, no explanations, no instructions
-- Use short visual tags (1–3 words)
-- Prefer danbooru-style tags
-- Preserve the selected character's gender and visual identity
-- Never change the selected character into the opposite gender
+Generate Stable Diffusion prompts as ONE line of comma-separated danbooru-style visual tags only. No sentences, explanations or instructions. Short tags, 1-3 words. Preserve character gender and identity.
 
 ${imageSubjectDirective(character)}
 
-Order:
-rating, quality/style, mandatory subject, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action
+Order: rating, quality/style, subject, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action.
 
 Example format:
 ${imagePromptExample(character)}
-
-Output ONLY the tags.
 """.trimIndent()
 
     private fun scenePromptSystem(character: CharacterProfile): String = """
-You generate prompts for a Stable Diffusion image model from dialogue context.
-
-Rules:
-- Output ONE line only
-- Output ONLY comma-separated tags
-- No sentences, no explanations, no instructions
-- Use short visual tags (1–3 words)
-- Prefer danbooru-style tags
-- Prioritize the latest dialogue messages; they define the current scene now
-- If earlier and later messages conflict, use the later messages
-- Preserve the selected character's gender and visual identity
-- Never change the selected character into the opposite gender
+Generate Stable Diffusion prompts from dialogue as ONE line of comma-separated danbooru-style visual tags only. No sentences, explanations or instructions. Use latest messages as the current scene; later beats override earlier ones. Preserve character gender and identity.
 
 ${imageSubjectDirective(character)}
 
-Order:
-rating, quality/style, mandatory subject, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action
-
-Output ONLY the tags.
+Order: rating, quality/style, subject, appearance, clothing/nudity, accessories, pose/camera, environment, lighting/mood, action.
 """.trimIndent()
 
     private fun imagePromptExample(character: CharacterProfile): String {
@@ -383,6 +369,7 @@ Output ONLY the tags.
 
     private val animeImageModelName = "wai-Illustrious"
     private val realisticImageModelName = "lustify-v7"
+    private val gifModelName = "wan-2.5-preview-image-to-video"
 
     private val characterEmily = BotCatalog.defaultCharacter
     private val availableCharacters = BotCatalog.characters
@@ -638,7 +625,7 @@ Output ONLY the tags.
             html = true
         )
 
-        val openingLine = BotCatalog.openingLine(character, story)
+        val openingLine = formatAssistantReply(BotCatalog.openingLine(character, story))
         val dialogId = dialogRepository.createDialog(
             userId = chatId,
             characterId = character.id,
@@ -652,7 +639,7 @@ Output ONLY the tags.
 
         memory.append(chatId, "assistant", openingLine)
         chatHistoryRepository.append(chatId, "assistant", openingLine)
-        sendText(chatId, openingLine)
+        sendAssistantText(session, chatId, openingLine)
     }
 
     private suspend fun clearStory(session: ChatSession, chatId: Long, pickerMessageId: Int? = null) {
@@ -724,6 +711,132 @@ Output ONLY the tags.
                 )
             )
         }
+    }
+
+    private fun sceneButtonKeyboard(): InlineKeyboardMarkup {
+        return InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = Strings.get("scene.button.show")
+                        callbackData = "show:scene"
+                    }
+                )
+            )
+        }
+    }
+
+    private suspend fun attachSceneButtonToLatestAssistantText(
+        session: ChatSession,
+        chatId: Long,
+        messageId: Int
+    ) {
+        val previousMessageId = session.state.lastAssistantTextMessageId
+        if (previousMessageId != null && previousMessageId != messageId) {
+            runCatching {
+                executeSafe(
+                    EditMessageReplyMarkup().apply {
+                        this.chatId = chatId.toString()
+                        this.messageId = previousMessageId
+                        this.replyMarkup = null
+                    }
+                )
+            }
+        }
+
+        runCatching {
+            executeSafe(
+                EditMessageReplyMarkup().apply {
+                    this.chatId = chatId.toString()
+                    this.messageId = messageId
+                    this.replyMarkup = sceneButtonKeyboard()
+                }
+            )
+        }
+
+        session.state.lastAssistantTextMessageId = messageId
+    }
+
+    private fun formatAssistantReply(text: String): String {
+        val normalized = text
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .replace(Regex("[ \t]+"), " ")
+            .replace(Regex(" *\n *"), "\n")
+            .trim()
+
+        if (normalized.isBlank()) return text.trim()
+
+        var formatted = normalized
+            .replace(Regex("([.!?…])\\s+(\\*[^*\\n]{2,120}\\*)"), "$1\n$2")
+            .replace(Regex("(?<=\\S)(\\*[^*\\n]{2,120}\\*)"), "\n$1")
+            .replace(Regex("(\\*[^*\\n]{2,120}\\*)\\s+"), "$1\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+
+        formatted = formatted
+            .lines()
+            .map { it.trim() }
+            .joinToString("\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+
+        if (!formatted.contains("\n\n") && formatted.length > 220) {
+            val chunks = formatted
+                .split(Regex("(?<=[.!?…])\\s+(?=[А-ЯA-ZЁ])"))
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+
+            if (chunks.size >= 3) {
+                formatted = chunks
+                    .chunked(2)
+                    .joinToString("\n\n") { part -> part.joinToString(" ") }
+            }
+        }
+
+        return formatted
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+    }
+
+    private fun renderAssistantReplyHtml(text: String): String {
+        return text
+            .lines()
+            .joinToString("\n") { line ->
+                val trimmed = line.trim()
+                val action = Regex("^\\*([^*\\n]{2,120})\\*$").matchEntire(trimmed)?.groupValues?.get(1)?.trim()
+                if (action != null) {
+                    "<i>${escapeHtml(action)}</i>"
+                } else {
+                    renderInlineActions(trimmed)
+                }
+            }
+    }
+
+    private fun renderInlineActions(line: String): String {
+        if (line.isBlank()) return ""
+
+        val regex = Regex("\\*([^*\\n]{2,120})\\*")
+        val result = StringBuilder()
+        var lastIndex = 0
+
+        regex.findAll(line).forEach { match ->
+            val start = match.range.first
+            val endExclusive = match.range.last + 1
+            result.append(escapeHtml(line.substring(lastIndex, start)))
+            result.append("<i>")
+            result.append(escapeHtml(match.groupValues[1].trim()))
+            result.append("</i>")
+            lastIndex = endExclusive
+        }
+
+        result.append(escapeHtml(line.substring(lastIndex)))
+        return result.toString()
+    }
+
+    private fun escapeHtml(text: String): String {
+        return text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
     }
 
     private fun networkFailTextChat(): String = Strings.get("network.fail.chat")
@@ -834,9 +947,15 @@ Output ONLY the tags.
         return normalized == customStoryPromoCode || commandName(textRaw) == "/promo_story"
     }
 
+    private fun isGifPromo(textRaw: String): Boolean {
+        val normalized = textRaw.trim().uppercase(Locale.ROOT)
+        return normalized == gifPromoCode || commandName(textRaw) == "/promo_gif"
+    }
+
     private fun shouldBypassSubscriptionGate(textRaw: String): Boolean {
         return isStartCommand(textRaw) ||
                 isCustomStoryPromo(textRaw) ||
+                isGifPromo(textRaw) ||
                 isExactCommand(textRaw, "/character") ||
                 isExactCommand(textRaw, "/story") ||
                 isExactCommand(textRaw, "/app") ||
@@ -1046,6 +1165,10 @@ Output ONLY the tags.
                 redeemCustomStoryPromo(session, chatId)
             }
 
+            isGifPromo(textRaw) -> {
+                redeemGifPromo(session, chatId)
+            }
+
             isStartCommand(textRaw) -> {
                 extractStartReferrerId(textRaw)?.let { referrerId ->
                     runCatching {
@@ -1144,6 +1267,11 @@ Output ONLY the tags.
 
             isCustomStoryPromo(textRaw) -> {
                 redeemCustomStoryPromo(session, chatId)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isGifPromo(textRaw) -> {
+                redeemGifPromo(session, chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -1306,8 +1434,34 @@ Output ONLY the tags.
                 }
             }
 
+            data.startsWith("gif:") -> {
+                executeSafe(
+                    AnswerCallbackQuery().apply {
+                        callbackQueryId = update.callbackQuery.id
+                        text = Strings.get("image.animate.working")
+                    }
+                )
+                val payload = data.removePrefix("gif:").split(":", limit = 2)
+                val characterId = payload.getOrNull(0) ?: return
+                val imageId = payload.getOrNull(1) ?: return
+                animateGeneratedImage(session, chatId, characterId, imageId)
+                return
+            }
+
+            data == "show:scene" -> {
+                executeSafe(
+                    AnswerCallbackQuery().apply {
+                        callbackQueryId = update.callbackQuery.id
+                    }
+                )
+                val character = activeCharacter(chatId)
+                handleSceneImage(session, chatId, character)
+                return
+            }
+
             data.startsWith("buy:plan:") -> createPlanInvoice(session, chatId, data.removePrefix("buy:plan:"))
             data.startsWith("buy:pack:") -> createPackInvoice(session, chatId, data.removePrefix("buy:pack:"))
+            data.startsWith("buy:gif_pack:") -> createGifPackInvoice(session, chatId, data.removePrefix("buy:gif_pack:"))
         }
     }
 
@@ -1436,7 +1590,7 @@ Output ONLY the tags.
             until,
             balance.textTokensLeft,
             balance.imageCreditsLeft,
-            balance.dayImageUsed
+            balance.gifCreditsLeft
         )
         sendSystemText(session, chatId, text, html = true)
     }
@@ -1470,6 +1624,14 @@ Output ONLY the tags.
                 callbackData = "buy:pack:${ImagePack.P100.code}"
             }
         )
+        GifPack.entries.forEach { pack ->
+            rows += listOf(
+                InlineKeyboardButton().apply {
+                    text = Strings.get("buy.menu.gifpack.button", pack.title, displayPrice(pack.priceRub))
+                    callbackData = "buy:gif_pack:${pack.code}"
+                }
+            )
+        }
 
         val keyboard = InlineKeyboardMarkup().apply {
             this.keyboard = rows
@@ -1522,6 +1684,32 @@ Output ONLY the tags.
             chatId = chatId,
             text = "✅ Промокод активирован. Добавлено ${CustomStoryPack.storySlots} слота для своих историй. Открой Mini App и нажми «Добавить свою историю».",
             ttlSeconds = 30
+        )
+    }
+
+    private suspend fun redeemGifPromo(session: ChatSession, chatId: Long) {
+        val redeemed = promoRepository.redeem(
+            userId = chatId,
+            promoCode = gifPromoCode,
+            payload = mapOf("gifCredits" to gifPromoCredits, "type" to "gif")
+        )
+
+        if (!redeemed) {
+            sendEphemeral(
+                session = session,
+                chatId = chatId,
+                text = "Промокод уже использован. GIF-кредиты уже были начислены.",
+                ttlSeconds = 18
+            )
+            return
+        }
+
+        repository.addGifCredits(chatId, gifPromoCredits)
+        sendEphemeral(
+            session = session,
+            chatId = chatId,
+            text = "✅ Промокод активирован. Добавлено $gifPromoCredits GIF-кредитов.",
+            ttlSeconds = 20
         )
     }
 
@@ -1658,6 +1846,7 @@ Output ONLY the tags.
                     plan = null,
                     topupTextTokens = bonus.referrerBonusTokens,
                     topupImageCredits = 0,
+                    topupGifCredits = 0,
                     source = "referral:activation"
                 )
             }
@@ -1666,6 +1855,7 @@ Output ONLY the tags.
                 plan = null,
                 topupTextTokens = bonus.invitedBonusTokens,
                 topupImageCredits = 0,
+                topupGifCredits = 0,
                 source = "referral:invited_activation"
             )
         }
@@ -1723,6 +1913,7 @@ Output ONLY the tags.
                 plan = null,
                 topupTextTokens = bonus.bonusTextTokens,
                 topupImageCredits = bonus.bonusImageCredits,
+                topupGifCredits = 0,
                 source = "referral:payment:${bonus.ratePercent}"
             )
         }
@@ -1822,12 +2013,21 @@ Output ONLY the tags.
         }
 
         val result = genResult.getOrThrow()
+        val autoImageRequest = extractAutoImageRequest(result.text)
+        val formattedReply = formatAssistantReply(autoImageRequest.text)
+        session.state.assistantTurnsSinceAutoImage += 1
 
-        memory.append(chatId, "assistant", result.text)
-        chatHistoryRepository.append(chatId, "assistant", result.text)
-        dialogRepository.appendMessage(chatId, dialogId, "assistant", result.text)
+        memory.append(chatId, "assistant", formattedReply)
+        chatHistoryRepository.append(chatId, "assistant", formattedReply)
+        dialogRepository.appendMessage(chatId, dialogId, "assistant", formattedReply)
 
-        sendText(chatId, result.text)
+        val sentWithPhoto = autoImageRequest.prompt?.let { prompt ->
+            maybeSendAutoImageWithCaption(session, chatId, character, prompt, formattedReply)
+        } == true
+
+        if (!sentWithPhoto) {
+            sendAssistantText(session, chatId, formattedReply)
+        }
 
         if (result.tokensUsed > 0) {
             val textBefore = balance.textTokensLeft
@@ -1842,10 +2042,13 @@ Output ONLY the tags.
                 plan = balance.plan,
                 spentTextTokens = result.tokensUsed,
                 spentImageCredits = 0,
+                spentGifCredits = 0,
                 textAvailableBefore = textBefore,
                 imageAvailableBefore = imageBefore,
+                gifAvailableBefore = balance.gifCreditsLeft,
                 textLeftAfter = balance.textTokensLeft,
                 imageLeftAfter = balance.imageCreditsLeft,
+                gifLeftAfter = balance.gifCreditsLeft,
                 source = "chat"
             )
         }
@@ -1871,6 +2074,93 @@ Output ONLY the tags.
         return if (story == null) premiumChatModel else chatService.model
     }
 
+    private fun extractAutoImageRequest(text: String): AutoImageRequest {
+        val marker = Regex(
+            pattern = """\s*\[\[PHOTO_PROMPT:\s*(.*?)\s*]]\s*$""",
+            options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+        val match = marker.find(text) ?: return AutoImageRequest(text = text, prompt = null)
+        val prompt = match.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+        val cleanText = text.removeRange(match.range).trim()
+        return AutoImageRequest(text = cleanText, prompt = prompt)
+    }
+
+    private suspend fun maybeSendAutoImageWithCaption(
+        session: ChatSession,
+        chatId: Long,
+        character: CharacterProfile,
+        rawPrompt: String,
+        captionText: String
+    ): Boolean {
+        val now = System.currentTimeMillis()
+        if (session.state.lastAutoImageAt > 0L && now - session.state.lastAutoImageAt < autoImageCooldownMs) return false
+        if (session.state.assistantTurnsSinceAutoImage < autoImageMinAssistantTurns) return false
+
+        val captionHtml = renderAssistantReplyHtml(captionText)
+        if (captionHtml.length > 950) return false
+
+        val balance = ensureUserBalance(chatId)
+        if (balance.imageCreditsLeft <= 0) return false
+
+        val finalPrompt = limitPromptLength(
+            enforceCharacterSubject(normalizePrompt(rawPrompt), character),
+            1000
+        )
+        if (finalPrompt.isBlank()) return false
+
+        val style = imageStyleFor(character)
+        val (service, modelName) = when (style) {
+            ImageStyle.ANIME -> animeImageService to animeImageModelName
+            ImageStyle.REALISTIC -> realisticImageService to realisticImageModelName
+        }
+
+        val imageResult: Result<ByteArray?> = retryOnceAfterDelayIfNetwork {
+            withUploadPhoto(session, chatId) {
+                withContext(Dispatchers.IO) { service.generateImage(finalPrompt, character.imagePersona) }
+            }
+        }
+
+        val bytes = imageResult.getOrNull() ?: return false
+        val sentPhoto = sendPhoto(
+            chatId = chatId,
+            bytes = bytes,
+            caption = captionHtml,
+            replyMarkup = null,
+            html = true
+        )
+        saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = "auto_prompt")
+            ?.let { attachAnimateButton(chatId, sentPhoto.messageId, it) }
+
+        val textBefore = balance.textTokensLeft
+        val imageBefore = balance.imageCreditsLeft
+        val gifBefore = balance.gifCreditsLeft
+        balance.imageCreditsLeft -= 1
+        balance.dayImageUsed += 1
+        repository.put(balance)
+
+        session.state.lastAutoImageAt = now
+        session.state.assistantTurnsSinceAutoImage = 0
+
+        repository.logUsage(chatId, 0, mapOf("type" to "image", "model" to modelName, "credits_used" to 1, "source" to "auto_prompt"))
+        analyticsRepository.logSpend(
+            userId = chatId,
+            plan = balance.plan,
+            spentTextTokens = 0,
+            spentImageCredits = 1,
+            spentGifCredits = 0,
+            textAvailableBefore = textBefore,
+            imageAvailableBefore = imageBefore,
+            gifAvailableBefore = gifBefore,
+            textLeftAfter = balance.textTokensLeft,
+            imageLeftAfter = balance.imageCreditsLeft,
+            gifLeftAfter = balance.gifCreditsLeft,
+            source = "image:auto:$modelName"
+        )
+
+        maybeActivateReferralFromGeneration(session, chatId, "auto_image")
+        return true
+    }
+
     private suspend fun saveGeneratedImage(
         chatId: Long,
         character: CharacterProfile,
@@ -1878,9 +2168,9 @@ Output ONLY the tags.
         prompt: String,
         modelName: String,
         source: String
-    ) {
-        val fileId = message.photo?.maxByOrNull { it.fileSize ?: 0 }?.fileId ?: return
-        runCatching {
+    ): GeneratedImageItem? {
+        val fileId = message.photo?.maxByOrNull { it.fileSize ?: 0 }?.fileId ?: return null
+        return runCatching {
             generatedImageRepository.add(
                 userId = chatId,
                 characterId = character.id,
@@ -1890,17 +2180,122 @@ Output ONLY the tags.
                 model = modelName,
                 source = source
             )
+        }.getOrNull()
+    }
+
+    private fun animateButton(item: GeneratedImageItem): InlineKeyboardMarkup {
+        return InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = Strings.get("image.animate.button")
+                        callbackData = "gif:${item.characterId}:${item.id}"
+                    }
+                )
+            )
         }
+    }
+
+    private suspend fun attachAnimateButton(
+        chatId: Long,
+        messageId: Int,
+        item: GeneratedImageItem
+    ) {
+        runCatching {
+            executeSafe(
+                EditMessageReplyMarkup().apply {
+                    this.chatId = chatId.toString()
+                    this.messageId = messageId
+                    this.replyMarkup = animateButton(item)
+                }
+            )
+        }
+    }
+
+    private fun animationPromptFor(character: CharacterProfile, sourcePrompt: String): String {
+        val base = when (AudiencePreference.normalize(character.audience)) {
+            AudiencePreference.MALE ->
+                "Subtle natural motion, realistic adult man, slight breathing, blinking, soft head movement, gentle camera sway, cinematic loop"
+            else ->
+                "Subtle sensual motion, adult woman, slight breathing, blinking, hair movement, gentle camera sway, cinematic loop"
+        }
+        return "$base. Keep the same character and composition as the source image. Prompt: $sourcePrompt"
+    }
+
+    private suspend fun animateGeneratedImage(session: ChatSession, chatId: Long, characterId: String, imageId: String) {
+        val balance = ensureUserBalance(chatId)
+        if (balance.gifCreditsLeft <= 0) {
+            sendEphemeral(session, chatId, Strings.get("gif.no.credits"), ttlSeconds = 20)
+            return
+        }
+
+        val item = generatedImageRepository.get(chatId, characterId, imageId)
+        if (item == null) {
+            sendEphemeral(session, chatId, Strings.get("gif.source.not_found"), ttlSeconds = 15)
+            return
+        }
+
+        val character = characterById(item.characterId) ?: activeCharacter(chatId)
+        val imageUrl = telegramFileUrl(item.telegramFileId) ?: run {
+            sendEphemeral(session, chatId, Strings.get("gif.source.not_found"), ttlSeconds = 15)
+            return
+        }
+
+        val prompt = animationPromptFor(character, item.prompt)
+        val videoBytes = retryOnceAfterDelayIfNetwork {
+            withChatAction(session, chatId, ActionType.UPLOADVIDEO) {
+                gifVideoService.animateImage(imageUrl = imageUrl, prompt = prompt)
+            }
+        }.getOrElse {
+            null
+        }
+
+        if (videoBytes == null) {
+            sendEphemeral(session, chatId, Strings.get("gif.generate.fail"), ttlSeconds = 20)
+            return
+        }
+
+        sendAnimation(chatId, videoBytes, caption = Strings.get("gif.ready.caption"))
+
+        val textBefore = balance.textTokensLeft
+        val imageBefore = balance.imageCreditsLeft
+        val gifBefore = balance.gifCreditsLeft
+        balance.gifCreditsLeft -= 1
+        balance.dayGifUsed += 1
+        repository.put(balance)
+
+        repository.logUsage(chatId, 0, mapOf("type" to "gif", "model" to gifModelName, "credits_used" to 1))
+        analyticsRepository.logSpend(
+            userId = chatId,
+            plan = balance.plan,
+            spentTextTokens = 0,
+            spentImageCredits = 0,
+            spentGifCredits = 1,
+            textAvailableBefore = textBefore,
+            imageAvailableBefore = imageBefore,
+            gifAvailableBefore = gifBefore,
+            textLeftAfter = balance.textTokensLeft,
+            imageLeftAfter = balance.imageCreditsLeft,
+            gifLeftAfter = balance.gifCreditsLeft,
+            source = "gif:$gifModelName"
+        )
+
+        if (balance.plan == null && balance.gifCreditsLeft <= 0) {
+            sendEphemeral(session, chatId, Strings.get("free.limit.reached"), ttlSeconds = 15)
+        }
+    }
+
+    private suspend fun telegramFileUrl(fileId: String): String? {
+        val file = runCatching {
+            executeSafe(GetFile(fileId))
+        }.getOrNull() ?: return null
+        val filePath = file.filePath?.takeIf { it.isNotBlank() } ?: return null
+        return "https://api.telegram.org/file/bot${config.telegramToken}/$filePath"
     }
 
     private suspend fun handleImage(session: ChatSession, chatId: Long, textRaw: String, character: CharacterProfile) {
         val balance = ensureUserBalance(chatId)
-        val cap = dailyCap(balance.plan)
 
-        if (balance.plan != null && balance.dayImageUsed >= cap) {
-            sendEphemeral(session, chatId, Strings.get("image.daily.limit", cap), ttlSeconds = 20)
-            return
-        }
         if (balance.imageCreditsLeft <= 0) {
             sendEphemeral(session, chatId, Strings.get("image.no.credits"), ttlSeconds = 20)
             return
@@ -1964,9 +2359,11 @@ Output ONLY the tags.
 
         val sentPhoto = sendPhoto(chatId, bytes, caption = null, replyMarkup = null)
         saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = "prompt")
+            ?.let { attachAnimateButton(chatId, sentPhoto.messageId, it) }
 
         val textBefore = balance.textTokensLeft
         val imageBefore = balance.imageCreditsLeft
+        val gifBefore = balance.gifCreditsLeft
         balance.imageCreditsLeft -= 1
         balance.dayImageUsed += 1
         repository.put(balance)
@@ -1977,10 +2374,13 @@ Output ONLY the tags.
             plan = balance.plan,
             spentTextTokens = 0,
             spentImageCredits = 1,
+            spentGifCredits = 0,
             textAvailableBefore = textBefore,
             imageAvailableBefore = imageBefore,
+            gifAvailableBefore = gifBefore,
             textLeftAfter = balance.textTokensLeft,
             imageLeftAfter = balance.imageCreditsLeft,
+            gifLeftAfter = balance.gifCreditsLeft,
             source = "image:$modelName"
         )
 
@@ -1996,12 +2396,7 @@ Output ONLY the tags.
 
     private suspend fun handleSceneImage(session: ChatSession, chatId: Long, character: CharacterProfile) {
         val balance = ensureUserBalance(chatId)
-        val cap = dailyCap(balance.plan)
 
-        if (balance.plan != null && balance.dayImageUsed >= cap) {
-            sendEphemeral(session, chatId, Strings.get("image.daily.limit", cap), ttlSeconds = 20)
-            return
-        }
         if (balance.imageCreditsLeft <= 0) {
             sendEphemeral(session, chatId, Strings.get("image.no.credits"), ttlSeconds = 20)
             return
@@ -2055,9 +2450,11 @@ Output ONLY the tags.
 
         val sentPhoto = sendPhoto(chatId, bytes, caption = null, replyMarkup = null)
         saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = "scene")
+            ?.let { attachAnimateButton(chatId, sentPhoto.messageId, it) }
 
         val textBefore = balance.textTokensLeft
         val imageBefore = balance.imageCreditsLeft
+        val gifBefore = balance.gifCreditsLeft
         balance.imageCreditsLeft -= 1
         balance.dayImageUsed += 1
         repository.put(balance)
@@ -2068,10 +2465,13 @@ Output ONLY the tags.
             plan = balance.plan,
             spentTextTokens = 0,
             spentImageCredits = 1,
+            spentGifCredits = 0,
             textAvailableBefore = textBefore,
             imageAvailableBefore = imageBefore,
+            gifAvailableBefore = gifBefore,
             textLeftAfter = balance.textTokensLeft,
             imageLeftAfter = balance.imageCreditsLeft,
+            gifLeftAfter = balance.gifCreditsLeft,
             source = "image:scene:$modelName"
         )
 
@@ -2119,11 +2519,10 @@ Output ONLY the tags.
         val history = listOf(
             "system" to scenePromptSystem(character),
             "user" to """
-Conversation (oldest to newest):
+Dialogue, oldest to newest:
 $dialogue
 
-Generate image tags for the CURRENT scene at the latest dialogue moment.
-Prioritize the newest messages if older messages conflict.
+Generate tags for the current/latest scene.
 """.trimIndent()
         )
         val result = chatService.generateReply(history)
@@ -2192,7 +2591,8 @@ Prioritize the newest messages if older messages conflict.
             description = Strings.get(
                 "invoice.plan.description",
                 plan.monthlyTextTokens,
-                plan.monthlyImageCredits
+                plan.monthlyImageCredits,
+                plan.monthlyGifCredits
             )
             payload = invoicePayload
             providerToken = config.providerToken
@@ -2238,6 +2638,31 @@ Prioritize the newest messages if older messages conflict.
         safeExecuteInvoice(session, chatId, invoice)
     }
 
+    private suspend fun createGifPackInvoice(session: ChatSession, chatId: Long, packCode: String) {
+        val pack = GifPack.byCode(packCode) ?: return
+        val invoicePayload = "gif_pack:${pack.code}:${UUID.randomUUID()}"
+        val providerDataJson = makeProviderData(
+            desc = Strings.get("invoice.gifpack.provider.desc", pack.title),
+            rub = pack.priceRub,
+            includeVat = true
+        )
+        val invoice = SendInvoice().apply {
+            this.chatId = chatId.toString()
+            title = pack.title
+            description = Strings.get("invoice.gifpack.description", pack.gifs)
+            payload = invoicePayload
+            providerToken = config.providerToken
+            currency = "RUB"
+            startParameter = "gif-pack-${pack.code}"
+            prices = listOf(LabeledPrice(pack.title, pack.priceRub * 100))
+            needEmail = true
+            sendEmailToProvider = true
+            isFlexible = false
+            providerData = providerDataJson
+        }
+        safeExecuteInvoice(session, chatId, invoice)
+    }
+
     private suspend fun safeExecuteInvoice(session: ChatSession, chatId: Long, invoice: SendInvoice) {
         try {
             val message = executeSafe(invoice)
@@ -2273,6 +2698,7 @@ Prioritize the newest messages if older messages conflict.
                 balance.planExpiresAt = base + monthMs
                 balance.textTokensLeft += plan.monthlyTextTokens
                 balance.imageCreditsLeft += plan.monthlyImageCredits
+                balance.gifCreditsLeft += plan.monthlyGifCredits
                 repository.put(balance)
                 repository.addPayment(chatId, payload, totalRub)
                 analyticsRepository.logTopUp(
@@ -2280,6 +2706,7 @@ Prioritize the newest messages if older messages conflict.
                     plan = balance.plan,
                     topupTextTokens = plan.monthlyTextTokens,
                     topupImageCredits = plan.monthlyImageCredits,
+                    topupGifCredits = plan.monthlyGifCredits,
                     source = "payment:plan:${plan.code}",
                     amountRub = totalRub
                 )
@@ -2300,7 +2727,8 @@ Prioritize the newest messages if older messages conflict.
                         plan.title,
                         Instant.ofEpochMilli(balance.planExpiresAt!!),
                         plan.monthlyTextTokens,
-                        plan.monthlyImageCredits
+                        plan.monthlyImageCredits,
+                        plan.monthlyGifCredits
                     ),
                     ttlSeconds = 20
                 )
@@ -2317,6 +2745,7 @@ Prioritize the newest messages if older messages conflict.
                     plan = balance.plan,
                     topupTextTokens = 0,
                     topupImageCredits = pack.images,
+                    topupGifCredits = 0,
                     source = "payment:pack:${pack.code}",
                     amountRub = totalRub
                 )
@@ -2337,6 +2766,29 @@ Prioritize the newest messages if older messages conflict.
                 )
             }
 
+            payload.startsWith("gif_pack:") -> {
+                val code = payload.split(":").getOrNull(1)
+                val pack = GifPack.byCode(code) ?: return
+                balance.gifCreditsLeft += pack.gifs
+                repository.put(balance)
+                repository.addPayment(chatId, payload, totalRub)
+                analyticsRepository.logTopUp(
+                    userId = chatId,
+                    plan = balance.plan,
+                    topupTextTokens = 0,
+                    topupImageCredits = 0,
+                    topupGifCredits = pack.gifs,
+                    source = "payment:gif_pack:${pack.code}",
+                    amountRub = totalRub
+                )
+                sendEphemeral(
+                    session,
+                    chatId,
+                    Strings.get("payment.gifpack.activated", pack.gifs, pack.title),
+                    ttlSeconds = 15
+                )
+            }
+
             payload.startsWith("custom_story:") -> {
                 customStoryRepository.grantPack(chatId, CustomStoryPack.storySlots)
                 repository.addPayment(chatId, payload, totalRub)
@@ -2345,6 +2797,7 @@ Prioritize the newest messages if older messages conflict.
                     plan = balance.plan,
                     topupTextTokens = 0,
                     topupImageCredits = 0,
+                    topupGifCredits = 0,
                     source = "payment:${CustomStoryPack.code}",
                     amountRub = totalRub
                 )
@@ -2375,7 +2828,7 @@ Prioritize the newest messages if older messages conflict.
                     html = false
                 )
                 if (openingLine.isNotBlank()) {
-                    sendText(chatId, openingLine)
+                    sendAssistantText(session, chatId, formatAssistantReply(openingLine))
                 }
             }
 
@@ -2400,23 +2853,10 @@ Prioritize the newest messages if older messages conflict.
             balance.planExpiresAt = null
             changed = true
         }
-        val today = LocalDate.now().toString()
-        if (balance.dayStamp != today) {
-            balance.dayStamp = today
-            balance.dayImageUsed = 0
-            changed = true
-        }
         if (changed) {
             repository.put(balance)
         }
         return balance
-    }
-
-    private fun dailyCap(plan: String?): Int = when (plan) {
-        Plan.BASIC.code -> DAILY_IMAGE_CAP_BASIC
-        Plan.PRO.code -> DAILY_IMAGE_CAP_PRO
-        Plan.ULTRA.code -> DAILY_IMAGE_CAP_ULTRA
-        else -> 1
     }
 
     private fun isDeletableCommand(text: String): Boolean {
@@ -2495,25 +2935,58 @@ Prioritize the newest messages if older messages conflict.
         executeSafe(message)
     }
 
+    private suspend fun sendAssistantText(
+        session: ChatSession,
+        chatId: Long,
+        text: String,
+        html: Boolean = false
+    ): Message {
+        val renderedText = if (html) text else renderAssistantReplyHtml(text)
+        val message = SendMessage(chatId.toString(), renderedText).apply {
+            parseMode = "HTML"
+        }
+        val sent = executeSafe(message)
+        attachSceneButtonToLatestAssistantText(session, chatId, sent.messageId)
+        return sent
+    }
+
     private suspend fun sendPhoto(
         chatId: Long,
         bytes: ByteArray,
         caption: String?,
-        replyMarkup: InlineKeyboardMarkup? = null
+        replyMarkup: InlineKeyboardMarkup? = null,
+        html: Boolean = false
     ): Message {
         val photo = SendPhoto().apply {
             this.chatId = chatId.toString()
             this.photo = InputFile(ByteArrayInputStream(bytes), "image.png")
             this.caption = caption ?: Strings.get("photo.default.caption")
             this.replyMarkup = replyMarkup
+            if (html) parseMode = "HTML"
         }
         return executeSafe(photo)
+    }
+
+    private suspend fun sendAnimation(
+        chatId: Long,
+        bytes: ByteArray,
+        caption: String?
+    ): Message {
+        val animation = SendAnimation().apply {
+            this.chatId = chatId.toString()
+            this.animation = InputFile(ByteArrayInputStream(bytes), "animation.mp4")
+            this.caption = caption
+        }
+        return executeSafe(animation)
     }
 
     private suspend fun executeSafe(method: SendMessage): Message =
         withContext(Dispatchers.IO) { execute(method) }
 
     private suspend fun executeSafe(method: SendPhoto): Message =
+        withContext(Dispatchers.IO) { execute(method) }
+
+    private suspend fun executeSafe(method: SendAnimation): Message =
         withContext(Dispatchers.IO) { execute(method) }
 
     private suspend fun executeSafe(method: EditMessageMedia): java.io.Serializable =
@@ -2541,5 +3014,8 @@ Prioritize the newest messages if older messages conflict.
         withContext(Dispatchers.IO) { execute(method) }
 
     private suspend fun executeSafe(method: GetChatMember): ChatMember =
+        withContext(Dispatchers.IO) { execute(method) }
+
+    private suspend fun executeSafe(method: GetFile): org.telegram.telegrambots.meta.api.objects.File =
         withContext(Dispatchers.IO) { execute(method) }
 }

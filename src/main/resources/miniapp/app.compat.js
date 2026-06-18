@@ -37,6 +37,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
 };
 var tg = window.Telegram && window.Telegram.WebApp;
 var DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
+var BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
 var state = {
@@ -49,6 +50,8 @@ var state = {
     galleryIndex: 0,
     lastNonSettingsScreen: "characters",
     finishTimer: null,
+    pendingCharacterRequestId: 0,
+    storiesByCharacter: {},
 };
 var els = {
     screenTitle: document.getElementById("screenTitle"),
@@ -99,6 +102,7 @@ try {
     document.documentElement.setAttribute("data-miniapp-stage", "bind");
     bindEvents();
     document.documentElement.setAttribute("data-miniapp-stage", "bootstrap");
+    hydrateCachedBootstrap();
     loadBootstrap();
 }
 catch (error) {
@@ -184,14 +188,13 @@ function loadBootstrap() {
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
-                    setLoading(true);
-                    _a.label = 1;
-                case 1:
-                    _a.trys.push([1, 3, , 4]);
+                    _a.trys.push([0, 2, , 3]);
                     return [4 /*yield*/, api("/miniapp/api/bootstrap")];
-                case 2:
+                case 1:
                     data = _a.sent();
+                    cacheBootstrap(data);
                     state.bootstrap = data;
+                    syncStoriesByCharacter(data.storiesByCharacter);
                     settings = data.settings || {};
                     state.audiencePreference = settings.audiencePreference || null;
                     state.selectedCharacterId =
@@ -205,17 +208,63 @@ function loadBootstrap() {
                     showScreen(state.audiencePreference ? nextScreen : "preference");
                     setLoading(false);
                     document.documentElement.setAttribute("data-miniapp-stage", "ready");
-                    return [3 /*break*/, 4];
-                case 3:
+                    return [3 /*break*/, 3];
+                case 2:
                     error_1 = _a.sent();
                     document.documentElement.setAttribute("data-miniapp-stage", "load-error");
                     document.documentElement.setAttribute("data-miniapp-error", String(error_1 && error_1.message || error_1));
-                    showFatalError(error_1);
-                    return [3 /*break*/, 4];
-                case 4: return [2 /*return*/];
+                    if (state.bootstrap) {
+                        showToast(error_1.message || "Не удалось обновить данные");
+                    }
+                    else {
+                        showFatalError(error_1);
+                    }
+                    return [3 /*break*/, 3];
+                case 3: return [2 /*return*/];
             }
         });
     });
+}
+function hydrateCachedBootstrap() {
+    var cached = readCachedBootstrap();
+    if (!cached)
+        return false;
+    state.bootstrap = cached;
+    syncStoriesByCharacter(cached.storiesByCharacter);
+    var settings = cached.settings || {};
+    state.audiencePreference = settings.audiencePreference || null;
+    state.selectedCharacterId =
+        settings.selectedCharacter ||
+            firstId(cached.characters) ||
+            null;
+    renderStatus();
+    renderCharacters();
+    renderDialogs();
+    renderSettings();
+    showScreen(state.audiencePreference ? "characters" : "preference");
+    setLoading(false);
+    document.documentElement.setAttribute("data-miniapp-stage", "cached");
+    return true;
+}
+function readCachedBootstrap() {
+    try {
+        var raw = localStorage.getItem(BOOTSTRAP_CACHE_KEY);
+        if (!raw)
+            return null;
+        var data = JSON.parse(raw);
+        return data && Array.isArray(data.characters) ? data : null;
+    }
+    catch (_error) {
+        localStorage.removeItem(BOOTSTRAP_CACHE_KEY);
+        return null;
+    }
+}
+function cacheBootstrap(data) {
+    try {
+        localStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify(data));
+    }
+    catch (_error) {
+    }
 }
 function api(path_1) {
     return __awaiter(this, arguments, void 0, function (path, options) {
@@ -473,7 +522,9 @@ function selectAudience(audience_1) {
                     state.bootstrap.settings.selectedStory = null;
                     state.bootstrap.characters = data.characters || [];
                     state.bootstrap.stories = data.stories || [];
+                    syncStoriesByCharacter(data.storiesByCharacter);
                     state.selectedCharacterId = data.selectedCharacter || firstId(state.bootstrap.characters) || null;
+                    cacheBootstrap(state.bootstrap);
                     renderCharacters();
                     renderSelectedCharacter();
                     renderStories();
@@ -545,38 +596,72 @@ function showGalleryImage(index) {
 }
 function selectCharacter(characterId) {
     return __awaiter(this, void 0, void 0, function () {
-        var data, error_4;
+        var previousCharacterId, previousStories, requestId, character, cachedStories, data, error_4;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
-                    setLoading(true);
+                    previousCharacterId = state.selectedCharacterId;
+                    previousStories = state.bootstrap && state.bootstrap.stories
+                        ? state.bootstrap.stories.slice()
+                        : [];
+                    requestId = ++state.pendingCharacterRequestId;
+                    character = (state.bootstrap && state.bootstrap.characters || []).find(function (item) { return item.id === characterId; });
+                    cachedStories = storiesForCharacterFromCache(characterId);
+                    state.selectedCharacterId = characterId;
+                    state.bootstrap.settings.selectedCharacter = characterId;
+                    state.bootstrap.settings.selectedStory = null;
+                    if (cachedStories) {
+                        state.bootstrap.stories = cachedStories;
+                    }
+                    renderCharacters();
+                    renderSelectedCharacter();
+                    if (cachedStories) {
+                        renderStories();
+                    }
+                    else {
+                        renderStoriesPending(character);
+                    }
+                    renderSettings();
+                    showScreen("stories");
                     _a.label = 1;
                 case 1:
-                    _a.trys.push([1, 3, 4, 5]);
+                    _a.trys.push([1, 3, , 4]);
                     return [4 /*yield*/, api("/miniapp/api/select-character", {
                             method: "POST",
                             body: { characterId: characterId },
                         })];
                 case 2:
                     data = _a.sent();
+                    if (requestId !== state.pendingCharacterRequestId) {
+                        return [2 /*return*/];
+                    }
                     state.selectedCharacterId = data.selectedCharacter;
                     state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
                     state.bootstrap.settings.selectedStory = null;
                     state.bootstrap.stories = data.stories || state.bootstrap.stories || [];
+                    setCachedStories(data.selectedCharacter, state.bootstrap.stories);
+                    cacheBootstrap(state.bootstrap);
                     renderCharacters();
                     renderSelectedCharacter();
                     renderStories();
                     renderSettings();
-                    showScreen("stories");
-                    return [3 /*break*/, 5];
+                    return [3 /*break*/, 4];
                 case 3:
                     error_4 = _a.sent();
+                    if (requestId !== state.pendingCharacterRequestId) {
+                        return [2 /*return*/];
+                    }
+                    state.selectedCharacterId = previousCharacterId;
+                    state.bootstrap.settings.selectedCharacter = previousCharacterId;
+                    state.bootstrap.stories = previousStories;
+                    renderCharacters();
+                    renderSelectedCharacter();
+                    renderStories();
+                    renderSettings();
+                    showScreen("characters");
                     showToast(error_4.message || "Не удалось выбрать персонажа");
-                    return [3 /*break*/, 5];
-                case 4:
-                    setLoading(false);
-                    return [7 /*endfinally*/];
-                case 5: return [2 /*return*/];
+                    return [3 /*break*/, 4];
+                case 4: return [2 /*return*/];
             }
         });
     });
@@ -593,6 +678,29 @@ function renderSelectedCharacter() {
     var description = document.createElement("p");
     description.textContent = character.description;
     els.selectedCharacterPanel.append(title, description);
+}
+function renderStoriesPending(character) {
+    els.storiesList.replaceChildren();
+    var loading = document.createElement("div");
+    loading.className = "empty-dialogs";
+    loading.textContent = character
+        ? "\u041E\u0442\u043A\u0440\u044B\u0432\u0430\u044E \u0438\u0441\u0442\u043E\u0440\u0438\u0438 \u0434\u043B\u044F ".concat(character.name, "...")
+        : "\u041E\u0442\u043A\u0440\u044B\u0432\u0430\u044E \u0438\u0441\u0442\u043E\u0440\u0438\u0438...";
+    els.storiesList.append(loading);
+}
+function syncStoriesByCharacter(storiesByCharacter) {
+    state.storiesByCharacter = storiesByCharacter && typeof storiesByCharacter === "object"
+        ? Object.assign({}, storiesByCharacter)
+        : {};
+}
+function setCachedStories(characterId, stories) {
+    if (!characterId || !Array.isArray(stories))
+        return;
+    state.storiesByCharacter[characterId] = stories.slice();
+}
+function storiesForCharacterFromCache(characterId) {
+    var stories = state.storiesByCharacter && state.storiesByCharacter[characterId];
+    return Array.isArray(stories) ? stories.slice() : null;
 }
 function renderStories() {
     var stories = state.bootstrap && state.bootstrap.stories || [];
@@ -741,7 +849,9 @@ function createCustomStory(payload) {
                 case 2:
                     data = _a.sent();
                     state.bootstrap.stories = data.stories || state.bootstrap.stories;
+                    setCachedStories(payload.characterId, state.bootstrap.stories);
                     state.bootstrap.customStory = data.customStory || state.bootstrap.customStory;
+                    cacheBootstrap(state.bootstrap);
                     renderStories();
                     showToast("История создана. Теперь её можно выбрать.");
                     return [3 /*break*/, 5];
@@ -997,7 +1107,7 @@ function renderSettings() {
     var balance = state.bootstrap.balance;
     if (balance) {
         els.tokenBalanceText.textContent = "".concat(formatCompactNumber(balance.textTokensLeft), " \u0442\u043E\u043A\u0435\u043D\u043E\u0432");
-        els.tokenPlanText.textContent = "".concat(formatNumber(balance.imageCreditsLeft), " \u0444\u043E\u0442\u043E \u00B7 ").concat(planTitle(balance.plan));
+        els.tokenPlanText.textContent = "".concat(formatNumber(balance.imageCreditsLeft), " \u0444\u043E\u0442\u043E \u00B7 ").concat(formatNumber(balance.gifCreditsLeft || 0), " GIF");
     }
     else {
         els.tokenBalanceText.textContent = "Нет данных";
@@ -1026,27 +1136,75 @@ function renderPaymentOptions() {
     var payments = state.bootstrap && state.bootstrap.payments || {};
     var plans = payments.plans || [];
     var packs = payments.packs || [];
+    var gifPacks = payments.gifPacks || [];
     els.paymentOptions.replaceChildren();
-    plans.forEach(function (plan) {
-        els.paymentOptions.append(paymentButton({
+    els.paymentOptions.append(paymentGroup({
+        title: "Подписки",
+        note: "Для частого общения и постоянного доступа.",
+        layout: "plans",
+        items: plans.map(function (plan) { return ({
             type: "plan",
             code: plan.code,
             title: plan.title,
-            meta: "".concat(formatNumber(plan.textTokens), " \u0442\u043E\u043A\u0435\u043D\u043E\u0432 \u00B7 ").concat(formatNumber(plan.imageCredits), " \u0444\u043E\u0442\u043E"),
+            caption: "30 дней доступа",
+            badges: [
+                "".concat(formatCompactNumber(plan.textTokens), " \u0442\u043E\u043A\u0435\u043D\u043E\u0432"),
+                "".concat(formatNumber(plan.imageCredits), " \u0444\u043E\u0442\u043E"),
+                "".concat(formatNumber(plan.gifCredits || 0), " GIF"),
+            ],
             price: "".concat(plan.priceRub, " \u20BD/\u043C\u0435\u0441"),
             featured: plan.code === "pro",
-        }));
-    });
-    packs.forEach(function (pack) {
-        els.paymentOptions.append(paymentButton({
+            badgeLabel: plan.code === "pro" ? "Популярный" : "",
+        }); }),
+    }));
+    els.paymentOptions.append(paymentGroup({
+        title: "Фото",
+        note: "Разовые пакеты, если нужны только новые кадры.",
+        layout: "packs",
+        items: packs.map(function (pack) { return ({
             type: "pack",
             code: pack.code,
             title: pack.title,
-            meta: "".concat(formatNumber(pack.imageCredits), " \u0444\u043E\u0442\u043E"),
+            caption: "Разовый пакет",
+            badges: ["".concat(formatNumber(pack.imageCredits), " \u0444\u043E\u0442\u043E")],
             price: "".concat(pack.priceRub, " \u20BD"),
             featured: false,
-        }));
+            badgeLabel: "",
+        }); }),
+    }));
+    els.paymentOptions.append(paymentGroup({
+        title: "GIF",
+        note: "Анимация уже созданных изображений.",
+        layout: "packs",
+        items: gifPacks.map(function (pack) { return ({
+            type: "gif_pack",
+            code: pack.code,
+            title: pack.title,
+            caption: "Разовый пакет",
+            badges: ["".concat(formatNumber(pack.gifCredits), " GIF")],
+            price: "".concat(pack.priceRub, " \u20BD"),
+            featured: false,
+            badgeLabel: "",
+        }); }),
+    }));
+}
+function paymentGroup(group) {
+    var section = document.createElement("section");
+    section.className = "payment-group payment-group--".concat(group.layout);
+    var head = document.createElement("div");
+    head.className = "payment-group-head";
+    var title = document.createElement("h3");
+    title.textContent = group.title;
+    var note = document.createElement("p");
+    note.textContent = group.note;
+    var grid = document.createElement("div");
+    grid.className = "payment-group-grid payment-group-grid--".concat(group.layout);
+    group.items.forEach(function (item) {
+        grid.append(paymentButton(item));
     });
+    head.append(title, note);
+    section.append(head, grid);
+    return section;
 }
 function paymentButton(option) {
     var button = document.createElement("button");
@@ -1057,14 +1215,32 @@ function paymentButton(option) {
     button.addEventListener("click", function () { return createInvoice(option.type, option.code); });
     var copy = document.createElement("span");
     copy.className = "payment-copy";
+    var titleRow = document.createElement("span");
+    titleRow.className = "payment-title-row";
     var title = document.createElement("strong");
     title.textContent = option.title;
-    var meta = document.createElement("small");
-    meta.textContent = option.meta;
+    titleRow.append(title);
+    if (option.badgeLabel) {
+        var badge = document.createElement("span");
+        badge.className = "payment-badge";
+        badge.textContent = option.badgeLabel;
+        titleRow.append(badge);
+    }
+    var caption = document.createElement("small");
+    caption.className = "payment-caption";
+    caption.textContent = option.caption;
+    var badges = document.createElement("span");
+    badges.className = "payment-badges";
+    (option.badges || []).forEach(function (item) {
+        var chip = document.createElement("span");
+        chip.className = "payment-chip";
+        chip.textContent = item;
+        badges.append(chip);
+    });
     var price = document.createElement("span");
     price.className = "payment-price";
     price.textContent = option.price;
-    copy.append(title, meta);
+    copy.append(titleRow, caption, badges);
     button.append(copy, price);
     return button;
 }
