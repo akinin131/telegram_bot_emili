@@ -110,6 +110,7 @@ class MiniAppServer(
             path.startsWith("/miniapp/image/gallery/") && exchange.requestMethod == "GET" -> serveGalleryImage(exchange)
             path == "/miniapp/api/bootstrap" && exchange.requestMethod == "GET" -> handleBootstrap(exchange)
             path == "/miniapp/api/gallery" && exchange.requestMethod == "GET" -> handleGallery(exchange)
+            path == "/miniapp/api/stories" && exchange.requestMethod == "GET" -> handleStories(exchange)
             path == "/miniapp/api/audience" && exchange.requestMethod == "POST" -> handleAudiencePreference(exchange)
             path == "/miniapp/api/select-character" && exchange.requestMethod == "POST" -> handleSelectCharacter(exchange)
             path == "/miniapp/api/custom-story" && exchange.requestMethod == "POST" -> handleCreateCustomStory(exchange)
@@ -399,9 +400,6 @@ class MiniAppServer(
         val character = BotCatalog.characterById(body.optString("characterId"))
             ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Character not found"))
 
-        userSettingsRepository.setSelectedCharacter(user.id, character.id)
-        userSettingsRepository.clearSelectedStory(user.id)
-        userSettingsRepository.clearActiveDialogId(user.id)
         sendJson(
             exchange = exchange,
             status = 200,
@@ -409,6 +407,23 @@ class MiniAppServer(
                 .put("ok", true)
                 .put("selectedCharacter", character.id)
                 .put("selectedStory", JSONObject.NULL)
+                .put("stories", storiesJson(user.id, character.id))
+        )
+    }
+
+    private fun handleStories(exchange: HttpExchange) = runBlocking {
+        val user = authenticate(exchange) ?: return@runBlocking
+        val characterId = queryParam(exchange, "characterId")
+            ?: return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "characterId is required"))
+        val character = BotCatalog.characterById(characterId)
+            ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Character not found"))
+
+        sendJson(
+            exchange = exchange,
+            status = 200,
+            body = JSONObject()
+                .put("ok", true)
+                .put("characterId", character.id)
                 .put("stories", storiesJson(user.id, character.id))
         )
     }

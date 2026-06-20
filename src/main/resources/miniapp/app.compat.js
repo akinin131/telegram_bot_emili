@@ -38,12 +38,14 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
 var tg = window.Telegram && window.Telegram.WebApp;
 var DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 var BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
+var GALLERY_CACHE_KEY = "emily:validatedGalleries:v1";
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
 var state = {
     bootstrap: null,
     currentScreen: "characters",
     selectedCharacterId: null,
+    previewCharacterId: null,
     audiencePreference: null,
     galleryCharacterId: null,
     galleryImages: [],
@@ -107,6 +109,7 @@ try {
     document.documentElement.setAttribute("data-miniapp-stage", "bind");
     bindEvents();
     document.documentElement.setAttribute("data-miniapp-stage", "bootstrap");
+    hydrateCachedGalleries();
     hydrateCachedBootstrap();
     loadBootstrap();
 }
@@ -275,6 +278,34 @@ function cacheBootstrap(data) {
     catch (_error) {
     }
 }
+function hydrateCachedGalleries() {
+    try {
+        var cached_1 = JSON.parse(localStorage.getItem(GALLERY_CACHE_KEY) || "null");
+        if (!cached_1 || Date.now() - Number(cached_1.savedAt || 0) > 86400000)
+            return;
+        Object.keys(cached_1.entries || {}).forEach(function (characterId) {
+            var entry = cached_1.entries[characterId];
+            if (entry && entry.character && Array.isArray(entry.images))
+                state.galleryByCharacter[characterId] = Object.assign(Object.assign({}, entry), { validated: true });
+        });
+    }
+    catch (_error) {
+        localStorage.removeItem(GALLERY_CACHE_KEY);
+    }
+}
+function cacheValidatedGalleries() {
+    try {
+        var entries_1 = {};
+        Object.keys(state.galleryByCharacter).forEach(function (characterId) {
+            var entry = state.galleryByCharacter[characterId];
+            if (entry && entry.validated)
+                entries_1[characterId] = entry;
+        });
+        localStorage.setItem(GALLERY_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), entries: entries_1 }));
+    }
+    catch (_error) {
+    }
+}
 function api(path_1) {
     return __awaiter(this, arguments, void 0, function (path, options) {
         var timeoutMs, response, _a, raw, data, telegramDescription, message, error;
@@ -386,6 +417,14 @@ function apiWithXhr(path, options, timeoutMs) {
 function showScreen(name) {
     if (!hasAudiencePreference() && name !== "preference") {
         name = "preference";
+    }
+    if (name === "characters" && state.currentScreen === "stories") {
+        state.previewCharacterId = null;
+        var savedStories = storiesForCharacterFromCache(state.selectedCharacterId);
+        if (savedStories)
+            state.bootstrap.stories = savedStories;
+        renderCharacters();
+        renderSettings();
     }
     state.currentScreen = name;
     document.body.classList.toggle("preference-mode", name === "preference");
@@ -502,8 +541,17 @@ function openGallery(characterId) {
     });
 }
 function prefetchGalleries(characters) {
-    (characters || []).forEach(function (character) {
-        fetchGallery(character.id, character).catch(function () { });
+    var orderedCharacters = (characters || []).slice().sort(function (left, right) {
+        if (left.id === state.selectedCharacterId)
+            return -1;
+        if (right.id === state.selectedCharacterId)
+            return 1;
+        return 0;
+    });
+    orderedCharacters.forEach(function (character) {
+        fetchGallery(character.id, character)
+            .then(function (entry) { return validateGalleryEntry(character.id, entry); })
+            .catch(function () { });
     });
 }
 function fetchGallery(characterId, fallbackCharacter) {
@@ -534,6 +582,7 @@ function validateGalleryEntry(characterId, entry) {
         entry.images = results.filter(Boolean);
         entry.validated = true;
         state.galleryByCharacter[characterId] = entry;
+        cacheValidatedGalleries();
         delete state.galleryValidationRequests[characterId];
         return entry;
     })
@@ -564,7 +613,13 @@ function preloadGalleryImage(item) {
             resolve(result);
         };
         timeoutId = window.setTimeout(function () { return finish(null); }, 20000);
-        image.onload = function () { return finish(item); };
+        image.onload = function () {
+            if (typeof image.decode === "function") {
+                image.decode().catch(function () { }).then(function () { return finish(item); });
+                return;
+            }
+            finish(item);
+        };
         image.onerror = function () { return finish(null, true); };
         image.src = item.imageUrl;
     });
@@ -655,7 +710,8 @@ function renderGallery(character, options) {
         var image = document.createElement("img");
         image.src = item.imageUrl;
         image.alt = item.prompt || "Сгенерированное фото";
-        image.loading = "lazy";
+        image.loading = "eager";
+        image.decoding = "async";
         image.addEventListener("error", function () { return removeBrokenGalleryImage(character, item.id); });
         var meta = document.createElement("span");
         meta.textContent = formatDialogTime(item.createdAt);
@@ -669,6 +725,7 @@ function removeBrokenGalleryImage(character, imageId) {
     var cached = state.galleryByCharacter[state.galleryCharacterId];
     if (cached)
         cached.images = cached.images.filter(function (item) { return item.id !== imageId; });
+    cacheValidatedGalleries();
     renderGallery(character);
 }
 function openGalleryViewer(index) {
@@ -707,79 +764,20 @@ function handleGalleryViewerError() {
     showGalleryImage(state.galleryIndex);
 }
 function selectCharacter(characterId) {
-    return __awaiter(this, void 0, void 0, function () {
-        var previousCharacterId, previousStories, requestId, character, cachedStories, data, error_4;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
-                case 0:
-                    previousCharacterId = state.selectedCharacterId;
-                    previousStories = state.bootstrap && state.bootstrap.stories
-                        ? state.bootstrap.stories.slice()
-                        : [];
-                    requestId = ++state.pendingCharacterRequestId;
-                    character = (state.bootstrap && state.bootstrap.characters || []).find(function (item) { return item.id === characterId; });
-                    cachedStories = storiesForCharacterFromCache(characterId);
-                    state.selectedCharacterId = characterId;
-                    state.bootstrap.settings.selectedCharacter = characterId;
-                    state.bootstrap.settings.selectedStory = null;
-                    if (cachedStories) {
-                        state.bootstrap.stories = cachedStories;
-                    }
-                    renderCharacters();
-                    renderSelectedCharacter();
-                    if (cachedStories) {
-                        renderStories();
-                    }
-                    else {
-                        renderStoriesPending(character);
-                    }
-                    renderSettings();
-                    showScreen("stories");
-                    _a.label = 1;
-                case 1:
-                    _a.trys.push([1, 3, , 4]);
-                    return [4 /*yield*/, api("/miniapp/api/select-character", {
-                            method: "POST",
-                            body: { characterId: characterId },
-                        })];
-                case 2:
-                    data = _a.sent();
-                    if (requestId !== state.pendingCharacterRequestId) {
-                        return [2 /*return*/];
-                    }
-                    state.selectedCharacterId = data.selectedCharacter;
-                    state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
-                    state.bootstrap.settings.selectedStory = null;
-                    state.bootstrap.stories = data.stories || state.bootstrap.stories || [];
-                    setCachedStories(data.selectedCharacter, state.bootstrap.stories);
-                    cacheBootstrap(state.bootstrap);
-                    renderCharacters();
-                    renderSelectedCharacter();
-                    renderStories();
-                    renderSettings();
-                    return [3 /*break*/, 4];
-                case 3:
-                    error_4 = _a.sent();
-                    if (requestId !== state.pendingCharacterRequestId) {
-                        return [2 /*return*/];
-                    }
-                    state.selectedCharacterId = previousCharacterId;
-                    state.bootstrap.settings.selectedCharacter = previousCharacterId;
-                    state.bootstrap.stories = previousStories;
-                    renderCharacters();
-                    renderSelectedCharacter();
-                    renderStories();
-                    renderSettings();
-                    showScreen("characters");
-                    showToast(error_4.message || "Не удалось выбрать персонажа");
-                    return [3 /*break*/, 4];
-                case 4: return [2 /*return*/];
-            }
-        });
-    });
+    var character = (state.bootstrap && state.bootstrap.characters || []).find(function (item) { return item.id === characterId; });
+    var cachedStories = storiesForCharacterFromCache(characterId);
+    if (!character || !cachedStories) {
+        showToast("Не удалось открыть истории. Обнови Mini App.");
+        return;
+    }
+    state.previewCharacterId = characterId;
+    state.bootstrap.stories = cachedStories;
+    renderSelectedCharacter();
+    renderStories();
+    showScreen("stories");
 }
 function renderSelectedCharacter() {
-    var character = selectedCharacter();
+    var character = previewedCharacter();
     els.selectedCharacterPanel.replaceChildren();
     if (!character) {
         els.selectedCharacterPanel.textContent = "Сначала выбери персонажа.";
@@ -929,7 +927,7 @@ function handleCustomStoryClick(slotsLeft, priceRub) {
 }
 function openCustomStoryEditor() {
     var _this = this;
-    var character = selectedCharacter();
+    var character = previewedCharacter();
     if (!character) {
         showToast("Сначала выбери персонажа");
         return;
@@ -1177,7 +1175,7 @@ function confirmDialogReuse(dialog) {
     });
 }
 function selectStory(storyId, card) {
-    var characterId = state.selectedCharacterId;
+    var characterId = state.previewCharacterId || state.selectedCharacterId;
     if (!characterId)
         return showToast("Сначала выбери персонажа");
     var selectionKey = "".concat(characterId, ":").concat(storyId);
@@ -1238,7 +1236,7 @@ function selectStory(storyId, card) {
     });
 }
 function skipStory() {
-    var characterId = state.selectedCharacterId;
+    var characterId = state.previewCharacterId || state.selectedCharacterId;
     if (!characterId)
         return showToast("Сначала выбери персонажа");
     var knownDialog = findExistingDialogForContext(characterId, null);
@@ -1365,7 +1363,8 @@ function renderSettings() {
     renderAudienceSettings();
     var character = selectedCharacter();
     var storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
-    var story = (state.bootstrap.stories || []).find(function (item) { return item.id === storyId; });
+    var activeStories = character ? storiesForCharacterFromCache(character.id) : null;
+    var story = (activeStories || []).find(function (item) { return item.id === storyId; });
     var storyText = story ? story.title : "Свободный чат";
     els.currentSelection.textContent = character
         ? storyText
@@ -1529,6 +1528,10 @@ function formatCompactNumber(value) {
 }
 function selectedCharacter() {
     return (state.bootstrap && state.bootstrap.characters || []).find(function (item) { return item.id === state.selectedCharacterId; });
+}
+function previewedCharacter() {
+    var characterId = state.previewCharacterId || state.selectedCharacterId;
+    return (state.bootstrap && state.bootstrap.characters || []).find(function (item) { return item.id === characterId; });
 }
 function formatDialogTime(value) {
     var date = new Date(Number(value) || Date.now());

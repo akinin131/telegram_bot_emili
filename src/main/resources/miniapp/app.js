@@ -1,6 +1,7 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 const DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
+const GALLERY_CACHE_KEY = "emily:validatedGalleries:v1";
 
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
@@ -9,6 +10,7 @@ const state = {
   bootstrap: null,
   currentScreen: "characters",
   selectedCharacterId: null,
+  previewCharacterId: null,
   audiencePreference: null,
   galleryCharacterId: null,
   galleryImages: [],
@@ -75,6 +77,7 @@ try {
   document.documentElement.setAttribute("data-miniapp-stage", "bind");
   bindEvents();
   document.documentElement.setAttribute("data-miniapp-stage", "bootstrap");
+  hydrateCachedGalleries();
   hydrateCachedBootstrap();
   loadBootstrap();
 } catch (error) {
@@ -232,6 +235,32 @@ function cacheBootstrap(data) {
   }
 }
 
+function hydrateCachedGalleries() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(GALLERY_CACHE_KEY) || "null");
+    if (!cached || Date.now() - Number(cached.savedAt || 0) > 86_400_000) return;
+    Object.entries(cached.entries || {}).forEach(([characterId, entry]) => {
+      if (entry && entry.character && Array.isArray(entry.images)) {
+        state.galleryByCharacter[characterId] = { ...entry, validated: true };
+      }
+    });
+  } catch (_error) {
+    localStorage.removeItem(GALLERY_CACHE_KEY);
+  }
+}
+
+function cacheValidatedGalleries() {
+  try {
+    const entries = {};
+    Object.entries(state.galleryByCharacter).forEach(([characterId, entry]) => {
+      if (entry && entry.validated) entries[characterId] = entry;
+    });
+    localStorage.setItem(GALLERY_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), entries }));
+  } catch (_error) {
+    // Browser image cache remains the primary fast path.
+  }
+}
+
 async function api(path, options = {}) {
   const timeoutMs = options.timeoutMs || 20_000;
   const response = typeof fetch === "function"
@@ -315,6 +344,14 @@ function apiWithXhr(path, options, timeoutMs) {
 function showScreen(name) {
   if (!hasAudiencePreference() && name !== "preference") {
     name = "preference";
+  }
+
+  if (name === "characters" && state.currentScreen === "stories") {
+    state.previewCharacterId = null;
+    const savedStories = storiesForCharacterFromCache(state.selectedCharacterId);
+    if (savedStories) state.bootstrap.stories = savedStories;
+    renderCharacters();
+    renderSettings();
   }
 
   state.currentScreen = name;
@@ -440,8 +477,15 @@ function openGallery(characterId) {
 }
 
 function prefetchGalleries(characters) {
-  (characters || []).forEach((character) => {
-    fetchGallery(character.id, character).catch(() => {});
+  const orderedCharacters = [...(characters || [])].sort((left, right) => {
+    if (left.id === state.selectedCharacterId) return -1;
+    if (right.id === state.selectedCharacterId) return 1;
+    return 0;
+  });
+  orderedCharacters.forEach((character) => {
+    fetchGallery(character.id, character)
+      .then((entry) => validateGalleryEntry(character.id, entry))
+      .catch(() => {});
   });
 }
 
@@ -471,6 +515,7 @@ function validateGalleryEntry(characterId, entry) {
       entry.images = results.filter(Boolean);
       entry.validated = true;
       state.galleryByCharacter[characterId] = entry;
+      cacheValidatedGalleries();
       delete state.galleryValidationRequests[characterId];
       return entry;
     })
@@ -497,7 +542,13 @@ function preloadGalleryImage(item) {
       resolve(result);
     };
     const timeoutId = window.setTimeout(() => finish(null), 20_000);
-    image.onload = () => finish(item);
+    image.onload = () => {
+      if (typeof image.decode === "function") {
+        image.decode().catch(() => {}).then(() => finish(item));
+        return;
+      }
+      finish(item);
+    };
     image.onerror = () => finish(null, true);
     image.src = item.imageUrl;
   });
@@ -578,7 +629,8 @@ function renderGallery(character, options = {}) {
     const image = document.createElement("img");
     image.src = item.imageUrl;
     image.alt = item.prompt || "Сгенерированное фото";
-    image.loading = "lazy";
+    image.loading = "eager";
+    image.decoding = "async";
     image.addEventListener("error", () => removeBrokenGalleryImage(character, item.id));
 
     const meta = document.createElement("span");
@@ -594,6 +646,7 @@ function removeBrokenGalleryImage(character, imageId) {
   state.galleryImages = state.galleryImages.filter((item) => item.id !== imageId);
   const cached = state.galleryByCharacter[state.galleryCharacterId];
   if (cached) cached.images = cached.images.filter((item) => item.id !== imageId);
+  cacheValidatedGalleries();
   renderGallery(character);
 }
 
@@ -631,69 +684,24 @@ function handleGalleryViewerError() {
   showGalleryImage(state.galleryIndex);
 }
 
-async function selectCharacter(characterId) {
-  const previousCharacterId = state.selectedCharacterId;
-  const previousStories = state.bootstrap && state.bootstrap.stories
-    ? [...state.bootstrap.stories]
-    : [];
-  const requestId = ++state.pendingCharacterRequestId;
+function selectCharacter(characterId) {
   const character = (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === characterId);
   const cachedStories = storiesForCharacterFromCache(characterId);
-
-  state.selectedCharacterId = characterId;
-  state.bootstrap.settings.selectedCharacter = characterId;
-  state.bootstrap.settings.selectedStory = null;
-  if (cachedStories) {
-    state.bootstrap.stories = cachedStories;
+  if (!character || !cachedStories) {
+    showToast("Не удалось открыть истории. Обнови Mini App.");
+    return;
   }
 
-  renderCharacters();
+  state.previewCharacterId = characterId;
+  state.bootstrap.stories = cachedStories;
+
   renderSelectedCharacter();
-  if (cachedStories) {
-    renderStories();
-  } else {
-    renderStoriesPending(character);
-  }
-  renderSettings();
+  renderStories();
   showScreen("stories");
-
-  try {
-    const data = await api("/miniapp/api/select-character", {
-      method: "POST",
-      body: { characterId },
-    });
-
-    if (requestId !== state.pendingCharacterRequestId) return;
-
-    state.selectedCharacterId = data.selectedCharacter;
-    state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
-    state.bootstrap.settings.selectedStory = null;
-    state.bootstrap.stories = data.stories || state.bootstrap.stories || [];
-    setCachedStories(data.selectedCharacter, state.bootstrap.stories);
-    cacheBootstrap(state.bootstrap);
-
-    renderCharacters();
-    renderSelectedCharacter();
-    renderStories();
-    renderSettings();
-  } catch (error) {
-    if (requestId !== state.pendingCharacterRequestId) return;
-
-    state.selectedCharacterId = previousCharacterId;
-    state.bootstrap.settings.selectedCharacter = previousCharacterId;
-    state.bootstrap.stories = previousStories;
-
-    renderCharacters();
-    renderSelectedCharacter();
-    renderStories();
-    renderSettings();
-    showScreen("characters");
-    showToast(error.message || "Не удалось выбрать персонажа");
-  }
 }
 
 function renderSelectedCharacter() {
-  const character = selectedCharacter();
+  const character = previewedCharacter();
   els.selectedCharacterPanel.replaceChildren();
 
   if (!character) {
@@ -858,7 +866,7 @@ async function handleCustomStoryClick(slotsLeft, priceRub) {
 }
 
 function openCustomStoryEditor() {
-  const character = selectedCharacter();
+  const character = previewedCharacter();
   if (!character) {
     showToast("Сначала выбери персонажа");
     return;
@@ -1111,7 +1119,7 @@ function confirmDialogReuse(dialog) {
 }
 
 async function selectStory(storyId, card = null) {
-  const characterId = state.selectedCharacterId;
+  const characterId = state.previewCharacterId || state.selectedCharacterId;
   if (!characterId) return showToast("Сначала выбери персонажа");
   const selectionKey = `${characterId}:${storyId}`;
   if (state.pendingStorySelectionKey) return;
@@ -1178,7 +1186,7 @@ async function selectStory(storyId, card = null) {
 }
 
 async function skipStory() {
-  const characterId = state.selectedCharacterId;
+  const characterId = state.previewCharacterId || state.selectedCharacterId;
   if (!characterId) return showToast("Сначала выбери персонажа");
 
   try {
@@ -1284,7 +1292,8 @@ function renderSettings() {
 
   const character = selectedCharacter();
   const storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
-  const story = (state.bootstrap.stories || []).find((item) => item.id === storyId);
+  const activeStories = character ? storiesForCharacterFromCache(character.id) : null;
+  const story = (activeStories || []).find((item) => item.id === storyId);
   const storyText = story ? story.title : "Свободный чат";
   els.currentSelection.textContent = character
     ? storyText
@@ -1472,6 +1481,11 @@ function formatCompactNumber(value) {
 
 function selectedCharacter() {
   return (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === state.selectedCharacterId);
+}
+
+function previewedCharacter() {
+  const characterId = state.previewCharacterId || state.selectedCharacterId;
+  return (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === characterId);
 }
 
 function formatDialogTime(value) {
