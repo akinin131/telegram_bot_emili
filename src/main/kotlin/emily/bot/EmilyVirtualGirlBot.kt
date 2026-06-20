@@ -1644,6 +1644,8 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                     PendingRetry.Scene -> {
                         handleSceneImage(session, chatId, character)
                     }
+
+                    else -> {}
                 }
             }
 
