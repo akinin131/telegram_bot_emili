@@ -61,21 +61,21 @@ enum class ImagePack(
         code = "pack10",
         titleKey = "pack.title.p10",
         priceRub = 99,
-        images = 10,
+        images = 20,
         photoUrl = "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
     ),
     P20(
         code = "pack20",
         titleKey = "pack.title.p20",
         priceRub = 149,
-        images = 20,
+        images = 50,
         photoUrl = "https://drive.google.com/uc?export=download&id=1pojAKJs7hChiLZhF_27HEKCv6vktDfac"
     ),
     P100(
         code = "pack100",
         titleKey = "pack.title.p100",
         priceRub = 349,
-        images = 100,
+        images = 150,
         photoUrl = "https://drive.google.com/uc?export=download&id=1f67uMVIMFWCe4DvQU4GlgnI5vx0cH6iC"
     );
 
