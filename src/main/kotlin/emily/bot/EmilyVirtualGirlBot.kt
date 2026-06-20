@@ -1976,7 +1976,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         sendEphemeral(
             session = session,
             chatId = chatId,
-            text = "✅ Промокод активирован. Тариф «${plan.title}» включён бесплатно на 30 дней.\nНачислено: ${plan.monthlyTextTokens} токенов, ${plan.monthlyImageCredits} фото и ${plan.monthlyGifCredits} GIF.",
+            text = "✅ Промокод активирован. Тариф «${plan.title}» включён бесплатно на 30 дней.\nНачислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} фото.",
             ttlSeconds = 30
         )
     }

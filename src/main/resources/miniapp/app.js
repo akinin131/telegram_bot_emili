@@ -9,6 +9,7 @@ window.__miniappBootState = "started";
 const state = {
   bootstrap: null,
   currentScreen: "characters",
+  settingsPaymentTab: "plans",
   selectedCharacterId: null,
   previewCharacterId: null,
   audiencePreference: null,
@@ -1305,7 +1306,7 @@ function renderSettings() {
   const balance = state.bootstrap.balance;
   if (balance) {
     els.tokenBalanceText.textContent = `${formatCompactNumber(balance.textTokensLeft)} токенов`;
-    els.tokenPlanText.textContent = `${formatNumber(balance.imageCreditsLeft)} фото · ${formatNumber(balance.gifCreditsLeft || 0)} GIF`;
+    els.tokenPlanText.textContent = `${formatNumber(balance.imageCreditsLeft)} фото · ${formatNumber(balance.gifCreditsLeft || 0)} GIF осталось`;
   } else {
     els.tokenBalanceText.textContent = "Нет данных";
     els.tokenPlanText.textContent = "Баланс появится после загрузки бота.";
@@ -1337,58 +1338,85 @@ function renderPaymentOptions() {
   const packs = payments.packs || [];
   const gifPacks = payments.gifPacks || [];
   els.paymentOptions.replaceChildren();
+  const tabs = [
+    {
+      key: "plans",
+      label: "Токены",
+      title: "Пакеты для общения",
+      note: "Основной запас токенов и фото.",
+      layout: "plans",
+      items: plans.map((plan) => ({
+        type: "plan",
+        code: plan.code,
+        title: plan.title,
+        caption: "Пакет общения",
+        badges: [
+          `${formatCompactNumber(plan.textTokens)} токенов`,
+          `${formatNumber(plan.imageCredits)} фото`,
+        ],
+        price: `${plan.priceRub} ₽`,
+        featured: plan.code === "pro",
+        badgeLabel: plan.code === "pro" ? "Выбор" : "",
+      })),
+    },
+    {
+      key: "packs",
+      label: "Фото",
+      title: "Пакеты изображений",
+      note: "Если нужен запас только на новые кадры.",
+      layout: "packs",
+      items: packs.map((pack) => ({
+        type: "pack",
+        code: pack.code,
+        title: pack.title,
+        caption: "Разовый пакет",
+        badges: [`${formatNumber(pack.imageCredits)} фото`],
+        price: `${pack.priceRub} ₽`,
+        featured: false,
+        badgeLabel: "",
+      })),
+    },
+    {
+      key: "gif",
+      label: "GIF",
+      title: "Пакеты анимации",
+      note: "Для оживления уже созданных изображений.",
+      layout: "packs",
+      items: gifPacks.map((pack) => ({
+        type: "gif_pack",
+        code: pack.code,
+        title: pack.title,
+        caption: "Разовый пакет",
+        badges: [`${formatNumber(pack.gifCredits)} GIF`],
+        price: `${pack.priceRub} ₽`,
+        featured: false,
+        badgeLabel: "",
+      })),
+    },
+  ];
 
-  els.paymentOptions.append(paymentGroup({
-    title: "Подписки",
-    note: "Для частого общения и постоянного доступа.",
-    layout: "plans",
-    items: plans.map((plan) => ({
-      type: "plan",
-      code: plan.code,
-      title: plan.title,
-      caption: "30 дней доступа",
-      badges: [
-        `${formatCompactNumber(plan.textTokens)} токенов`,
-        `${formatNumber(plan.imageCredits)} фото`,
-        `${formatNumber(plan.gifCredits || 0)} GIF`,
-      ],
-      price: `${plan.priceRub} ₽/мес`,
-      featured: plan.code === "pro",
-      badgeLabel: plan.code === "pro" ? "Популярный" : "",
-    })),
-  }));
+  if (!tabs.find((tab) => tab.key === state.settingsPaymentTab)) {
+    state.settingsPaymentTab = "plans";
+  }
 
-  els.paymentOptions.append(paymentGroup({
-    title: "Фото",
-    note: "Разовые пакеты, если нужны только новые кадры.",
-    layout: "packs",
-    items: packs.map((pack) => ({
-      type: "pack",
-      code: pack.code,
-      title: pack.title,
-      caption: "Разовый пакет",
-      badges: [`${formatNumber(pack.imageCredits)} фото`],
-      price: `${pack.priceRub} ₽`,
-      featured: false,
-      badgeLabel: "",
-    })),
-  }));
+  const tabsBar = document.createElement("div");
+  tabsBar.className = "payment-tabs";
+  tabs.forEach((tab) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "payment-tab";
+    button.classList.toggle("active", state.settingsPaymentTab === tab.key);
+    button.textContent = tab.label;
+    button.addEventListener("click", () => {
+      if (state.settingsPaymentTab === tab.key) return;
+      state.settingsPaymentTab = tab.key;
+      renderPaymentOptions();
+    });
+    tabsBar.append(button);
+  });
 
-  els.paymentOptions.append(paymentGroup({
-    title: "GIF",
-    note: "Анимация уже созданных изображений.",
-    layout: "packs",
-    items: gifPacks.map((pack) => ({
-      type: "gif_pack",
-      code: pack.code,
-      title: pack.title,
-      caption: "Разовый пакет",
-      badges: [`${formatNumber(pack.gifCredits)} GIF`],
-      price: `${pack.priceRub} ₽`,
-      featured: false,
-      badgeLabel: "",
-    })),
-  }));
+  const currentTab = tabs.find((tab) => tab.key === state.settingsPaymentTab) || tabs[0];
+  els.paymentOptions.append(tabsBar, paymentGroup(currentTab));
 }
 
 function paymentGroup(group) {

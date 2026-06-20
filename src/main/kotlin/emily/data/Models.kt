@@ -16,9 +16,9 @@ enum class Plan(
         code = "basic",
         titleKey = "plan.title.basic",
         priceRub = 399,
-        monthlyTextTokens = 800_000,
+        monthlyTextTokens = 2_400_000,
         monthlyImageCredits = 25,
-        monthlyGifCredits = 1,
+        monthlyGifCredits = 0,
         photoUrl = "https://drive.google.com/uc?export=download&id=1TCRXGBCDeju4zjER_lUvsn5yZPcv-V7s"
     ),
 
@@ -26,9 +26,9 @@ enum class Plan(
         code = "pro",
         titleKey = "plan.title.pro",
         priceRub = 999,
-        monthlyTextTokens = 2_000_000,
+        monthlyTextTokens = 6_000_000,
         monthlyImageCredits = 80,
-        monthlyGifCredits = 3,
+        monthlyGifCredits = 0,
         photoUrl = "https://drive.google.com/uc?export=download&id=1a3kI5IXbX95QMSpRb72vj0RRIKaXs9T6"
     ),
 
@@ -36,9 +36,9 @@ enum class Plan(
         code = "ultra",
         titleKey = "plan.title.ultra",
         priceRub = 1890,
-        monthlyTextTokens = 4_000_000,
+        monthlyTextTokens = 12_000_000,
         monthlyImageCredits = 180,
-        monthlyGifCredits = 6,
+        monthlyGifCredits = 0,
         photoUrl = "https://drive.google.com/uc?export=download&id=1IYIATc4zTZvKuXLfc5G08ALBZNG8fE32"
     );
 
