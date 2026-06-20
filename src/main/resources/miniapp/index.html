@@ -6,7 +6,7 @@
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>document.documentElement.setAttribute("data-inline-js", "ok");</script>
-  <link rel="stylesheet" href="/miniapp/app.css?v=20260618-back-button">
+  <link rel="stylesheet" href="/miniapp/app.css?v=20260620-story-click-4">
 </head>
 <body>
   <header class="appbar">
@@ -82,10 +82,17 @@
     </section>
 
     <section id="storiesScreen" class="screen section" aria-label="Выбор истории">
-      <div id="selectedCharacterPanel" class="selected-panel"></div>
-      <button id="skipStoryButton" class="primary-button skip-button" type="button">
-        Пропустить выбор истории
-      </button>
+      <div class="stories-profile-row">
+        <div id="selectedCharacterPanel" class="selected-panel"></div>
+        <button id="skipStoryButton" class="skip-button" type="button">
+          <span>Играть без сюжета</span>
+          <span aria-hidden="true">→</span>
+        </button>
+      </div>
+      <div class="stories-section-head">
+        <h2>Выбери сценарий</h2>
+        <p>С него начнётся ваш диалог</p>
+      </div>
       <div id="storiesList" class="story-list"></div>
     </section>
 
@@ -181,7 +188,7 @@
   </div>
 
   <script
-    src="/miniapp/app.compat.js?v=20260618-back-button"
+    src="/miniapp/app.compat.js?v=20260620-story-click-4"
     onload="document.documentElement.setAttribute('data-app-script', 'loaded')"
     onerror="document.documentElement.setAttribute('data-app-script', 'error')"></script>
 </body>

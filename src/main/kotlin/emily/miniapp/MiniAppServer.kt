@@ -199,6 +199,7 @@ class MiniAppServer(
         userSettingsRepository.setAudiencePreference(user.id, audience)
         userSettingsRepository.setSelectedCharacter(user.id, selected.id)
         userSettingsRepository.clearSelectedStory(user.id)
+        userSettingsRepository.clearActiveDialogId(user.id)
 
         sendJson(
             exchange = exchange,
@@ -400,6 +401,7 @@ class MiniAppServer(
 
         userSettingsRepository.setSelectedCharacter(user.id, character.id)
         userSettingsRepository.clearSelectedStory(user.id)
+        userSettingsRepository.clearActiveDialogId(user.id)
         sendJson(
             exchange = exchange,
             status = 200,
@@ -476,6 +478,21 @@ class MiniAppServer(
                 return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Story is not available for this character"))
             }
         }
+        val replaceExisting = body.optBoolean("replaceExisting", false)
+        val existingDialog = dialogRepository.findLatestDialogByContext(user.id, character.id, story.id)
+        if (existingDialog != null && !replaceExisting) {
+            return@runBlocking sendJson(
+                exchange = exchange,
+                status = 200,
+                body = JSONObject()
+                    .put("ok", true)
+                    .put("needsDecision", true)
+                    .put("existingDialog", existingDialog.toMiniAppJson())
+            )
+        }
+        if (replaceExisting) {
+            dialogRepository.deleteDialogsByContext(user.id, character.id, story.id)
+        }
 
         userSettingsRepository.setSelectedCharacter(user.id, character.id)
         userSettingsRepository.setSelectedStory(user.id, story.id)
@@ -496,9 +513,6 @@ class MiniAppServer(
         memory.append(user.id, "assistant", openingLine)
         chatHistoryRepository.append(user.id, "assistant", openingLine)
         val telegramResult = notifyStorySelected(user.id, character, story, openingLine)
-        if (!telegramResult.ok) {
-            return@runBlocking sendTelegramFailure(exchange, telegramResult)
-        }
 
         sendJson(
             exchange = exchange,
@@ -526,6 +540,21 @@ class MiniAppServer(
         val body = readJson(exchange)
         val character = BotCatalog.characterById(body.optString("characterId"))
             ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Character not found"))
+        val replaceExisting = body.optBoolean("replaceExisting", false)
+        val existingDialog = dialogRepository.findLatestDialogByContext(user.id, character.id, null)
+        if (existingDialog != null && !replaceExisting) {
+            return@runBlocking sendJson(
+                exchange = exchange,
+                status = 200,
+                body = JSONObject()
+                    .put("ok", true)
+                    .put("needsDecision", true)
+                    .put("existingDialog", existingDialog.toMiniAppJson())
+            )
+        }
+        if (replaceExisting) {
+            dialogRepository.deleteDialogsByContext(user.id, character.id, null)
+        }
 
         userSettingsRepository.setSelectedCharacter(user.id, character.id)
         userSettingsRepository.clearSelectedStory(user.id)
@@ -541,9 +570,6 @@ class MiniAppServer(
         )
         userSettingsRepository.setActiveDialogId(user.id, dialogId)
         val telegramResult = notifyStorySkipped(user.id, character)
-        if (!telegramResult.ok) {
-            return@runBlocking sendTelegramFailure(exchange, telegramResult)
-        }
 
         sendJson(
             exchange = exchange,
@@ -586,9 +612,6 @@ class MiniAppServer(
         val messages = dialogRepository.getMessages(user.id, dialog.id, limit = 80)
         restoreConversation(user.id, character, story, messages)
         val telegramResult = notifyDialogRestored(user.id, dialog)
-        if (!telegramResult.ok) {
-            return@runBlocking sendTelegramFailure(exchange, telegramResult)
-        }
 
         sendJson(
             exchange = exchange,

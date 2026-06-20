@@ -48,9 +48,14 @@ var state = {
     galleryCharacterId: null,
     galleryImages: [],
     galleryIndex: 0,
+    galleryByCharacter: {},
+    galleryRequests: {},
+    galleryValidationRequests: {},
+    brokenGalleryImageIds: new Set(),
     lastNonSettingsScreen: "characters",
     finishTimer: null,
     pendingCharacterRequestId: 0,
+    pendingStorySelectionKey: null,
     storiesByCharacter: {},
 };
 var els = {
@@ -171,6 +176,7 @@ function bindEvents() {
     on(els.closeGalleryViewer, "click", closeGalleryViewer);
     on(els.prevGalleryImage, "click", function () { return showGalleryImage(state.galleryIndex - 1); });
     on(els.nextGalleryImage, "click", function () { return showGalleryImage(state.galleryIndex + 1); });
+    on(els.galleryViewerImage, "error", handleGalleryViewerError);
     on(els.galleryViewer, "click", function (event) {
         if (event.target === els.galleryViewer)
             closeGalleryViewer();
@@ -208,6 +214,7 @@ function loadBootstrap() {
                     renderSettings();
                     showScreen(state.audiencePreference ? targetScreen : "preference");
                     setLoading(false);
+                    prefetchGalleries(data.characters);
                     document.documentElement.setAttribute("data-miniapp-stage", "ready");
                     return [3 /*break*/, 3];
                 case 2:
@@ -244,6 +251,7 @@ function hydrateCachedBootstrap() {
     renderSettings();
     showScreen(state.audiencePreference ? "characters" : "preference");
     setLoading(false);
+    prefetchGalleries(cached.characters);
     document.documentElement.setAttribute("data-miniapp-stage", "cached");
     return true;
 }
@@ -269,7 +277,7 @@ function cacheBootstrap(data) {
 }
 function api(path_1) {
     return __awaiter(this, arguments, void 0, function (path, options) {
-        var timeoutMs, response, _a, raw, data, telegramDescription, message;
+        var timeoutMs, response, _a, raw, data, telegramDescription, message, error;
         if (options === void 0) { options = {}; }
         return __generator(this, function (_b) {
             switch (_b.label) {
@@ -293,7 +301,10 @@ function api(path_1) {
                         message = telegramDescription
                             ? "".concat(data.error || "Ошибка Telegram", ": ").concat(telegramDescription)
                             : data.error || "\u041E\u0448\u0438\u0431\u043A\u0430 API ".concat(response.status);
-                        throw new Error(message);
+                        error = new Error(message);
+                        error.status = response.status;
+                        error.data = data;
+                        throw error;
                     }
                     return [2 /*return*/, data];
             }
@@ -378,6 +389,7 @@ function showScreen(name) {
     }
     state.currentScreen = name;
     document.body.classList.toggle("preference-mode", name === "preference");
+    document.body.classList.toggle("stories-mode", name === "stories");
     els.screenTitle.textContent = screenTitles[name] || "Emily";
     [
         els.charactersScreen,
@@ -466,36 +478,95 @@ function renderCharacters() {
     });
 }
 function openGallery(characterId) {
-    return __awaiter(this, void 0, void 0, function () {
-        var character, data, error_2;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
-                case 0:
-                    character = (state.bootstrap && state.bootstrap.characters || []).find(function (item) { return item.id === characterId; });
-                    if (!character)
-                        return [2 /*return*/, showToast("Персонаж не найден")];
-                    setLoading(true);
-                    _a.label = 1;
-                case 1:
-                    _a.trys.push([1, 3, 4, 5]);
-                    return [4 /*yield*/, api("/miniapp/api/gallery?characterId=".concat(encodeURIComponent(characterId)))];
-                case 2:
-                    data = _a.sent();
-                    state.galleryCharacterId = characterId;
-                    state.galleryImages = data.images || [];
-                    renderGallery(data.character || character);
-                    showScreen("gallery");
-                    return [3 /*break*/, 5];
-                case 3:
-                    error_2 = _a.sent();
-                    showToast(error_2.message || "Не удалось открыть галерею");
-                    return [3 /*break*/, 5];
-                case 4:
-                    setLoading(false);
-                    return [7 /*endfinally*/];
-                case 5: return [2 /*return*/];
-            }
-        });
+    var character = (state.bootstrap && state.bootstrap.characters || []).find(function (item) { return item.id === characterId; });
+    if (!character)
+        return showToast("Персонаж не найден");
+    var cached = state.galleryByCharacter[characterId];
+    state.galleryCharacterId = characterId;
+    state.galleryImages = cached && cached.validated ? cached.images.slice() : [];
+    renderGallery(cached ? cached.character : character, { pending: !(cached && cached.validated) });
+    showScreen("gallery");
+    fetchGallery(characterId, character)
+        .then(function (entry) { return validateGalleryEntry(characterId, entry); })
+        .then(function (entry) {
+        if (state.currentScreen === "gallery" && state.galleryCharacterId === characterId) {
+            state.galleryImages = entry.images.slice();
+            renderGallery(entry.character);
+        }
+    })
+        .catch(function (error) {
+        if (state.currentScreen === "gallery" && state.galleryCharacterId === characterId) {
+            renderGallery(character);
+            showToast(error.message || "Не удалось обновить галерею");
+        }
+    });
+}
+function prefetchGalleries(characters) {
+    (characters || []).forEach(function (character) {
+        fetchGallery(character.id, character).catch(function () { });
+    });
+}
+function fetchGallery(characterId, fallbackCharacter) {
+    if (state.galleryRequests[characterId])
+        return state.galleryRequests[characterId];
+    var request = api("/miniapp/api/gallery?characterId=".concat(encodeURIComponent(characterId)))
+        .then(function (data) {
+        var images = (data.images || []).filter(function (item) { return !state.brokenGalleryImageIds.has(item.id); });
+        var entry = { character: data.character || fallbackCharacter, images: images, validated: false };
+        state.galleryByCharacter[characterId] = entry;
+        delete state.galleryRequests[characterId];
+        return entry;
+    })
+        .catch(function (error) {
+        delete state.galleryRequests[characterId];
+        throw error;
+    });
+    state.galleryRequests[characterId] = request;
+    return request;
+}
+function validateGalleryEntry(characterId, entry) {
+    if (entry.validated)
+        return Promise.resolve(entry);
+    if (state.galleryValidationRequests[characterId])
+        return state.galleryValidationRequests[characterId];
+    var request = Promise.all(entry.images.map(preloadGalleryImage))
+        .then(function (results) {
+        entry.images = results.filter(Boolean);
+        entry.validated = true;
+        state.galleryByCharacter[characterId] = entry;
+        delete state.galleryValidationRequests[characterId];
+        return entry;
+    })
+        .catch(function (error) {
+        delete state.galleryValidationRequests[characterId];
+        throw error;
+    });
+    state.galleryValidationRequests[characterId] = request;
+    return request;
+}
+function preloadGalleryImage(item) {
+    if (state.brokenGalleryImageIds.has(item.id))
+        return Promise.resolve(null);
+    return new Promise(function (resolve) {
+        var image = new Image();
+        var settled = false;
+        var timeoutId;
+        var finish = function (result, broken) {
+            if (broken === void 0) { broken = false; }
+            if (settled)
+                return;
+            settled = true;
+            window.clearTimeout(timeoutId);
+            image.onload = null;
+            image.onerror = null;
+            if (broken)
+                state.brokenGalleryImageIds.add(item.id);
+            resolve(result);
+        };
+        timeoutId = window.setTimeout(function () { return finish(null); }, 20000);
+        image.onload = function () { return finish(item); };
+        image.onerror = function () { return finish(null, true); };
+        image.src = item.imageUrl;
     });
 }
 function selectAudience(audience_1) {
@@ -544,16 +615,27 @@ function selectAudience(audience_1) {
         });
     });
 }
-function renderGallery(character) {
+function renderGallery(character, options) {
+    if (options === void 0) { options = {}; }
     els.galleryHeader.replaceChildren();
     els.galleryGrid.replaceChildren();
     var title = document.createElement("h2");
     title.textContent = "\u0413\u0430\u043B\u0435\u0440\u0435\u044F ".concat(character.name);
     var subtitle = document.createElement("p");
-    subtitle.textContent = state.galleryImages.length
+    subtitle.textContent = options.pending
+        ? "Галерея открыта. Фотографии появятся через мгновение."
+        : state.galleryImages.length
         ? "".concat(state.galleryImages.length, " \u0444\u043E\u0442\u043E. \u041D\u0430\u0436\u043C\u0438 \u043D\u0430 \u043B\u044E\u0431\u043E\u0435, \u0447\u0442\u043E\u0431\u044B \u043E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440.")
         : "У этого персонажа пока нет сгенерированных фото.";
     els.galleryHeader.append(title, subtitle);
+    if (options.pending) {
+        for (var index = 0; index < 6; index += 1) {
+            var skeleton = document.createElement("div");
+            skeleton.className = "gallery-tile gallery-tile-skeleton";
+            els.galleryGrid.append(skeleton);
+        }
+        return;
+    }
     if (state.galleryImages.length === 0) {
         var empty = document.createElement("div");
         empty.className = "empty-dialogs";
@@ -561,20 +643,33 @@ function renderGallery(character) {
         els.galleryGrid.append(empty);
         return;
     }
-    state.galleryImages.forEach(function (item, index) {
+    state.galleryImages.forEach(function (item) {
         var button = document.createElement("button");
         button.type = "button";
         button.className = "gallery-tile";
-        button.addEventListener("click", function () { return openGalleryViewer(index); });
+        button.addEventListener("click", function () {
+            var currentIndex = state.galleryImages.findIndex(function (candidate) { return candidate.id === item.id; });
+            if (currentIndex >= 0)
+                openGalleryViewer(currentIndex);
+        });
         var image = document.createElement("img");
         image.src = item.imageUrl;
         image.alt = item.prompt || "Сгенерированное фото";
         image.loading = "lazy";
+        image.addEventListener("error", function () { return removeBrokenGalleryImage(character, item.id); });
         var meta = document.createElement("span");
         meta.textContent = formatDialogTime(item.createdAt);
         button.append(image, meta);
         els.galleryGrid.append(button);
     });
+}
+function removeBrokenGalleryImage(character, imageId) {
+    state.brokenGalleryImageIds.add(imageId);
+    state.galleryImages = state.galleryImages.filter(function (item) { return item.id !== imageId; });
+    var cached = state.galleryByCharacter[state.galleryCharacterId];
+    if (cached)
+        cached.images = cached.images.filter(function (item) { return item.id !== imageId; });
+    renderGallery(character);
 }
 function openGalleryViewer(index) {
     if (!state.galleryImages.length)
@@ -594,6 +689,22 @@ function showGalleryImage(index) {
     els.galleryViewerImage.src = item.imageUrl;
     els.galleryViewerImage.alt = item.prompt || "Сгенерированное фото";
     els.galleryViewerMeta.textContent = "".concat(state.galleryIndex + 1, " \u0438\u0437 ").concat(state.galleryImages.length, " \u00B7 ").concat(formatDialogTime(item.createdAt));
+}
+function handleGalleryViewerError() {
+    var item = state.galleryImages[state.galleryIndex];
+    var character = (state.bootstrap && state.bootstrap.characters || [])
+        .find(function (candidate) { return candidate.id === state.galleryCharacterId; });
+    if (!item || !character) {
+        closeGalleryViewer();
+        return;
+    }
+    removeBrokenGalleryImage(character, item.id);
+    if (state.galleryImages.length === 0) {
+        closeGalleryViewer();
+        return;
+    }
+    state.galleryIndex %= state.galleryImages.length;
+    showGalleryImage(state.galleryIndex);
 }
 function selectCharacter(characterId) {
     return __awaiter(this, void 0, void 0, function () {
@@ -674,11 +785,21 @@ function renderSelectedCharacter() {
         els.selectedCharacterPanel.textContent = "Сначала выбери персонажа.";
         return;
     }
+    var image = document.createElement("img");
+    image.className = "selected-character-avatar";
+    image.src = character.imageUrl;
+    image.alt = character.name;
+    var copy = document.createElement("div");
+    copy.className = "selected-character-copy";
+    var label = document.createElement("span");
+    label.className = "selected-character-label";
+    label.textContent = "Твой персонаж";
     var title = document.createElement("strong");
     title.textContent = character.name;
     var description = document.createElement("p");
     description.textContent = character.description;
-    els.selectedCharacterPanel.append(title, description);
+    copy.append(label, title, description);
+    els.selectedCharacterPanel.append(image, copy);
 }
 function renderStoriesPending(character) {
     els.storiesList.replaceChildren();
@@ -710,7 +831,9 @@ function renderStories() {
         var card = document.createElement("button");
         card.type = "button";
         card.className = "story-card";
-        card.addEventListener("click", function () { return selectStory(story.id); });
+        card.addEventListener("click", function () { return selectStory(story.id, card); });
+        var copy = document.createElement("span");
+        copy.className = "story-card-copy";
         var title = document.createElement("h2");
         title.textContent = story.title;
         var description = document.createElement("p");
@@ -718,7 +841,12 @@ function renderStories() {
         var setup = document.createElement("p");
         setup.className = "story-setup";
         setup.textContent = story.setup;
-        card.append(title, description, setup);
+        var arrow = document.createElement("span");
+        arrow.className = "story-arrow";
+        arrow.setAttribute("aria-hidden", "true");
+        arrow.textContent = "→";
+        copy.append(title, description);
+        card.append(copy, arrow, setup);
         els.storiesList.append(card);
     });
     els.storiesList.append(customStoryCard());
@@ -738,18 +866,26 @@ function customStoryCard() {
     var plus = document.createElement("span");
     plus.className = "custom-story-plus";
     plus.textContent = "+";
+    var copy = document.createElement("span");
+    copy.className = "custom-story-copy";
     var title = document.createElement("h2");
     title.textContent = slotsLeft > 0 ? "Создать свою ролевую игру" : "Добавить свою историю";
+    var arrow = document.createElement("span");
+    arrow.className = "custom-story-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    arrow.textContent = "→";
     if (slotsLeft > 0) {
         var badge = document.createElement("span");
         badge.className = "custom-story-badge";
         badge.textContent = "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E: ".concat(slotsLeft);
-        card.append(plus, title, badge);
+        copy.append(title, badge);
+        card.append(plus, copy, arrow);
         return card;
     }
     var description = document.createElement("p");
     description.textContent = "\u041F\u043B\u0430\u0442\u043D\u0430\u044F \u0444\u0443\u043D\u043A\u0446\u0438\u044F: ".concat(priceRub, " \u20BD, \u0434\u043E ").concat(storySlots, " \u0441\u0432\u043E\u0438\u0445 \u0438\u0441\u0442\u043E\u0440\u0438\u0439.");
-    card.append(plus, title, description);
+    copy.append(title, description);
+    card.append(plus, copy, arrow);
     return card;
 }
 function handleCustomStoryClick(slotsLeft, priceRub) {
@@ -878,10 +1014,16 @@ function renderDialogs() {
         els.dialogsList.append(empty);
         return;
     }
+    var contextOccurrences = new Map();
     dialogs.forEach(function (dialog) {
+        var contextKey = "".concat(dialog.characterId, ":").concat(dialog.storyId || "free-chat");
+        var occurrence = (contextOccurrences.get(contextKey) || 0) + 1;
+        contextOccurrences.set(contextKey, occurrence);
+        var visual = dialogVisual(dialog);
         var row = document.createElement("button");
         row.type = "button";
         row.className = "dialog-row";
+        row.style.setProperty("--dialog-accent", visual.color);
         row.addEventListener("click", function () { return restoreDialog(dialog.id); });
         var avatar = document.createElement("div");
         avatar.className = "dialog-avatar";
@@ -889,7 +1031,16 @@ function renderDialogs() {
         image.src = dialog.characterImageUrl;
         image.alt = dialog.characterName;
         image.loading = "lazy";
-        avatar.append(image);
+        var storyMark = document.createElement("span");
+        storyMark.className = "dialog-story-mark";
+        storyMark.textContent = visual.mark;
+        avatar.append(image, storyMark);
+        if (occurrence > 1) {
+            var sequence = document.createElement("span");
+            sequence.className = "dialog-sequence";
+            sequence.textContent = String(occurrence);
+            avatar.append(sequence);
+        }
         var main = document.createElement("div");
         main.className = "dialog-main";
         var title = document.createElement("div");
@@ -911,6 +1062,20 @@ function renderDialogs() {
         row.append(avatar, main, time);
         els.dialogsList.append(row);
     });
+}
+function dialogVisual(dialog) {
+    var palette = ["#ff5d8f", "#35c8b2", "#f3b83f", "#5f9df7", "#cf6df2", "#ff7657"];
+    var title = dialog.storyTitle || "Свободный чат";
+    var words = title.trim().split(/\s+/).filter(Boolean);
+    var mark = dialog.storyId
+        ? words.slice(0, 2).map(function (word) { return word[0]; }).join("").toLocaleUpperCase("ru-RU")
+        : "ЧА";
+    var key = dialog.storyId || "free-chat";
+    var hash = 0;
+    for (var index = 0; index < key.length; index += 1) {
+        hash = ((hash << 5) - hash + key.charCodeAt(index)) | 0;
+    }
+    return { color: palette[Math.abs(hash) % palette.length], mark: mark };
 }
 function restoreDialog(dialogId) {
     return __awaiter(this, void 0, void 0, function () {
@@ -942,70 +1107,173 @@ function restoreDialog(dialogId) {
         });
     });
 }
-function selectStory(storyId) {
-    return __awaiter(this, void 0, void 0, function () {
-        var characterId, data, error_8;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
-                case 0:
-                    characterId = state.selectedCharacterId;
-                    if (!characterId)
-                        return [2 /*return*/, showToast("Сначала выбери персонажа")];
-                    setLoading(true);
-                    _a.label = 1;
-                case 1:
-                    _a.trys.push([1, 3, 4, 5]);
-                    return [4 /*yield*/, api("/miniapp/api/select-story", {
-                            method: "POST",
-                            body: { characterId: characterId, storyId: storyId },
-                        })];
-                case 2:
-                    data = _a.sent();
-                    finishInTelegram(data.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
-                    return [3 /*break*/, 5];
-                case 3:
-                    error_8 = _a.sent();
-                    showToast(error_8.message || "Не удалось выбрать историю");
-                    return [3 /*break*/, 5];
-                case 4:
-                    setLoading(false);
-                    return [7 /*endfinally*/];
-                case 5: return [2 /*return*/];
-            }
+function findExistingDialogForContext(characterId, storyId) {
+    var dialogs = state.bootstrap && state.bootstrap.dialogs || [];
+    var normalizedStoryId = storyId || null;
+    return dialogs
+        .filter(function (dialog) { return dialog.characterId === characterId && (dialog.storyId || null) === normalizedStoryId; })
+        .sort(function (left, right) { return Number(right.updatedAt || 0) - Number(left.updatedAt || 0); })[0] || null;
+}
+function confirmDialogReuse(dialog) {
+    var mode;
+    if (!dialog || document.querySelector(".dialog-choice-modal"))
+        return Promise.resolve(null);
+    mode = dialog.storyTitle || "Свободный чат";
+    return new Promise(function (resolve) {
+        var overlay = document.createElement("div");
+        overlay.className = "dialog-choice-modal";
+        overlay.setAttribute("role", "dialog");
+        overlay.setAttribute("aria-modal", "true");
+        var panel = document.createElement("div");
+        panel.className = "dialog-choice-panel";
+        var closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "dialog-choice-close";
+        closeButton.setAttribute("aria-label", "Закрыть");
+        closeButton.textContent = "×";
+        var avatar = document.createElement("img");
+        avatar.className = "dialog-choice-avatar";
+        avatar.src = dialog.characterImageUrl;
+        avatar.alt = "";
+        var heading = document.createElement("div");
+        heading.className = "dialog-choice-heading";
+        var kicker = document.createElement("span");
+        kicker.className = "dialog-choice-kicker";
+        kicker.textContent = "Сохранённый диалог";
+        var title = document.createElement("h2");
+        title.textContent = "Продолжить разговор?";
+        var context = document.createElement("div");
+        context.className = "dialog-choice-context";
+        context.textContent = "".concat(dialog.characterName, " \u00B7 ").concat(mode);
+        var description = document.createElement("p");
+        description.textContent = dialog.lastMessage || "В этом диалоге уже есть сохранённая история.";
+        var actions = document.createElement("div");
+        actions.className = "dialog-choice-actions";
+        var continueButton = document.createElement("button");
+        continueButton.type = "button";
+        continueButton.className = "dialog-choice-continue";
+        continueButton.textContent = "Продолжить";
+        var restartButton = document.createElement("button");
+        restartButton.type = "button";
+        restartButton.className = "dialog-choice-restart";
+        restartButton.textContent = "Начать заново";
+        var finish = function (choice) {
+            overlay.remove();
+            resolve(choice);
+        };
+        continueButton.addEventListener("click", function () { return finish(true); });
+        restartButton.addEventListener("click", function () { return finish(false); });
+        closeButton.addEventListener("click", function () { return finish(null); });
+        overlay.addEventListener("click", function (event) {
+            if (event.target === overlay)
+                finish(null);
         });
+        actions.append(continueButton, restartButton);
+        heading.append(kicker, title, context);
+        panel.append(closeButton, avatar, heading, description, actions);
+        overlay.append(panel);
+        document.body.append(overlay);
+        continueButton.focus();
+    });
+}
+function selectStory(storyId, card) {
+    var characterId = state.selectedCharacterId;
+    if (!characterId)
+        return showToast("Сначала выбери персонажа");
+    var selectionKey = "".concat(characterId, ":").concat(storyId);
+    if (state.pendingStorySelectionKey)
+        return;
+    state.pendingStorySelectionKey = selectionKey;
+    if (card) {
+        card.disabled = true;
+        card.classList.add("story-card-pending");
+        card.setAttribute("aria-busy", "true");
+    }
+    var knownDialog = findExistingDialogForContext(characterId, storyId);
+    var initial = knownDialog
+        ? Promise.resolve({ needsDecision: true, existingDialog: knownDialog })
+        : api("/miniapp/api/select-story", {
+            method: "POST",
+            body: { characterId: characterId, storyId: storyId },
+        });
+    return initial.then(function (data) {
+        if (!data.needsDecision) {
+            finishInTelegram(data.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
+            return null;
+        }
+        var existingDialog = data.existingDialog || knownDialog;
+        return confirmDialogReuse(existingDialog).then(function (shouldContinue) {
+            if (shouldContinue === null)
+                return null;
+            if (shouldContinue && existingDialog && existingDialog.id) {
+                return api("/miniapp/api/restore-dialog", {
+                    method: "POST",
+                    body: { dialogId: existingDialog.id },
+                }).then(function (result) {
+                    finishInTelegram(result.sendData, "Старый диалог восстановлен. Возвращаю в чат.");
+                });
+            }
+            return api("/miniapp/api/select-story", {
+                method: "POST",
+                body: { characterId: characterId, storyId: storyId, replaceExisting: true },
+            }).then(function (result) {
+                finishInTelegram(result.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
+            });
+        });
+    }).catch(function (error) {
+        if (error.status === 502 && error.data && error.data.error === "Telegram message was not delivered") {
+            finishInTelegram({ action: "story_selected", characterId: characterId, storyId: storyId }, "История выбрана. Открываю чат.");
+            return;
+        }
+        showToast(error.message || "Не удалось выбрать историю");
+    }).then(function (result) {
+        if (state.pendingStorySelectionKey === selectionKey)
+            state.pendingStorySelectionKey = null;
+        if (card && card.isConnected) {
+            card.disabled = false;
+            card.classList.remove("story-card-pending");
+            card.removeAttribute("aria-busy");
+        }
+        return result;
     });
 }
 function skipStory() {
-    return __awaiter(this, void 0, void 0, function () {
-        var characterId, data, error_9;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
-                case 0:
-                    characterId = state.selectedCharacterId;
-                    if (!characterId)
-                        return [2 /*return*/, showToast("Сначала выбери персонажа")];
-                    setLoading(true);
-                    _a.label = 1;
-                case 1:
-                    _a.trys.push([1, 3, 4, 5]);
-                    return [4 /*yield*/, api("/miniapp/api/skip-story", {
-                            method: "POST",
-                            body: { characterId: characterId },
-                        })];
-                case 2:
-                    data = _a.sent();
-                    finishInTelegram(data.sendData, "История пропущена. Можно продолжать в чате.");
-                    return [3 /*break*/, 5];
-                case 3:
-                    error_9 = _a.sent();
-                    showToast(error_9.message || "Не удалось пропустить историю");
-                    return [3 /*break*/, 5];
-                case 4:
-                    setLoading(false);
-                    return [7 /*endfinally*/];
-                case 5: return [2 /*return*/];
-            }
+    var characterId = state.selectedCharacterId;
+    if (!characterId)
+        return showToast("Сначала выбери персонажа");
+    var knownDialog = findExistingDialogForContext(characterId, null);
+    var initial = knownDialog
+        ? Promise.resolve({ needsDecision: true, existingDialog: knownDialog })
+        : api("/miniapp/api/skip-story", {
+            method: "POST",
+            body: { characterId: characterId },
         });
+    return initial.then(function (data) {
+        if (!data.needsDecision) {
+            finishInTelegram(data.sendData, "История пропущена. Можно продолжать в чате.");
+            return null;
+        }
+        var existingDialog = data.existingDialog || knownDialog;
+        return confirmDialogReuse(existingDialog).then(function (shouldContinue) {
+            if (shouldContinue === null)
+                return null;
+            if (shouldContinue && existingDialog && existingDialog.id) {
+                return api("/miniapp/api/restore-dialog", {
+                    method: "POST",
+                    body: { dialogId: existingDialog.id },
+                }).then(function (result) {
+                    finishInTelegram(result.sendData, "Старый диалог восстановлен. Возвращаю в чат.");
+                });
+            }
+            return api("/miniapp/api/skip-story", {
+                method: "POST",
+                body: { characterId: characterId, replaceExisting: true },
+            }).then(function (result) {
+                finishInTelegram(result.sendData, "История пропущена. Можно продолжать в чате.");
+            });
+        });
+    }).catch(function (error) {
+        showToast(error.message || "Не удалось пропустить историю");
     });
 }
 function createInvoice(type, code) {

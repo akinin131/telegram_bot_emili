@@ -13,9 +13,14 @@ const state = {
   galleryCharacterId: null,
   galleryImages: [],
   galleryIndex: 0,
+  galleryByCharacter: {},
+  galleryRequests: {},
+  galleryValidationRequests: {},
+  brokenGalleryImageIds: new Set(),
   lastNonSettingsScreen: "characters",
   finishTimer: null,
   pendingCharacterRequestId: 0,
+  pendingStorySelectionKey: null,
   storiesByCharacter: {},
 };
 
@@ -138,6 +143,7 @@ function bindEvents() {
   on(els.closeGalleryViewer, "click", closeGalleryViewer);
   on(els.prevGalleryImage, "click", () => showGalleryImage(state.galleryIndex - 1));
   on(els.nextGalleryImage, "click", () => showGalleryImage(state.galleryIndex + 1));
+  on(els.galleryViewerImage, "error", handleGalleryViewerError);
   on(els.galleryViewer, "click", (event) => {
     if (event.target === els.galleryViewer) closeGalleryViewer();
   });
@@ -169,6 +175,7 @@ async function loadBootstrap(nextScreen = null) {
     renderSettings();
     showScreen(state.audiencePreference ? targetScreen : "preference");
     setLoading(false);
+    prefetchGalleries(data.characters);
     document.documentElement.setAttribute("data-miniapp-stage", "ready");
   } catch (error) {
     document.documentElement.setAttribute("data-miniapp-stage", "load-error");
@@ -200,6 +207,7 @@ function hydrateCachedBootstrap() {
   renderSettings();
   showScreen(state.audiencePreference ? "characters" : "preference");
   setLoading(false);
+  prefetchGalleries(cached.characters);
   document.documentElement.setAttribute("data-miniapp-stage", "cached");
   return true;
 }
@@ -237,7 +245,10 @@ async function api(path, options = {}) {
     const message = telegramDescription
       ? `${data.error || "Ошибка Telegram"}: ${telegramDescription}`
       : data.error || `Ошибка API ${response.status}`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.data = data;
+    throw error;
   }
   return data;
 }
@@ -308,6 +319,7 @@ function showScreen(name) {
 
   state.currentScreen = name;
   document.body.classList.toggle("preference-mode", name === "preference");
+  document.body.classList.toggle("stories-mode", name === "stories");
   els.screenTitle.textContent = screenTitles[name] || "Emily";
 
   [
@@ -402,22 +414,93 @@ function renderCharacters() {
   });
 }
 
-async function openGallery(characterId) {
+function openGallery(characterId) {
   const character = (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === characterId);
   if (!character) return showToast("Персонаж не найден");
 
-  setLoading(true);
-  try {
-    const data = await api(`/miniapp/api/gallery?characterId=${encodeURIComponent(characterId)}`);
-    state.galleryCharacterId = characterId;
-    state.galleryImages = data.images || [];
-    renderGallery(data.character || character);
-    showScreen("gallery");
-  } catch (error) {
-    showToast(error.message || "Не удалось открыть галерею");
-  } finally {
-    setLoading(false);
-  }
+  const cached = state.galleryByCharacter[characterId];
+  state.galleryCharacterId = characterId;
+  state.galleryImages = cached && cached.validated ? cached.images.slice() : [];
+  renderGallery(cached ? cached.character : character, { pending: !(cached && cached.validated) });
+  showScreen("gallery");
+  fetchGallery(characterId, character)
+    .then((entry) => validateGalleryEntry(characterId, entry))
+    .then((entry) => {
+      if (state.currentScreen === "gallery" && state.galleryCharacterId === characterId) {
+        state.galleryImages = entry.images.slice();
+        renderGallery(entry.character);
+      }
+    })
+    .catch((error) => {
+      if (state.currentScreen === "gallery" && state.galleryCharacterId === characterId) {
+        renderGallery(character);
+        showToast(error.message || "Не удалось обновить галерею");
+      }
+    });
+}
+
+function prefetchGalleries(characters) {
+  (characters || []).forEach((character) => {
+    fetchGallery(character.id, character).catch(() => {});
+  });
+}
+
+function fetchGallery(characterId, fallbackCharacter) {
+  if (state.galleryRequests[characterId]) return state.galleryRequests[characterId];
+  const request = api(`/miniapp/api/gallery?characterId=${encodeURIComponent(characterId)}`)
+    .then((data) => {
+      const images = (data.images || []).filter((item) => !state.brokenGalleryImageIds.has(item.id));
+      const entry = { character: data.character || fallbackCharacter, images, validated: false };
+      state.galleryByCharacter[characterId] = entry;
+      delete state.galleryRequests[characterId];
+      return entry;
+    })
+    .catch((error) => {
+      delete state.galleryRequests[characterId];
+      throw error;
+    });
+  state.galleryRequests[characterId] = request;
+  return request;
+}
+
+function validateGalleryEntry(characterId, entry) {
+  if (entry.validated) return Promise.resolve(entry);
+  if (state.galleryValidationRequests[characterId]) return state.galleryValidationRequests[characterId];
+  const request = Promise.all(entry.images.map(preloadGalleryImage))
+    .then((results) => {
+      entry.images = results.filter(Boolean);
+      entry.validated = true;
+      state.galleryByCharacter[characterId] = entry;
+      delete state.galleryValidationRequests[characterId];
+      return entry;
+    })
+    .catch((error) => {
+      delete state.galleryValidationRequests[characterId];
+      throw error;
+    });
+  state.galleryValidationRequests[characterId] = request;
+  return request;
+}
+
+function preloadGalleryImage(item) {
+  if (state.brokenGalleryImageIds.has(item.id)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const image = new Image();
+    let settled = false;
+    const finish = (result, broken = false) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      image.onload = null;
+      image.onerror = null;
+      if (broken) state.brokenGalleryImageIds.add(item.id);
+      resolve(result);
+    };
+    const timeoutId = window.setTimeout(() => finish(null), 20_000);
+    image.onload = () => finish(item);
+    image.onerror = () => finish(null, true);
+    image.src = item.imageUrl;
+  });
 }
 
 async function selectAudience(audience, options = {}) {
@@ -452,17 +535,28 @@ async function selectAudience(audience, options = {}) {
   }
 }
 
-function renderGallery(character) {
+function renderGallery(character, options = {}) {
   els.galleryHeader.replaceChildren();
   els.galleryGrid.replaceChildren();
 
   const title = document.createElement("h2");
   title.textContent = `Галерея ${character.name}`;
   const subtitle = document.createElement("p");
-  subtitle.textContent = state.galleryImages.length
+  subtitle.textContent = options.pending
+    ? "Галерея открыта. Фотографии появятся через мгновение."
+    : state.galleryImages.length
     ? `${state.galleryImages.length} фото. Нажми на любое, чтобы открыть просмотр.`
     : "У этого персонажа пока нет сгенерированных фото.";
   els.galleryHeader.append(title, subtitle);
+
+  if (options.pending) {
+    for (let index = 0; index < 6; index += 1) {
+      const skeleton = document.createElement("div");
+      skeleton.className = "gallery-tile gallery-tile-skeleton";
+      els.galleryGrid.append(skeleton);
+    }
+    return;
+  }
 
   if (state.galleryImages.length === 0) {
     const empty = document.createElement("div");
@@ -476,12 +570,16 @@ function renderGallery(character) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "gallery-tile";
-    button.addEventListener("click", () => openGalleryViewer(index));
+    button.addEventListener("click", () => {
+      const currentIndex = state.galleryImages.findIndex((candidate) => candidate.id === item.id);
+      if (currentIndex >= 0) openGalleryViewer(currentIndex);
+    });
 
     const image = document.createElement("img");
     image.src = item.imageUrl;
     image.alt = item.prompt || "Сгенерированное фото";
     image.loading = "lazy";
+    image.addEventListener("error", () => removeBrokenGalleryImage(character, item.id));
 
     const meta = document.createElement("span");
     meta.textContent = formatDialogTime(item.createdAt);
@@ -489,6 +587,14 @@ function renderGallery(character) {
     button.append(image, meta);
     els.galleryGrid.append(button);
   });
+}
+
+function removeBrokenGalleryImage(character, imageId) {
+  state.brokenGalleryImageIds.add(imageId);
+  state.galleryImages = state.galleryImages.filter((item) => item.id !== imageId);
+  const cached = state.galleryByCharacter[state.galleryCharacterId];
+  if (cached) cached.images = cached.images.filter((item) => item.id !== imageId);
+  renderGallery(character);
 }
 
 function openGalleryViewer(index) {
@@ -509,6 +615,20 @@ function showGalleryImage(index) {
   els.galleryViewerImage.src = item.imageUrl;
   els.galleryViewerImage.alt = item.prompt || "Сгенерированное фото";
   els.galleryViewerMeta.textContent = `${state.galleryIndex + 1} из ${state.galleryImages.length} · ${formatDialogTime(item.createdAt)}`;
+}
+
+function handleGalleryViewerError() {
+  const item = state.galleryImages[state.galleryIndex];
+  const character = (state.bootstrap && state.bootstrap.characters || [])
+    .find((candidate) => candidate.id === state.galleryCharacterId);
+  if (!item || !character) return closeGalleryViewer();
+  removeBrokenGalleryImage(character, item.id);
+  if (state.galleryImages.length === 0) {
+    closeGalleryViewer();
+    return;
+  }
+  state.galleryIndex %= state.galleryImages.length;
+  showGalleryImage(state.galleryIndex);
 }
 
 async function selectCharacter(characterId) {
@@ -581,13 +701,26 @@ function renderSelectedCharacter() {
     return;
   }
 
+  const image = document.createElement("img");
+  image.className = "selected-character-avatar";
+  image.src = character.imageUrl;
+  image.alt = character.name;
+
+  const copy = document.createElement("div");
+  copy.className = "selected-character-copy";
+
+  const label = document.createElement("span");
+  label.className = "selected-character-label";
+  label.textContent = "Твой персонаж";
+
   const title = document.createElement("strong");
   title.textContent = character.name;
 
   const description = document.createElement("p");
   description.textContent = character.description;
 
-  els.selectedCharacterPanel.append(title, description);
+  copy.append(label, title, description);
+  els.selectedCharacterPanel.append(image, copy);
 }
 
 function renderStoriesPending(character) {
@@ -626,7 +759,10 @@ function renderStories() {
     const card = document.createElement("button");
     card.type = "button";
     card.className = "story-card";
-    card.addEventListener("click", () => selectStory(story.id));
+    card.addEventListener("click", () => selectStory(story.id, card));
+
+    const copy = document.createElement("span");
+    copy.className = "story-card-copy";
 
     const title = document.createElement("h2");
     title.textContent = story.title;
@@ -638,7 +774,13 @@ function renderStories() {
     setup.className = "story-setup";
     setup.textContent = story.setup;
 
-    card.append(title, description, setup);
+    const arrow = document.createElement("span");
+    arrow.className = "story-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    arrow.textContent = "→";
+
+    copy.append(title, description);
+    card.append(copy, arrow, setup);
     els.storiesList.append(card);
   });
 
@@ -663,20 +805,30 @@ function customStoryCard() {
   plus.className = "custom-story-plus";
   plus.textContent = "+";
 
+  const copy = document.createElement("span");
+  copy.className = "custom-story-copy";
+
   const title = document.createElement("h2");
   title.textContent = slotsLeft > 0 ? "Создать свою ролевую игру" : "Добавить свою историю";
+
+  const arrow = document.createElement("span");
+  arrow.className = "custom-story-arrow";
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "→";
 
   if (slotsLeft > 0) {
     const badge = document.createElement("span");
     badge.className = "custom-story-badge";
     badge.textContent = `Доступно: ${slotsLeft}`;
-    card.append(plus, title, badge);
+    copy.append(title, badge);
+    card.append(plus, copy, arrow);
     return card;
   }
 
   const description = document.createElement("p");
   description.textContent = `Платная функция: ${priceRub} ₽, до ${storySlots} своих историй.`;
-  card.append(plus, title, description);
+  copy.append(title, description);
+  card.append(plus, copy, arrow);
   return card;
 }
 
@@ -794,10 +946,17 @@ function renderDialogs() {
     return;
   }
 
+  const contextOccurrences = new Map();
   dialogs.forEach((dialog) => {
+    const contextKey = `${dialog.characterId}:${dialog.storyId || "free-chat"}`;
+    const occurrence = (contextOccurrences.get(contextKey) || 0) + 1;
+    contextOccurrences.set(contextKey, occurrence);
+    const visual = dialogVisual(dialog);
+
     const row = document.createElement("button");
     row.type = "button";
     row.className = "dialog-row";
+    row.style.setProperty("--dialog-accent", visual.color);
     row.addEventListener("click", () => restoreDialog(dialog.id));
 
     const avatar = document.createElement("div");
@@ -806,7 +965,16 @@ function renderDialogs() {
     image.src = dialog.characterImageUrl;
     image.alt = dialog.characterName;
     image.loading = "lazy";
-    avatar.append(image);
+    const storyMark = document.createElement("span");
+    storyMark.className = "dialog-story-mark";
+    storyMark.textContent = visual.mark;
+    avatar.append(image, storyMark);
+    if (occurrence > 1) {
+      const sequence = document.createElement("span");
+      sequence.className = "dialog-sequence";
+      sequence.textContent = String(occurrence);
+      avatar.append(sequence);
+    }
 
     const main = document.createElement("div");
     main.className = "dialog-main";
@@ -836,6 +1004,21 @@ function renderDialogs() {
   });
 }
 
+function dialogVisual(dialog) {
+  const palette = ["#ff5d8f", "#35c8b2", "#f3b83f", "#5f9df7", "#cf6df2", "#ff7657"];
+  const title = dialog.storyTitle || "Свободный чат";
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  const mark = dialog.storyId
+    ? words.slice(0, 2).map((word) => word[0]).join("").toLocaleUpperCase("ru-RU")
+    : "ЧА";
+  const key = dialog.storyId || "free-chat";
+  let hash = 0;
+  for (let index = 0; index < key.length; index += 1) {
+    hash = ((hash << 5) - hash + key.charCodeAt(index)) | 0;
+  }
+  return { color: palette[Math.abs(hash) % palette.length], mark };
+}
+
 async function restoreDialog(dialogId) {
   setLoading(true);
   try {
@@ -851,21 +1034,146 @@ async function restoreDialog(dialogId) {
   }
 }
 
-async function selectStory(storyId) {
+function findExistingDialogForContext(characterId, storyId) {
+  const dialogs = state.bootstrap && state.bootstrap.dialogs || [];
+  const normalizedStoryId = storyId || null;
+  return dialogs
+    .filter((dialog) => dialog.characterId === characterId && (dialog.storyId || null) === normalizedStoryId)
+    .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))[0] || null;
+}
+
+function confirmDialogReuse(dialog) {
+  if (!dialog || document.querySelector(".dialog-choice-modal")) return Promise.resolve(null);
+  const mode = dialog.storyTitle || "Свободный чат";
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "dialog-choice-modal";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+
+    const panel = document.createElement("div");
+    panel.className = "dialog-choice-panel";
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "dialog-choice-close";
+    closeButton.setAttribute("aria-label", "Закрыть");
+    closeButton.textContent = "×";
+
+    const avatar = document.createElement("img");
+    avatar.className = "dialog-choice-avatar";
+    avatar.src = dialog.characterImageUrl;
+    avatar.alt = "";
+
+    const heading = document.createElement("div");
+    heading.className = "dialog-choice-heading";
+    const kicker = document.createElement("span");
+    kicker.className = "dialog-choice-kicker";
+    kicker.textContent = "Сохранённый диалог";
+    const title = document.createElement("h2");
+    title.textContent = "Продолжить разговор?";
+    const context = document.createElement("div");
+    context.className = "dialog-choice-context";
+    context.textContent = `${dialog.characterName} · ${mode}`;
+
+    const description = document.createElement("p");
+    description.textContent = dialog.lastMessage || "В этом диалоге уже есть сохранённая история.";
+
+    const actions = document.createElement("div");
+    actions.className = "dialog-choice-actions";
+    const continueButton = document.createElement("button");
+    continueButton.type = "button";
+    continueButton.className = "dialog-choice-continue";
+    continueButton.textContent = "Продолжить";
+    const restartButton = document.createElement("button");
+    restartButton.type = "button";
+    restartButton.className = "dialog-choice-restart";
+    restartButton.textContent = "Начать заново";
+
+    const finish = (choice) => {
+      overlay.remove();
+      resolve(choice);
+    };
+    continueButton.addEventListener("click", () => finish(true));
+    restartButton.addEventListener("click", () => finish(false));
+    closeButton.addEventListener("click", () => finish(null));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(null);
+    });
+
+    actions.append(continueButton, restartButton);
+    heading.append(kicker, title, context);
+    panel.append(closeButton, avatar, heading, description, actions);
+    overlay.append(panel);
+    document.body.append(overlay);
+    continueButton.focus();
+  });
+}
+
+async function selectStory(storyId, card = null) {
   const characterId = state.selectedCharacterId;
   if (!characterId) return showToast("Сначала выбери персонажа");
+  const selectionKey = `${characterId}:${storyId}`;
+  if (state.pendingStorySelectionKey) return;
 
-  setLoading(true);
+  state.pendingStorySelectionKey = selectionKey;
+  if (card) {
+    card.disabled = true;
+    card.classList.add("story-card-pending");
+    card.setAttribute("aria-busy", "true");
+  }
+
   try {
-    const data = await api("/miniapp/api/select-story", {
-      method: "POST",
-      body: { characterId, storyId },
-    });
+    let existingDialog = findExistingDialogForContext(characterId, storyId);
+    let data;
+    if (!existingDialog) {
+      data = await api("/miniapp/api/select-story", {
+        method: "POST",
+        body: { characterId, storyId },
+      });
+      if (!data.needsDecision) {
+        finishInTelegram(data.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
+        return;
+      }
+      existingDialog = data.existingDialog;
+    }
+
+    if (existingDialog) {
+      const shouldContinue = await confirmDialogReuse(existingDialog);
+      if (shouldContinue === null) return;
+      if (shouldContinue && existingDialog && existingDialog.id) {
+        data = await api("/miniapp/api/restore-dialog", {
+          method: "POST",
+          body: { dialogId: existingDialog.id },
+        });
+        finishInTelegram(data.sendData, "Старый диалог восстановлен. Возвращаю в чат.");
+        return;
+      }
+
+      data = await api("/miniapp/api/select-story", {
+        method: "POST",
+        body: { characterId, storyId, replaceExisting: true },
+      });
+    }
     finishInTelegram(data.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
   } catch (error) {
+    if (error.status === 502 && error.data && error.data.error === "Telegram message was not delivered") {
+      finishInTelegram(
+        { action: "story_selected", characterId, storyId },
+        "История выбрана. Открываю чат.",
+      );
+      return;
+    }
     showToast(error.message || "Не удалось выбрать историю");
   } finally {
-    setLoading(false);
+    if (state.pendingStorySelectionKey === selectionKey) {
+      state.pendingStorySelectionKey = null;
+    }
+    if (card && card.isConnected) {
+      card.disabled = false;
+      card.classList.remove("story-card-pending");
+      card.removeAttribute("aria-busy");
+    }
   }
 }
 
@@ -873,17 +1181,41 @@ async function skipStory() {
   const characterId = state.selectedCharacterId;
   if (!characterId) return showToast("Сначала выбери персонажа");
 
-  setLoading(true);
   try {
-    const data = await api("/miniapp/api/skip-story", {
-      method: "POST",
-      body: { characterId },
-    });
+    let existingDialog = findExistingDialogForContext(characterId, null);
+    let data;
+    if (!existingDialog) {
+      data = await api("/miniapp/api/skip-story", {
+        method: "POST",
+        body: { characterId },
+      });
+      if (!data.needsDecision) {
+        finishInTelegram(data.sendData, "История пропущена. Можно продолжать в чате.");
+        return;
+      }
+      existingDialog = data.existingDialog;
+    }
+
+    if (existingDialog) {
+      const shouldContinue = await confirmDialogReuse(existingDialog);
+      if (shouldContinue === null) return;
+      if (shouldContinue && existingDialog && existingDialog.id) {
+        data = await api("/miniapp/api/restore-dialog", {
+          method: "POST",
+          body: { dialogId: existingDialog.id },
+        });
+        finishInTelegram(data.sendData, "Старый диалог восстановлен. Возвращаю в чат.");
+        return;
+      }
+
+      data = await api("/miniapp/api/skip-story", {
+        method: "POST",
+        body: { characterId, replaceExisting: true },
+      });
+    }
     finishInTelegram(data.sendData, "История пропущена. Можно продолжать в чате.");
   } catch (error) {
     showToast(error.message || "Не удалось пропустить историю");
-  } finally {
-    setLoading(false);
   }
 }
 

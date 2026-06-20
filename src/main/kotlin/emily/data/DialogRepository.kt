@@ -2,6 +2,7 @@ package emily.data
 
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.FirebaseDatabase
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -102,6 +103,39 @@ class DialogRepository(
             .sortedBy { it.createdAt }
     }
 
+    suspend fun findLatestDialogByContext(userId: Long, characterId: String, storyId: String?): DialogSummary? =
+        withContext(Dispatchers.IO) {
+            findDialogsByContext(userId, characterId, storyId).maxByOrNull { it.updatedAt }
+        }
+
+    suspend fun findDialogsByContext(userId: Long, characterId: String, storyId: String?): List<DialogSummary> =
+        withContext(Dispatchers.IO) {
+            val normalizedCharacterId = normalizeId(characterId)
+            val normalizedStoryId = normalizeNullableId(storyId)
+            val snapshot = dialogsRef.child(userId.toString()).awaitSingle()
+
+            snapshot.children
+                .mapNotNull { it.toDialogSummary() }
+                .filter { dialog ->
+                    normalizeId(dialog.characterId) == normalizedCharacterId &&
+                        normalizeNullableId(dialog.storyId) == normalizedStoryId
+                }
+                .sortedByDescending { it.updatedAt }
+        }
+
+    suspend fun deleteDialog(userId: Long, dialogId: String): Any? = withContext(Dispatchers.IO) {
+        val normalizedDialogId = dialogId.trim()
+        if (normalizedDialogId.isBlank()) return@withContext null
+        dialogsRef.child(userId.toString()).child(normalizedDialogId).setValueAsync(null)
+        messagesRef.child(userId.toString()).child(normalizedDialogId).setValueAsync(null)
+    }
+
+    suspend fun deleteDialogsByContext(userId: Long, characterId: String, storyId: String?): Any? = withContext(Dispatchers.IO) {
+        findDialogsByContext(userId, characterId, storyId).forEach { dialog ->
+            deleteDialog(userId, dialog.id)
+        }
+    }
+
     private fun appendMessageInternal(
         userId: Long,
         dialogId: String,
@@ -155,4 +189,10 @@ class DialogRepository(
         val createdAt = child("createdAt").getValue(Long::class.java) ?: 0L
         return DialogMessage(role = role, text = text, createdAt = createdAt)
     }
+
+    private fun normalizeId(value: String): String =
+        value.trim().lowercase(Locale.ROOT)
+
+    private fun normalizeNullableId(value: String?): String? =
+        value?.trim()?.takeIf { it.isNotBlank() }?.lowercase(Locale.ROOT)
 }

@@ -369,12 +369,11 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
     }
 
     private val animeImageModelName = "wai-Illustrious"
-    private val realisticImageModelName = "lustify-v7"
+    private val realisticImageModelName = "wai-Illustrious"
     private val gifModelName = "wan-2.5-preview-image-to-video"
 
     private val characterEmily = BotCatalog.defaultCharacter
     private val availableCharacters = BotCatalog.characters
-    private val availableStories = BotCatalog.stories
 
     private enum class ImageStyle { ANIME, REALISTIC }
 
@@ -605,6 +604,156 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         )
     }
 
+    private fun existingDialogChoiceKeyboard(dialogId: String): InlineKeyboardMarkup {
+        return InlineKeyboardMarkup().apply {
+            keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = "↩️ Продолжить"
+                        callbackData = "DIALOG_CONTINUE:$dialogId"
+                    }
+                ),
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = "🗑 Начать заново"
+                        callbackData = "DIALOG_RESTART:$dialogId"
+                    }
+                )
+            )
+        }
+    }
+
+    private fun existingDialogChoiceText(dialog: DialogSummary): String {
+        val storyTitle = dialog.storyTitle ?: "Свободный чат"
+        return buildString {
+            append("<b>У тебя уже есть сохранённый диалог</b>\n\n")
+            append("👤 <b>Персонаж:</b> ")
+            append(escapeHtml(dialog.characterName))
+            append("\n")
+            append("📖 <b>Режим:</b> ")
+            append(escapeHtml(storyTitle))
+            append("\n\n")
+            append("Продолжить старый диалог или удалить его и начать новый?")
+        }
+    }
+
+    private suspend fun promptExistingDialogChoice(
+        session: ChatSession,
+        chatId: Long,
+        dialog: DialogSummary,
+        pickerMessageId: Int? = null
+    ) {
+        pickerMessageId?.let { runCatching { executeSafe(DeleteMessage(chatId.toString(), it)) } }
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = existingDialogChoiceText(dialog),
+            html = true,
+            replyMarkup = existingDialogChoiceKeyboard(dialog.id)
+        )
+    }
+
+    private suspend fun restoreDialogConversation(
+        chatId: Long,
+        character: CharacterProfile,
+        story: StoryScenario?,
+        messages: List<DialogMessage>
+    ) {
+        chatHistoryRepository.clear(chatId)
+        memory.reset(chatId)
+        applyCharacterToMemory(chatId, character, story)
+
+        messages.forEach { message ->
+            if (message.role == "user" || message.role == "assistant") {
+                memory.append(chatId, message.role, message.text)
+                chatHistoryRepository.append(chatId, message.role, message.text)
+            }
+        }
+    }
+
+    private suspend fun continueExistingDialog(
+        session: ChatSession,
+        chatId: Long,
+        dialogId: String,
+        pickerMessageId: Int? = null
+    ) {
+        pickerMessageId?.let { runCatching { executeSafe(DeleteMessage(chatId.toString(), it)) } }
+        val dialog = dialogRepository.getDialog(chatId, dialogId) ?: run {
+            sendSystemText(session, chatId, "Сохранённый диалог не найден. Начни выбор заново.", html = false)
+            return
+        }
+        val character = characterById(dialog.characterId) ?: run {
+            sendSystemText(session, chatId, "Не удалось открыть диалог: персонаж больше недоступен.", html = false)
+            return
+        }
+        val story = dialog.storyId?.let { storyById(it) }
+        if (!dialog.storyId.isNullOrBlank() && story == null) {
+            sendSystemText(session, chatId, "Этот диалог можно продолжить только через Mini App.", html = false)
+            return
+        }
+
+        userSettingsRepository.setSelectedCharacter(chatId, character.id)
+        if (story != null) {
+            userSettingsRepository.setSelectedStory(chatId, story.id)
+        } else {
+            userSettingsRepository.clearSelectedStory(chatId)
+        }
+        userSettingsRepository.setActiveDialogId(chatId, dialog.id)
+
+        val messages = dialogRepository.getMessages(chatId, dialog.id, limit = 80)
+        restoreDialogConversation(chatId, character, story, messages)
+
+        val storyTitle = dialog.storyTitle ?: "свободный чат"
+        sendSystemText(
+            session = session,
+            chatId = chatId,
+            text = "Продолжаю диалог: ${character.name} / $storyTitle",
+            html = false
+        )
+    }
+
+    private suspend fun restartDialogContext(
+        session: ChatSession,
+        chatId: Long,
+        dialogId: String,
+        pickerMessageId: Int? = null
+    ) {
+        pickerMessageId?.let { runCatching { executeSafe(DeleteMessage(chatId.toString(), it)) } }
+        val dialog = dialogRepository.getDialog(chatId, dialogId) ?: run {
+            sendSystemText(session, chatId, "Старый диалог уже удалён. Выбери персонажа или историю ещё раз.", html = false)
+            return
+        }
+        val character = characterById(dialog.characterId) ?: run {
+            sendSystemText(session, chatId, "Не удалось начать заново: персонаж больше недоступен.", html = false)
+            return
+        }
+        val story = dialog.storyId?.let { storyById(it) }
+        if (!dialog.storyId.isNullOrBlank() && story == null) {
+            sendSystemText(session, chatId, "Эту историю можно перезапустить только через Mini App.", html = false)
+            return
+        }
+
+        dialogRepository.deleteDialogsByContext(chatId, dialog.characterId, dialog.storyId)
+        userSettingsRepository.clearActiveDialogId(chatId)
+
+        if (story != null) {
+            startStory(session, chatId, character, story)
+        } else {
+            userSettingsRepository.setSelectedCharacter(chatId, character.id)
+            userSettingsRepository.clearSelectedStory(chatId)
+            memory.reset(chatId)
+            chatHistoryRepository.clear(chatId)
+            applyCharacterToMemory(chatId, character)
+            sendSystemText(
+                session = session,
+                chatId = chatId,
+                text = Strings.get("character.selection.confirmation", character.name),
+                html = true
+            )
+            sendWelcome(chatId, character)
+        }
+    }
+
     private suspend fun startStory(
         session: ChatSession,
         chatId: Long,
@@ -805,32 +954,41 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 val trimmed = line.trim()
                 val action = Regex("^\\*([^*\\n]{2,120})\\*$").matchEntire(trimmed)?.groupValues?.get(1)?.trim()
                 if (action != null) {
-                    "<i>${escapeHtml(action)}</i>"
+                    renderActionBlock(action)
                 } else {
-                    renderInlineActions(trimmed)
+                    renderActionAwareLine(trimmed)
                 }
             }
     }
 
-    private fun renderInlineActions(line: String): String {
+    private fun renderActionAwareLine(line: String): String {
         if (line.isBlank()) return ""
 
         val regex = Regex("\\*([^*\\n]{2,120})\\*")
-        val result = StringBuilder()
+        val segments = mutableListOf<String>()
         var lastIndex = 0
 
         regex.findAll(line).forEach { match ->
             val start = match.range.first
             val endExclusive = match.range.last + 1
-            result.append(escapeHtml(line.substring(lastIndex, start)))
-            result.append("<i>")
-            result.append(escapeHtml(match.groupValues[1].trim()))
-            result.append("</i>")
+            val before = line.substring(lastIndex, start).trim()
+            if (before.isNotBlank()) {
+                segments += escapeHtml(before)
+            }
+            segments += renderActionBlock(match.groupValues[1].trim())
             lastIndex = endExclusive
         }
 
-        result.append(escapeHtml(line.substring(lastIndex)))
-        return result.toString()
+        val after = line.substring(lastIndex).trim()
+        if (after.isNotBlank()) {
+            segments += escapeHtml(after)
+        }
+
+        return segments.joinToString("\n")
+    }
+
+    private fun renderActionBlock(action: String): String {
+        return "<blockquote><i>${escapeHtml(action)}</i></blockquote>"
     }
 
     private fun escapeHtml(text: String): String {
@@ -1368,19 +1526,25 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 val selected = characterById(characterId) ?: characterEmily
                 userSettingsRepository.setSelectedCharacter(chatId, selected.id)
                 userSettingsRepository.clearSelectedStory(chatId)
-                applyCharacterToMemory(chatId, selected, activeStory(chatId))
+                userSettingsRepository.clearActiveDialogId(chatId)
+                applyCharacterToMemory(chatId, selected, null)
 
                 runCatching {
                     executeSafe(DeleteMessage(chatId.toString(), update.callbackQuery.message.messageId))
                 }
 
-                sendSystemText(
-                    session = session,
-                    chatId = chatId,
-                    text = Strings.get("character.selection.confirmation", selected.name),
-                    html = true
-                )
-                sendWelcome(chatId, selected)
+                val existingDialog = dialogRepository.findLatestDialogByContext(chatId, selected.id, null)
+                if (existingDialog != null) {
+                    promptExistingDialogChoice(session, chatId, existingDialog)
+                } else {
+                    sendSystemText(
+                        session = session,
+                        chatId = chatId,
+                        text = Strings.get("character.selection.confirmation", selected.name),
+                        html = true
+                    )
+                    sendWelcome(chatId, selected)
+                }
                 return
             }
 
@@ -1409,21 +1573,54 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                     sendSystemText(session, chatId, "Эта история недоступна для ${character.name}. Открой /story заново.", html = false)
                     return
                 }
-                startStory(
-                    session = session,
-                    chatId = chatId,
-                    character = character,
-                    story = story,
-                    pickerMessageId = update.callbackQuery.message.messageId
-                )
+                val existingDialog = dialogRepository.findLatestDialogByContext(chatId, character.id, story.id)
+                if (existingDialog != null) {
+                    promptExistingDialogChoice(session, chatId, existingDialog, update.callbackQuery.message.messageId)
+                } else {
+                    startStory(
+                        session = session,
+                        chatId = chatId,
+                        character = character,
+                        story = story,
+                        pickerMessageId = update.callbackQuery.message.messageId
+                    )
+                }
                 return
             }
 
             data == "STORY_CLEAR" -> {
                 executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
-                clearStory(
+                val character = activeCharacter(chatId)
+                val existingDialog = dialogRepository.findLatestDialogByContext(chatId, character.id, null)
+                if (existingDialog != null) {
+                    promptExistingDialogChoice(session, chatId, existingDialog, update.callbackQuery.message.messageId)
+                } else {
+                    clearStory(
+                        session = session,
+                        chatId = chatId,
+                        pickerMessageId = update.callbackQuery.message.messageId
+                    )
+                }
+                return
+            }
+
+            data.startsWith("DIALOG_CONTINUE:") -> {
+                executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
+                continueExistingDialog(
                     session = session,
                     chatId = chatId,
+                    dialogId = data.removePrefix("DIALOG_CONTINUE:"),
+                    pickerMessageId = update.callbackQuery.message.messageId
+                )
+                return
+            }
+
+            data.startsWith("DIALOG_RESTART:") -> {
+                executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
+                restartDialogContext(
+                    session = session,
+                    chatId = chatId,
+                    dialogId = data.removePrefix("DIALOG_RESTART:"),
                     pickerMessageId = update.callbackQuery.message.messageId
                 )
                 return
@@ -2013,8 +2210,20 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         story: StoryScenario?
     ): String {
         val existingDialogId = userSettingsRepository.getActiveDialogId(chatId)
-        if (!existingDialogId.isNullOrBlank() && dialogRepository.getDialog(chatId, existingDialogId) != null) {
-            return existingDialogId
+        if (!existingDialogId.isNullOrBlank()) {
+            val existingDialog = dialogRepository.getDialog(chatId, existingDialogId)
+            if (existingDialog != null &&
+                existingDialog.characterId == character.id &&
+                existingDialog.storyId == story?.id
+            ) {
+                return existingDialogId
+            }
+        }
+
+        val matchingDialog = dialogRepository.findLatestDialogByContext(chatId, character.id, story?.id)
+        if (matchingDialog != null) {
+            userSettingsRepository.setActiveDialogId(chatId, matchingDialog.id)
+            return matchingDialog.id
         }
 
         val dialogId = dialogRepository.createDialog(
@@ -2105,7 +2314,16 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             if (balance.textTokensLeft < 0) balance.textTokensLeft = 0
             repository.put(balance)
 
-            repository.logUsage(chatId, result.tokensUsed, mapOf("type" to "chat", "model" to selectedChatModel))
+            repository.logUsage(
+                chatId,
+                result.tokensUsed,
+                mapOf(
+                    "type" to "chat",
+                    "model" to selectedChatModel,
+                    "billing" to "venice_equivalent_input_tokens",
+                    "raw_total_tokens" to result.totalTokens
+                )
+            )
             analyticsRepository.logSpend(
                 userId = chatId,
                 plan = balance.plan,

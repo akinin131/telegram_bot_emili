@@ -4,6 +4,7 @@ import emily.http.await
 import emily.resources.Strings
 import kotlin.math.ceil
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -20,6 +21,12 @@ class ChatService(
     private val apiToken: String,
     val model: String
 ) {
+    companion object {
+        private const val VENICE_INPUT_RATE_PER_MILLION = 0.17
+        private const val VENICE_CACHED_INPUT_RATE_PER_MILLION = 0.03
+        private const val VENICE_OUTPUT_RATE_PER_MILLION = 0.35
+    }
+
     private val json = "application/json".toMediaType()
 
     private val logger = Logger.getLogger(ChatService::class.java.name)
@@ -29,7 +36,12 @@ class ChatService(
     private fun trunc(s: String?, max: Int = MAX_LOG_CHARS) =
         (s ?: "").let { if (it.length > max) it.take(max) + "…[truncated]" else it }
 
-    data class ChatResult(val text: String, val tokensUsed: Int, val rawUsage: JSONObject? = null)
+    data class ChatResult(
+        val text: String,
+        val tokensUsed: Int,
+        val totalTokens: Int,
+        val rawUsage: JSONObject? = null
+    )
 
     suspend fun generateReply(
         history: List<Pair<String, String>>,
@@ -86,6 +98,7 @@ class ChatService(
                 return@withContext ChatResult(
                     text = Strings.get("chat.connection.issue"),
                     tokensUsed = 0,
+                    totalTokens = 0,
                     rawUsage = null
                 )
             }
@@ -98,32 +111,58 @@ class ChatService(
                 ?.ifBlank { Strings.get("chat.response.placeholder") }
                 ?: Strings.get("chat.response.placeholder")
 
-            var tokens = 0
+            var totalTokens = 0
+            var billedTokens = 0
             var usageJson: JSONObject? = null
             jsonBody.optJSONObject("usage")?.let { usage ->
                 usageJson = usage
-                tokens = usage.optInt("total_tokens", -1)
-                if (tokens < 0) {
-                    tokens = usage.optInt("prompt_tokens", 0) + usage.optInt("completion_tokens", 0)
+                totalTokens = usage.optInt("total_tokens", -1)
+                if (totalTokens < 0) {
+                    totalTokens = usage.optInt("prompt_tokens", 0) + usage.optInt("completion_tokens", 0)
                 }
+                billedTokens = veniceEquivalentTokens(usage)
             }
-            if (tokens <= 0) {
+            if (billedTokens <= 0) {
                 val lastUserMsg = history.lastOrNull { it.first == "user" }?.second ?: ""
-                tokens = max(1, ceil(lastUserMsg.length / 4.0).toInt())
+                billedTokens = max(1, ceil(lastUserMsg.length / 4.0).toInt())
+            }
+            if (totalTokens <= 0) {
+                totalTokens = billedTokens
             }
 
             runCatching {
                 logger.info(
                     """
                     ChatService ✓ parsed | id=$reqId
-                    tokensUsed=$tokens
+                    billedTokens=$billedTokens
+                    totalTokens=$totalTokens
                     usage=${trunc(usageJson?.toString())}
                     replyPreview=${trunc(content)}
                     """.trimIndent()
                 )
             }
 
-            return@withContext ChatResult(content, tokens, usageJson)
+            return@withContext ChatResult(content, billedTokens, totalTokens, usageJson)
         }
+    }
+
+    private fun veniceEquivalentTokens(usage: JSONObject): Int {
+        val promptTokens = usage.optInt("prompt_tokens", 0).coerceAtLeast(0)
+        val completionTokens = usage.optInt("completion_tokens", 0).coerceAtLeast(0)
+        val cachedTokens = usage
+            .optJSONObject("prompt_tokens_details")
+            ?.optInt("cached_tokens", 0)
+            ?.coerceAtLeast(0)
+            ?: usage.optInt("cache_read_input_tokens", 0).coerceAtLeast(0)
+        val safeCachedTokens = cachedTokens.coerceAtMost(promptTokens)
+        val uncachedPromptTokens = (promptTokens - safeCachedTokens).coerceAtLeast(0)
+
+        val uncachedInputCost = uncachedPromptTokens * VENICE_INPUT_RATE_PER_MILLION
+        val cachedInputCost = safeCachedTokens * VENICE_CACHED_INPUT_RATE_PER_MILLION
+        val outputCost = completionTokens * VENICE_OUTPUT_RATE_PER_MILLION
+        val equivalentInputTokens =
+            (uncachedInputCost + cachedInputCost + outputCost) / VENICE_INPUT_RATE_PER_MILLION
+
+        return max(1, equivalentInputTokens.roundToInt())
     }
 }
