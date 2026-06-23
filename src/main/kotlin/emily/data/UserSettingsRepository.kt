@@ -20,13 +20,13 @@ class UserSettingsRepository(
         snapshot.getValue(String::class.java)?.trim()?.lowercase(Locale.ROOT)
     }
 
-    suspend fun setLanguage(userId: Long, language: String): Any? = withContext(Dispatchers.IO) {
+    suspend fun setLanguage(userId: Long, language: String) = withContext(Dispatchers.IO) {
         val normalized = normalizeLanguage(language)
         val payload = mapOf(
             "language" to normalized,
             "updatedAt" to System.currentTimeMillis()
         )
-        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload).awaitOrThrow()
     }
 
     suspend fun getAudiencePreference(userId: Long): String? = withContext(Dispatchers.IO) {
@@ -34,13 +34,13 @@ class UserSettingsRepository(
         AudiencePreference.normalize(snapshot.getValue(String::class.java))
     }
 
-    suspend fun setAudiencePreference(userId: Long, audience: String): Any? = withContext(Dispatchers.IO) {
+    suspend fun setAudiencePreference(userId: Long, audience: String) = withContext(Dispatchers.IO) {
         val normalized = AudiencePreference.normalize(audience) ?: AudiencePreference.FEMALE
         val payload = mapOf(
             audiencePreferenceKey to normalized,
             "updatedAt" to System.currentTimeMillis()
         )
-        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload).awaitOrThrow()
     }
 
     suspend fun resolveLanguage(userId: Long, telegramLanguageCode: String?): String = withContext(Dispatchers.IO) {
@@ -58,13 +58,13 @@ class UserSettingsRepository(
         snapshot.getValue(String::class.java)?.trim()?.lowercase(Locale.ROOT)
     }
 
-    suspend fun setSelectedCharacter(userId: Long, characterId: String): Any? = withContext(Dispatchers.IO) {
+    suspend fun setSelectedCharacter(userId: Long, characterId: String) = withContext(Dispatchers.IO) {
         val normalized = characterId.trim().lowercase(Locale.ROOT)
         val payload = mapOf(
             selectedCharacterKey to normalized,
             "updatedAt" to System.currentTimeMillis()
         )
-        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload).awaitOrThrow()
     }
 
     suspend fun getSelectedStory(userId: Long): String? = withContext(Dispatchers.IO) {
@@ -72,21 +72,21 @@ class UserSettingsRepository(
         snapshot.getValue(String::class.java)?.trim()?.lowercase(Locale.ROOT)
     }
 
-    suspend fun setSelectedStory(userId: Long, storyId: String): Any? = withContext(Dispatchers.IO) {
+    suspend fun setSelectedStory(userId: Long, storyId: String) = withContext(Dispatchers.IO) {
         val normalized = storyId.trim().lowercase(Locale.ROOT)
         val payload = mapOf(
             selectedStoryKey to normalized,
             "updatedAt" to System.currentTimeMillis()
         )
-        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload).awaitOrThrow()
     }
 
-    suspend fun clearSelectedStory(userId: Long): Any? = withContext(Dispatchers.IO) {
+    suspend fun clearSelectedStory(userId: Long) = withContext(Dispatchers.IO) {
         val payload = mapOf<String, Any?>(
             selectedStoryKey to null,
             "updatedAt" to System.currentTimeMillis()
         )
-        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload).awaitOrThrow()
     }
 
     suspend fun getActiveDialogId(userId: Long): String? = withContext(Dispatchers.IO) {
@@ -94,20 +94,20 @@ class UserSettingsRepository(
         snapshot.getValue(String::class.java)?.trim()?.takeIf { it.isNotBlank() }
     }
 
-    suspend fun setActiveDialogId(userId: Long, dialogId: String): Any? = withContext(Dispatchers.IO) {
+    suspend fun setActiveDialogId(userId: Long, dialogId: String) = withContext(Dispatchers.IO) {
         val payload = mapOf(
             activeDialogKey to dialogId.trim(),
             "updatedAt" to System.currentTimeMillis()
         )
-        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload).awaitOrThrow()
     }
 
-    suspend fun clearActiveDialogId(userId: Long): Any? = withContext(Dispatchers.IO) {
+    suspend fun clearActiveDialogId(userId: Long) = withContext(Dispatchers.IO) {
         val payload = mapOf<String, Any?>(
             activeDialogKey to null,
             "updatedAt" to System.currentTimeMillis()
         )
-        settingsRef.child(userId.toString()).updateChildrenAsync(payload)
+        settingsRef.child(userId.toString()).updateChildrenAsync(payload).awaitOrThrow()
     }
 
     private fun detectDefaultLanguage(telegramLanguageCode: String?): String {

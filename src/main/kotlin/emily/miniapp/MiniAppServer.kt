@@ -169,8 +169,9 @@ class MiniAppServer(
                     .put("dayGifUsed", balance.dayGifUsed)
                 )
                 .put("characters", JSONArray(characters.map { it.toMiniAppJson() }))
+                .put("charactersByAudience", charactersByAudienceJson())
                 .put("stories", storiesJson(user.id, selectedCharacter.id))
-                .put("storiesByCharacter", storiesByCharacterJson(user.id, characters))
+                .put("storiesByCharacter", storiesByCharacterJson(user.id, BotCatalog.characters))
                 .put("dialogs", JSONArray(dialogs.map { it.toMiniAppJson() }))
                 .put("customStory", customStoryAccessJson(customStoryAccess))
                 .put("payments", JSONObject()
@@ -1024,6 +1025,16 @@ class MiniAppServer(
         val customStories = customStoryRepository.listStories(userId, characterId).map { it.toMiniAppJson() }
         return JSONArray(builtInStories + customStories)
     }
+
+    private fun charactersByAudienceJson(): JSONObject = JSONObject()
+        .put(
+            AudiencePreference.FEMALE,
+            JSONArray(BotCatalog.charactersForAudience(AudiencePreference.FEMALE).map { it.toMiniAppJson() })
+        )
+        .put(
+            AudiencePreference.MALE,
+            JSONArray(BotCatalog.charactersForAudience(AudiencePreference.MALE).map { it.toMiniAppJson() })
+        )
 
     private suspend fun storiesByCharacterJson(userId: Long, characters: List<CharacterProfile>): JSONObject {
         val result = JSONObject()

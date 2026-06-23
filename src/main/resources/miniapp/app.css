@@ -668,6 +668,75 @@ p {
   opacity: 0.82;
 }
 
+.story-card-skeleton {
+  overflow: hidden;
+  pointer-events: none;
+  cursor: default;
+  background:
+    linear-gradient(135deg, rgba(24, 24, 30, 0.94), rgba(14, 14, 18, 0.98));
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.story-card-skeleton::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(
+    105deg,
+    transparent 24%,
+    rgba(255, 255, 255, 0.1) 42%,
+    transparent 60%
+  );
+  transform: translateX(-120%);
+  animation: shimmer-sweep 1.35s ease-in-out infinite;
+}
+
+.story-card-skeleton-copy {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 10px;
+}
+
+.story-card-skeleton-copy span {
+  display: block;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.story-card-skeleton-copy span:first-child {
+  width: min(68%, 220px);
+  height: 16px;
+}
+
+.story-card-skeleton-copy span:nth-child(2) {
+  width: min(92%, 280px);
+  height: 12px;
+}
+
+.story-card-skeleton-copy span:nth-child(3) {
+  width: min(54%, 160px);
+  height: 12px;
+}
+
+.story-card-skeleton-arrow {
+  position: relative;
+  z-index: 2;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .story-card-skeleton::before {
+    animation: none;
+    transform: none;
+    opacity: 0.35;
+  }
+}
+
 @media (hover: hover) {
   .story-card:hover {
     background: rgba(28, 27, 34, 0.94);

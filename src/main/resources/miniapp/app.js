@@ -23,6 +23,8 @@ const state = {
   lastNonSettingsScreen: "characters",
   finishTimer: null,
   pendingCharacterRequestId: 0,
+  pendingAudienceSwitchRequestId: 0,
+  pendingAudienceTarget: null,
   pendingStorySelectionKey: null,
   storiesByCharacter: {},
 };
@@ -166,17 +168,31 @@ async function loadBootstrap(nextScreen = null) {
     cacheBootstrap(data);
     state.bootstrap = data;
     syncStoriesByCharacter(data.storiesByCharacter);
-    const settings = data.settings || {};
-    state.audiencePreference = settings.audiencePreference || null;
+
+    if (state.pendingAudienceTarget) {
+      const pendingAudience = state.pendingAudienceTarget;
+      const localCharacters = charactersForAudience(pendingAudience);
+      applyAudienceSwitch(pendingAudience, {
+        characters: localCharacters || data.characters || [],
+        selectedCharacter: firstId(localCharacters || data.characters || []),
+        selectedStory: null,
+      });
+    } else {
+      reconcileAudienceState({ persist: true });
+    }
+
+    const settings = state.bootstrap.settings || {};
+    state.audiencePreference = resolveAudiencePreference();
     state.selectedCharacterId =
       settings.selectedCharacter ||
-      firstId(data.characters) ||
+      firstId(state.bootstrap.characters) ||
       null;
 
     renderStatus();
     renderCharacters();
     renderDialogs();
     renderSettings();
+    refreshStoriesScreenIfPending();
     showScreen(state.audiencePreference ? targetScreen : "preference");
     setLoading(false);
     prefetchGalleries(data.characters);
@@ -198,11 +214,12 @@ function hydrateCachedBootstrap() {
 
   state.bootstrap = cached;
   syncStoriesByCharacter(cached.storiesByCharacter);
-  const settings = cached.settings || {};
-  state.audiencePreference = settings.audiencePreference || null;
+  reconcileAudienceState({ persist: true });
+  const settings = state.bootstrap.settings || {};
+  state.audiencePreference = resolveAudiencePreference();
   state.selectedCharacterId =
     settings.selectedCharacter ||
-    firstId(cached.characters) ||
+    firstId(state.bootstrap.characters) ||
     null;
 
   renderStatus();
@@ -401,7 +418,68 @@ function firstId(items) {
 }
 
 function hasAudiencePreference() {
-  return Boolean((state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference) || state.audiencePreference);
+  return Boolean(resolveAudiencePreference());
+}
+
+function inferAudienceFromCharacters(characters) {
+  if (!Array.isArray(characters) || characters.length === 0) return null;
+  const audience = characters[0] && characters[0].audience;
+  if (!audience) return null;
+  return characters.every((item) => item.audience === audience) ? audience : null;
+}
+
+function resolveAudiencePreference() {
+  if (state.pendingAudienceTarget) return state.pendingAudienceTarget;
+
+  const settingsAudience =
+    (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference) ||
+    state.audiencePreference;
+  const inferred = inferAudienceFromCharacters(state.bootstrap && state.bootstrap.characters);
+
+  if (inferred && settingsAudience && inferred !== settingsAudience) {
+    return inferred;
+  }
+
+  return settingsAudience || inferred || null;
+}
+
+function syncAudiencePreference(audience) {
+  if (!audience || !state.bootstrap) return;
+  state.audiencePreference = audience;
+  if (!state.bootstrap.settings) state.bootstrap.settings = {};
+  state.bootstrap.settings.audiencePreference = audience;
+}
+
+function reconcileAudienceState(options = {}) {
+  if (!state.bootstrap) return null;
+
+  const inferred = inferAudienceFromCharacters(state.bootstrap.characters);
+  let audience = resolveAudiencePreference();
+
+  if (inferred && audience && inferred !== audience && !state.pendingAudienceTarget) {
+    audience = inferred;
+  }
+
+  if (!audience) return null;
+
+  syncAudiencePreference(audience);
+
+  const expectedCharacters = charactersForAudience(audience);
+  const currentAudience = inferAudienceFromCharacters(state.bootstrap.characters);
+  if (expectedCharacters && currentAudience !== audience) {
+    state.bootstrap.characters = expectedCharacters;
+    const selectedId =
+      (state.bootstrap.settings && state.bootstrap.settings.selectedCharacter) ||
+      state.selectedCharacterId;
+    const stillValid = expectedCharacters.some((item) => item.id === selectedId);
+    state.selectedCharacterId = stillValid ? selectedId : firstId(expectedCharacters);
+    if (state.bootstrap.settings) {
+      state.bootstrap.settings.selectedCharacter = state.selectedCharacterId;
+    }
+  }
+
+  if (options.persist) cacheBootstrap(state.bootstrap);
+  return audience;
 }
 
 function renderStatus() {
@@ -555,35 +633,131 @@ function preloadGalleryImage(item) {
   });
 }
 
+function charactersForAudience(audience) {
+  const byAudience = state.bootstrap && state.bootstrap.charactersByAudience;
+  if (byAudience && Array.isArray(byAudience[audience])) {
+    return byAudience[audience];
+  }
+
+  const currentAudience =
+    (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference) ||
+    state.audiencePreference;
+  if (currentAudience === audience && state.bootstrap && Array.isArray(state.bootstrap.characters)) {
+    return state.bootstrap.characters;
+  }
+
+  return null;
+}
+
+function snapshotAudienceState() {
+  return {
+    audiencePreference: state.audiencePreference,
+    selectedCharacterId: state.selectedCharacterId,
+    settings: state.bootstrap && state.bootstrap.settings ? { ...state.bootstrap.settings } : null,
+    characters: state.bootstrap && state.bootstrap.characters ? state.bootstrap.characters.slice() : [],
+    stories: state.bootstrap && state.bootstrap.stories ? state.bootstrap.stories.slice() : [],
+  };
+}
+
+function restoreAudienceSnapshot(snapshot) {
+  if (!snapshot || !state.bootstrap) return;
+
+  state.audiencePreference = snapshot.audiencePreference;
+  state.selectedCharacterId = snapshot.selectedCharacterId;
+  state.bootstrap.settings = snapshot.settings || state.bootstrap.settings;
+  state.bootstrap.characters = snapshot.characters;
+  state.bootstrap.stories = snapshot.stories;
+  cacheBootstrap(state.bootstrap);
+  renderCharacters();
+  renderSelectedCharacter();
+  renderStories();
+  renderSettings();
+}
+
+function applyAudienceSwitch(audience, payload = {}) {
+  if (!state.bootstrap) return;
+  if (!state.bootstrap.settings) state.bootstrap.settings = {};
+
+  const characters = payload.characters || charactersForAudience(audience) || [];
+  const selectedCharacter = payload.selectedCharacter || firstId(characters);
+  const stories =
+    payload.stories ||
+    (selectedCharacter ? storiesForCharacterFromCache(selectedCharacter) : null) ||
+    [];
+
+  state.audiencePreference = audience;
+  state.bootstrap.settings.audiencePreference = audience;
+  state.bootstrap.settings.selectedCharacter = selectedCharacter;
+  state.bootstrap.settings.selectedStory =
+    payload.selectedStory !== undefined ? payload.selectedStory : null;
+  state.bootstrap.characters = characters;
+  state.bootstrap.stories = stories;
+  if (payload.storiesByCharacter) syncStoriesByCharacter(payload.storiesByCharacter);
+  state.selectedCharacterId = selectedCharacter;
+  cacheBootstrap(state.bootstrap);
+
+  renderCharacters();
+  renderSelectedCharacter();
+  renderStories();
+  renderSettings();
+}
+
 async function selectAudience(audience, options = {}) {
   if (!audience) return;
+  if (resolveAudiencePreference() === audience) return;
 
-  setLoading(true);
+  state.pendingAudienceTarget = audience;
+  const requestId = ++state.pendingAudienceSwitchRequestId;
+  const previousSnapshot = snapshotAudienceState();
+  const localCharacters = charactersForAudience(audience);
+  const targetScreen = options.stayOnSettings ? "settings" : "characters";
+
   try {
+    if (localCharacters) {
+      applyAudienceSwitch(audience, {
+        characters: localCharacters,
+        selectedCharacter: firstId(localCharacters),
+        selectedStory: null,
+      });
+      showScreen(targetScreen);
+      prefetchGalleries(localCharacters);
+    } else {
+      syncAudiencePreference(audience);
+      renderAudienceSettings();
+    }
+
     const data = await api("/miniapp/api/audience", {
       method: "POST",
       body: { audience },
     });
+    if (requestId !== state.pendingAudienceSwitchRequestId) return;
 
-    state.audiencePreference = data.audiencePreference;
-    state.bootstrap.settings.audiencePreference = data.audiencePreference;
-    state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
-    state.bootstrap.settings.selectedStory = null;
-    state.bootstrap.characters = data.characters || [];
-    state.bootstrap.stories = data.stories || [];
-    syncStoriesByCharacter(data.storiesByCharacter);
-    state.selectedCharacterId = data.selectedCharacter || firstId(state.bootstrap.characters) || null;
-    cacheBootstrap(state.bootstrap);
-
-    renderCharacters();
-    renderSelectedCharacter();
-    renderStories();
-    renderSettings();
-    showScreen(options.stayOnSettings ? "settings" : "characters");
+    applyAudienceSwitch(data.audiencePreference, data);
+    if (state.currentScreen === targetScreen) {
+      showScreen(targetScreen);
+    }
+    prefetchGalleries(data.characters || []);
   } catch (error) {
+    if (requestId !== state.pendingAudienceSwitchRequestId) return;
+
+    if (localCharacters) {
+      restoreAudienceSnapshot(previousSnapshot);
+      if (state.currentScreen === targetScreen) {
+        showScreen(targetScreen);
+      }
+    } else {
+      state.audiencePreference = previousSnapshot.audiencePreference;
+      if (state.bootstrap && previousSnapshot.settings) {
+        state.bootstrap.settings = { ...previousSnapshot.settings };
+      }
+      renderAudienceSettings();
+    }
+
     showToast(error.message || "Не удалось сменить выбор");
   } finally {
-    setLoading(false);
+    if (requestId === state.pendingAudienceSwitchRequestId) {
+      state.pendingAudienceTarget = null;
+    }
   }
 }
 
@@ -687,18 +861,73 @@ function handleGalleryViewerError() {
 
 function selectCharacter(characterId) {
   const character = (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === characterId);
-  const cachedStories = storiesForCharacterFromCache(characterId);
-  if (!character || !cachedStories) {
-    showToast("Не удалось открыть истории. Обнови Mini App.");
+  if (!character) {
+    showToast("Персонаж не найден");
     return;
   }
 
   state.previewCharacterId = characterId;
-  state.bootstrap.stories = cachedStories;
-
   renderSelectedCharacter();
-  renderStories();
   showScreen("stories");
+
+  const cachedStories = storiesForCharacterFromCache(characterId);
+  if (cachedStories) {
+    state.bootstrap.stories = cachedStories;
+    renderStories();
+    return;
+  }
+
+  renderStoriesPending();
+  loadStoriesForCharacter(characterId);
+}
+
+function refreshStoriesScreenIfPending() {
+  if (state.currentScreen !== "stories" || !state.previewCharacterId || !state.bootstrap) return;
+
+  const stories = storiesForCharacterFromCache(state.previewCharacterId);
+  if (!stories) return;
+
+  state.bootstrap.stories = stories;
+  renderStories();
+}
+
+async function loadStoriesForCharacter(characterId) {
+  const requestId = ++state.pendingCharacterRequestId;
+
+  try {
+    const stories = await fetchStoriesForCharacter(characterId);
+    if (requestId !== state.pendingCharacterRequestId) return;
+    if (state.currentScreen !== "stories" || state.previewCharacterId !== characterId) return;
+
+    state.bootstrap.stories = stories;
+    renderStories();
+  } catch (error) {
+    if (requestId !== state.pendingCharacterRequestId) return;
+    if (state.currentScreen !== "stories" || state.previewCharacterId !== characterId) return;
+
+    const character = (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === characterId);
+    renderStoriesLoadError(character, characterId);
+    showToast(error.message || "Не удалось загрузить истории");
+  }
+}
+
+async function fetchStoriesForCharacter(characterId) {
+  const data = await api(`/miniapp/api/stories?characterId=${encodeURIComponent(characterId)}`);
+  const stories = Array.isArray(data.stories) ? data.stories : [];
+  cacheStoriesForCharacter(characterId, stories);
+  return stories;
+}
+
+function cacheStoriesForCharacter(characterId, stories) {
+  setCachedStories(characterId, stories);
+  if (!state.bootstrap) return;
+
+  if (!state.bootstrap.storiesByCharacter || typeof state.bootstrap.storiesByCharacter !== "object") {
+    state.bootstrap.storiesByCharacter = { ...state.storiesByCharacter };
+  } else {
+    state.bootstrap.storiesByCharacter[characterId] = [...stories];
+  }
+  cacheBootstrap(state.bootstrap);
 }
 
 function renderSelectedCharacter() {
@@ -732,16 +961,54 @@ function renderSelectedCharacter() {
   els.selectedCharacterPanel.append(image, copy);
 }
 
-function renderStoriesPending(character) {
+function renderStoriesPending() {
   els.storiesList.replaceChildren();
 
-  const loading = document.createElement("div");
-  loading.className = "empty-dialogs";
-  loading.textContent = character
-    ? `Открываю истории для ${character.name}...`
-    : "Открываю истории...";
+  for (let index = 0; index < 3; index += 1) {
+    const card = document.createElement("div");
+    card.className = "story-card story-card-skeleton";
+    card.setAttribute("aria-hidden", "true");
 
-  els.storiesList.append(loading);
+    const copy = document.createElement("span");
+    copy.className = "story-card-copy story-card-skeleton-copy";
+    copy.append(
+      document.createElement("span"),
+      document.createElement("span"),
+      document.createElement("span")
+    );
+
+    const arrow = document.createElement("span");
+    arrow.className = "story-card-skeleton-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+
+    card.append(copy, arrow);
+    els.storiesList.append(card);
+  }
+}
+
+function renderStoriesLoadError(character, characterId) {
+  els.storiesList.replaceChildren();
+
+  const message = document.createElement("div");
+  message.className = "empty-dialogs";
+  message.textContent = character
+    ? `Не удалось загрузить истории для ${character.name}.`
+    : "Не удалось загрузить истории.";
+
+  const retryButton = document.createElement("button");
+  retryButton.type = "button";
+  retryButton.className = "dialog-choice-continue";
+  retryButton.textContent = "Повторить";
+  retryButton.addEventListener("click", () => {
+    renderStoriesPending();
+    loadStoriesForCharacter(characterId);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "dialog-choice-actions";
+  actions.append(retryButton);
+
+  els.storiesList.append(message, actions);
 }
 
 function syncStoriesByCharacter(storiesByCharacter) {
@@ -1315,7 +1582,7 @@ function renderSettings() {
 
 function renderAudienceSettings() {
   if (!els.audienceSettings) return;
-  const selected = (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference) || state.audiencePreference;
+  const selected = resolveAudiencePreference();
   els.audienceSettings.replaceChildren();
 
   [
