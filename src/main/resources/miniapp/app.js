@@ -1222,7 +1222,10 @@ function openCustomStoryEditor(existingStory) {
       </label>
       <label>
         Сцена и правила истории
-        <textarea name="setup" maxlength="900" rows="5" placeholder="Где вы, что происходит, какая роль у персонажа..." required>${escapeHtml(isEditing ? (existingStory.setup || '') : '')}</textarea>
+        <div class="setup-wrapper">
+          <textarea name="setup" maxlength="900" rows="5" placeholder="Где вы, что происходит, какая роль у персонажа..." required>${escapeHtml(isEditing ? (existingStory.setup || '') : '')}</textarea>
+          <button type="button" class="setup-ai-btn" title="Улучшить с помощью ИИ" disabled>✨</button>
+        </div>
       </label>
       <label>
         Первое сообщение персонажа
@@ -1254,6 +1257,39 @@ function openCustomStoryEditor(existingStory) {
     }
     close();
   });
+
+  const setupTextarea = overlay.querySelector("textarea[name=\"setup\"]");
+  const aiBtn = overlay.querySelector(".setup-ai-btn");
+  if (setupTextarea && aiBtn) {
+    const MIN_AI_CHARS = 20;
+    const updateAiBtn = () => {
+      aiBtn.disabled = setupTextarea.value.trim().length < MIN_AI_CHARS || aiBtn.classList.contains("loading");
+    };
+    setupTextarea.addEventListener("input", updateAiBtn);
+    aiBtn.addEventListener("click", async () => {
+      if (aiBtn.disabled) return;
+      aiBtn.classList.add("loading");
+      aiBtn.disabled = true;
+      aiBtn.title = "Улучшаю...";
+      try {
+        const data = await api("/miniapp/api/expand-setup", {
+          method: "POST",
+          body: { text: setupTextarea.value },
+        });
+        if (data.expanded) {
+          setupTextarea.value = data.expanded;
+          setupTextarea.dispatchEvent(new Event("input"));
+        }
+      } catch (error) {
+        showToast(error.message || "Не удалось улучшить текст");
+      } finally {
+        aiBtn.classList.remove("loading");
+        aiBtn.title = "Улучшить с помощью ИИ";
+        updateAiBtn();
+      }
+    });
+    updateAiBtn();
+  }
 
   document.body.append(overlay);
   const firstInput = overlay.querySelector("input");

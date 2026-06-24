@@ -1237,7 +1237,7 @@ function openCustomStoryEditor(existingStory) {
     var isEditing = Boolean(existingStory);
     var overlay = document.createElement("div");
     overlay.className = "custom-story-modal";
-    overlay.innerHTML = "\n    <form class=\"custom-story-form\">\n      <button class=\"custom-story-close\" type=\"button\" aria-label=\"\u0417\u0430\u043A\u0440\u044B\u0442\u044C\">\u00D7</button>\n      <p class=\"custom-story-kicker\">\u0421\u0432\u043E\u044F \u0438\u0441\u0442\u043E\u0440\u0438\u044F \u0434\u043B\u044F ".concat(escapeHtml(character.name), "</p>\n      <h2>").concat(isEditing ? "Редактировать сценарий" : "Создай сценарий", "</h2>\n      <label>\n        \u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435\n        <input name=\"title\" maxlength=\"60\" placeholder=\"\u041D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \u041D\u043E\u0447\u043D\u0430\u044F \u043F\u043E\u0435\u0437\u0434\u043A\u0430\" required>\n      </label>\n      <label>\n        \u041A\u043E\u0440\u043E\u0442\u043A\u043E\u0435 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435\n        <input name=\"description\" maxlength=\"160\" placeholder=\"\u0427\u0442\u043E \u0443\u0432\u0438\u0434\u0438\u0442 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0430 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0435\">\n      </label>\n      <label>\n        \u0421\u0446\u0435\u043D\u0430 \u0438 \u043F\u0440\u0430\u0432\u0438\u043B\u0430 \u0438\u0441\u0442\u043E\u0440\u0438\u0438\n        <textarea name=\"setup\" maxlength=\"900\" rows=\"5\" placeholder=\"\u0413\u0434\u0435 \u0432\u044B, \u0447\u0442\u043E \u043F\u0440\u043E\u0438\u0441\u0445\u043E\u0434\u0438\u0442, \u043A\u0430\u043A\u0430\u044F \u0440\u043E\u043B\u044C \u0443 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430...\" required></textarea>\n      </label>\n      <label>\n        \u041F\u0435\u0440\u0432\u043E\u0435 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u0435 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430\n        <textarea name=\"openingLine\" maxlength=\"240\" rows=\"3\" placeholder=\"\u0424\u0440\u0430\u0437\u0430, \u0441 \u043A\u043E\u0442\u043E\u0440\u043E\u0439 \u043D\u0430\u0447\u043D\u0435\u0442\u0441\u044F \u0447\u0430\u0442\" required></textarea>\n      </label>\n      <button class=\"primary-button\" type=\"submit\">").concat(isEditing ? "Сохранить изменения" : "Сохранить историю", "</button>\n    </form>\n  ");
+    overlay.innerHTML = "\n    <form class=\"custom-story-form\">\n      <button class=\"custom-story-close\" type=\"button\" aria-label=\"\u0417\u0430\u043A\u0440\u044B\u0442\u044C\">\u00D7</button>\n      <p class=\"custom-story-kicker\">\u0421\u0432\u043E\u044F \u0438\u0441\u0442\u043E\u0440\u0438\u044F \u0434\u043B\u044F ".concat(escapeHtml(character.name), "</p>\n      <h2>").concat(isEditing ? "Редактировать сценарий" : "Создай сценарий", "</h2>\n      <label>\n        \u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435\n        <input name=\"title\" maxlength=\"60\" placeholder=\"\u041D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \u041D\u043E\u0447\u043D\u0430\u044F \u043F\u043E\u0435\u0437\u0434\u043A\u0430\" required>\n      </label>\n      <label>\n        \u041A\u043E\u0440\u043E\u0442\u043A\u043E\u0435 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435\n        <input name=\"description\" maxlength=\"160\" placeholder=\"\u0427\u0442\u043E \u0443\u0432\u0438\u0434\u0438\u0442 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0430 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0435\">\n      </label>\n      <label>\n        \u0421\u0446\u0435\u043D\u0430 \u0438 \u043F\u0440\u0430\u0432\u0438\u043B\u0430 \u0438\u0441\u0442\u043E\u0440\u0438\u0438\n        <div class=\"setup-wrapper\">\n          <textarea name=\"setup\" maxlength=\"900\" rows=\"5\" placeholder=\"\u0413\u0434\u0435 \u0432\u044B, \u0447\u0442\u043E \u043F\u0440\u043E\u0438\u0441\u0445\u043E\u0434\u0438\u0442, \u043A\u0430\u043A\u0430\u044F \u0440\u043E\u043B\u044C \u0443 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430...\" required></textarea>\n          <button type=\"button\" class=\"setup-ai-btn\" title=\"\u0423\u043B\u0443\u0447\u0448\u0438\u0442\u044C \u0441 \u043F\u043E\u043C\u043E\u0449\u044C\u044E \u0418\u0418\" disabled>\u2728</button>\n        </div>\n      </label>\n      <label>\n        \u041F\u0435\u0440\u0432\u043E\u0435 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u0435 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430\n        <textarea name=\"openingLine\" maxlength=\"240\" rows=\"3\" placeholder=\"\u0424\u0440\u0430\u0437\u0430, \u0441 \u043A\u043E\u0442\u043E\u0440\u043E\u0439 \u043D\u0430\u0447\u043D\u0435\u0442\u0441\u044F \u0447\u0430\u0442\" required></textarea>\n      </label>\n      <button class=\"primary-button\" type=\"submit\">").concat(isEditing ? "Сохранить изменения" : "Сохранить историю", "</button>\n    </form>\n  ");
     if (isEditing) {
         var titleInput = overlay.querySelector("input[name=\"title\"]");
         if (titleInput) titleInput.value = existingStory.title;
@@ -1283,6 +1283,52 @@ function openCustomStoryEditor(existingStory) {
             }
         });
     }); });
+    var setupTextarea = overlay.querySelector("textarea[name=\"setup\"]");
+    var aiBtn = overlay.querySelector(".setup-ai-btn");
+    if (setupTextarea && aiBtn) {
+        var MIN_AI_CHARS = 20;
+        var updateAiBtn = function () {
+            aiBtn.disabled = setupTextarea.value.trim().length < MIN_AI_CHARS || aiBtn.classList.contains("loading");
+        };
+        setupTextarea.addEventListener("input", updateAiBtn);
+        aiBtn.addEventListener("click", function () { return __awaiter(_this, void 0, void 0, function () {
+            var data, error_9;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0:
+                        if (aiBtn.disabled) return [2 /*return*/];
+                        aiBtn.classList.add("loading");
+                        aiBtn.disabled = true;
+                        aiBtn.title = "\u0423\u043B\u0443\u0447\u0448\u0430\u044E...";
+                        _a.label = 1;
+                    case 1:
+                        _a.trys.push([1, 3, 4, 5]);
+                        return [4 /*yield*/, api("/miniapp/api/expand-setup", {
+                                method: "POST",
+                                body: { text: setupTextarea.value },
+                            })];
+                    case 2:
+                        data = _a.sent();
+                        if (data.expanded) {
+                            setupTextarea.value = data.expanded;
+                            setupTextarea.dispatchEvent(new Event("input"));
+                        }
+                        return [3 /*break*/, 5];
+                    case 3:
+                        error_9 = _a.sent();
+                        showToast(error_9.message || "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0443\u043B\u0443\u0447\u0448\u0438\u0442\u044C \u0442\u0435\u043A\u0441\u0442");
+                        return [3 /*break*/, 5];
+                    case 4:
+                        aiBtn.classList.remove("loading");
+                        aiBtn.title = "\u0423\u043B\u0443\u0447\u0448\u0438\u0442\u044C \u0441 \u043F\u043E\u043C\u043E\u0449\u044C\u044E \u0418\u0418";
+                        updateAiBtn();
+                        return [7 /*endfinally*/];
+                    case 5: return [2 /*return*/];
+                }
+            });
+        }); });
+        updateAiBtn();
+    }
     document.body.append(overlay);
     var firstInput = overlay.querySelector("input");
     if (firstInput)

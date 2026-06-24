@@ -1193,6 +1193,63 @@ p {
   display: none;
 }
 
+.setup-wrapper {
+  position: relative;
+}
+
+.setup-wrapper textarea {
+  padding-right: 44px;
+}
+
+.setup-ai-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: #64d4cb;
+  background: rgba(100, 212, 203, 0.12);
+  border: 1px solid rgba(100, 212, 203, 0.3);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+  transition: background 0.15s ease, opacity 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.setup-ai-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.setup-ai-btn:not(:disabled):hover,
+.setup-ai-btn:not(:disabled):focus-visible {
+  background: rgba(100, 212, 203, 0.25);
+}
+
+.setup-ai-btn.loading {
+  pointer-events: none;
+  animation: ai-btn-pulse 0.9s ease-in-out infinite;
+}
+
+.setup-ai-btn.loading::before {
+  content: "⋯";
+  font-size: 17px;
+}
+
+.setup-ai-btn.loading {
+  font-size: 0;
+}
+
+@keyframes ai-btn-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .dialog-row {
   position: relative;
   display: grid;

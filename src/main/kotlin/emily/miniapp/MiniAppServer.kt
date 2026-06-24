@@ -23,6 +23,7 @@ import emily.domain.BotCatalog
 import emily.domain.CharacterProfile
 import emily.domain.StoryScenario
 import emily.resources.Strings
+import emily.service.ChatService
 import emily.service.ConversationMemory
 import java.net.InetSocketAddress
 import java.net.HttpURLConnection
@@ -58,7 +59,8 @@ class MiniAppServer(
     private val customStoryRepository: CustomStoryRepository,
     private val userSettingsRepository: UserSettingsRepository,
     private val referralRepository: ReferralRepository,
-    private val memory: ConversationMemory
+    private val memory: ConversationMemory,
+    private val chatService: ChatService
 ) {
     private var server: HttpServer? = null
     private val verifier = TelegramInitDataVerifier(config.botToken)
@@ -121,6 +123,7 @@ class MiniAppServer(
             path == "/miniapp/api/restore-dialog" && exchange.requestMethod == "POST" -> handleRestoreDialog(exchange)
             path == "/miniapp/api/create-invoice" && exchange.requestMethod == "POST" -> handleCreateInvoice(exchange)
             path == "/miniapp/api/settings" && exchange.requestMethod == "POST" -> handleSettings(exchange)
+            path == "/miniapp/api/expand-setup" && exchange.requestMethod == "POST" -> handleExpandSetup(exchange)
             path == "/miniapp/health" -> sendJson(exchange, 200, JSONObject().put("ok", true))
             else -> sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Not found"))
         }
@@ -734,6 +737,38 @@ class MiniAppServer(
             userSettingsRepository.setLanguage(user.id, language)
         }
         sendJson(exchange, 200, JSONObject().put("ok", true))
+    }
+
+    private fun handleExpandSetup(exchange: HttpExchange) = runBlocking {
+        val user = authenticate(exchange) ?: return@runBlocking
+        val body = readJson(exchange)
+        val text = body.optString("text", "").trim()
+        if (text.length < 20) {
+            return@runBlocking sendJson(
+                exchange, 400,
+                JSONObject().put("ok", false).put("error", "Слишком короткий текст. Нужно хотя бы 20 символов.")
+            )
+        }
+
+        val systemPrompt = "Ты — помощник по созданию сценариев для ролевых игр. " +
+            "Расширь и улучши следующее описание сцены. Сделай его более подробным, атмосферным и " +
+            "живым. Добавь детали окружения, чувства персонажа, контекст. Сохрани основную идею и " +
+            "первое лицо (ты — главный герой). Не добавляй диалоги. Ответ дай на русском языке."
+
+        val result = chatService.generateReply(
+            history = listOf(
+                "system" to systemPrompt,
+                "user" to text
+            )
+        )
+
+        sendJson(
+            exchange = exchange,
+            status = 200,
+            body = JSONObject()
+                .put("ok", true)
+                .put("expanded", result.text)
+        )
     }
 
     private fun resetMemory(userId: Long, character: CharacterProfile, story: StoryScenario?) {

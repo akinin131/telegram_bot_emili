@@ -127,7 +127,8 @@ fun main() {
                 customStoryRepository = customStoryRepository,
                 userSettingsRepository = userSettingsRepository,
                 referralRepository = referralRepository,
-                memory = memory
+                memory = memory,
+                chatService = chatService
             ).start()
         }.onFailure { error ->
             println("MiniAppServer: failed to start: ${error.message}")

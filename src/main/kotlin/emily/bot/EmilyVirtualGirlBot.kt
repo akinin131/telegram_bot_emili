@@ -423,7 +423,9 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
     }
 
     private suspend fun activeStory(chatId: Long): StoryScenario? {
-        return storyById(userSettingsRepository.getSelectedStory(chatId))
+        val storyId = userSettingsRepository.getSelectedStory(chatId) ?: return null
+        return BotCatalog.storyById(storyId)
+            ?: customStoryRepository.getStory(chatId, storyId)?.toScenario()
     }
 
     private fun composeSystemPrompt(character: CharacterProfile, story: StoryScenario?): String {
