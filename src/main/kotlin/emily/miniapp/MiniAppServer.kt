@@ -114,6 +114,8 @@ class MiniAppServer(
             path == "/miniapp/api/audience" && exchange.requestMethod == "POST" -> handleAudiencePreference(exchange)
             path == "/miniapp/api/select-character" && exchange.requestMethod == "POST" -> handleSelectCharacter(exchange)
             path == "/miniapp/api/custom-story" && exchange.requestMethod == "POST" -> handleCreateCustomStory(exchange)
+            path == "/miniapp/api/custom-story" && exchange.requestMethod == "PUT" -> handleUpdateCustomStory(exchange)
+            path == "/miniapp/api/delete-custom-story" && exchange.requestMethod == "POST" -> handleDeleteCustomStory(exchange)
             path == "/miniapp/api/select-story" && exchange.requestMethod == "POST" -> handleSelectStory(exchange)
             path == "/miniapp/api/skip-story" && exchange.requestMethod == "POST" -> handleSkipStory(exchange)
             path == "/miniapp/api/restore-dialog" && exchange.requestMethod == "POST" -> handleRestoreDialog(exchange)
@@ -126,6 +128,7 @@ class MiniAppServer(
 
     private fun handleBootstrap(exchange: HttpExchange) = runBlocking {
         val user = authenticate(exchange) ?: return@runBlocking
+        println("MiniAppServer: bootstrap user=${user.id}")
         referralRepository.ensureUserProfile(user.id)
 
         val balance = balanceRepository.get(user.id)
@@ -134,12 +137,12 @@ class MiniAppServer(
         val activeDialogId = userSettingsRepository.getActiveDialogId(user.id)
         val language = userSettingsRepository.getLanguage(user.id)
         val audiencePreference = userSettingsRepository.getAudiencePreference(user.id)
-        val characters = BotCatalog.charactersForAudience(audiencePreference)
+        println("MiniAppServer: bootstrap selectedCharacterId=$selectedCharacterId audiencePreference=$audiencePreference selectedStoryId=$selectedStoryId")
         val turns = chatHistoryRepository.getLast(user.id, limit = 20)
         val dialogs = dialogRepository.listDialogs(user.id, limit = 50)
         val selectedCharacter = BotCatalog.characterById(selectedCharacterId)
-            ?.takeIf { it.audience == (audiencePreference ?: it.audience) }
             ?: BotCatalog.defaultCharacterForAudience(audiencePreference)
+        println("MiniAppServer: bootstrap resolved selectedCharacter=${selectedCharacter.id}")
         val customStoryAccess = customStoryRepository.getAccess(user.id)
 
         sendJson(
@@ -168,7 +171,7 @@ class MiniAppServer(
                     .put("dayImageUsed", balance.dayImageUsed)
                     .put("dayGifUsed", balance.dayGifUsed)
                 )
-                .put("characters", JSONArray(characters.map { it.toMiniAppJson() }))
+                .put("characters", JSONArray(BotCatalog.characters.map { it.toMiniAppJson() }))
                 .put("charactersByAudience", charactersByAudienceJson())
                 .put("stories", storiesJson(user.id, selectedCharacter.id))
                 .put("storiesByCharacter", storiesByCharacterJson(user.id, BotCatalog.characters))
@@ -195,13 +198,18 @@ class MiniAppServer(
         val user = authenticate(exchange) ?: return@runBlocking
         val audience = AudiencePreference.normalize(readJson(exchange).optString("audience"))
             ?: return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Unknown audience preference"))
-        val characters = BotCatalog.charactersForAudience(audience)
-        val selected = characters.firstOrNull() ?: BotCatalog.defaultCharacterForAudience(audience)
+        println("MiniAppServer: audiencePreference user=${user.id} audience=$audience")
 
         userSettingsRepository.setAudiencePreference(user.id, audience)
-        userSettingsRepository.setSelectedCharacter(user.id, selected.id)
-        userSettingsRepository.clearSelectedStory(user.id)
-        userSettingsRepository.clearActiveDialogId(user.id)
+
+        val currentCharacterId = userSettingsRepository.getSelectedCharacter(user.id)
+        println("MiniAppServer: audiencePreference currentCharacterId=$currentCharacterId")
+        val selectedId = currentCharacterId
+            ?: (BotCatalog.charactersForAudience(audience).firstOrNull() ?: BotCatalog.defaultCharacterForAudience(audience)).id
+        println("MiniAppServer: audiencePreference selectedId=$selectedId")
+
+        val currentStoryId = userSettingsRepository.getSelectedStory(user.id)
+        println("MiniAppServer: audiencePreference currentStoryId=$currentStoryId")
 
         sendJson(
             exchange = exchange,
@@ -209,11 +217,12 @@ class MiniAppServer(
             body = JSONObject()
                 .put("ok", true)
                 .put("audiencePreference", audience)
-                .put("selectedCharacter", selected.id)
-                .put("selectedStory", JSONObject.NULL)
-                .put("characters", JSONArray(characters.map { it.toMiniAppJson() }))
-                .put("stories", storiesJson(user.id, selected.id))
-                .put("storiesByCharacter", storiesByCharacterJson(user.id, characters))
+                .put("selectedCharacter", selectedId)
+                .put("selectedStory", currentStoryId ?: JSONObject.NULL)
+                .put("characters", JSONArray(BotCatalog.characters.map { it.toMiniAppJson() }))
+                .put("charactersByAudience", charactersByAudienceJson())
+                .put("stories", storiesJson(user.id, selectedId))
+                .put("storiesByCharacter", storiesByCharacterJson(user.id, BotCatalog.characters))
         )
     }
 
@@ -398,8 +407,13 @@ class MiniAppServer(
     private fun handleSelectCharacter(exchange: HttpExchange) = runBlocking {
         val user = authenticate(exchange) ?: return@runBlocking
         val body = readJson(exchange)
-        val character = BotCatalog.characterById(body.optString("characterId"))
+        val characterId = body.optString("characterId")
+        println("MiniAppServer: selectCharacter user=${user.id} characterId=$characterId")
+        val character = BotCatalog.characterById(characterId)
             ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Character not found"))
+
+        println("MiniAppServer: selectCharacter saving character=${character.id}")
+        userSettingsRepository.setSelectedCharacter(user.id, character.id)
 
         sendJson(
             exchange = exchange,
@@ -458,7 +472,7 @@ class MiniAppServer(
             )
         }.getOrElse { error ->
             val message = if (error.message == "No custom story slots left") {
-                "Сначала купи доступ: пакет открывает создание 3 своих историй."
+                "Лимит историй: удали одну из已有的, чтобы создать новую."
             } else {
                 error.message ?: "Не удалось создать историю."
             }
@@ -478,6 +492,69 @@ class MiniAppServer(
                 .put("story", story.toMiniAppJson())
                 .put("stories", storiesJson(user.id, character.id))
                 .put("customStory", customStoryAccessJson(access))
+        )
+    }
+
+    private fun handleUpdateCustomStory(exchange: HttpExchange) = runBlocking {
+        val user = authenticate(exchange) ?: return@runBlocking
+        val body = readJson(exchange)
+        val storyId = body.optString("storyId")
+        val characterId = body.optString("characterId")
+
+        val character = BotCatalog.characterById(characterId)
+            ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Character not found"))
+
+        val existing = customStoryRepository.getStory(user.id, storyId)
+            ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "История не найдена"))
+
+        val title = cleanInput(body.optString("title"), maxLength = 60)
+        val description = cleanInput(body.optString("description"), maxLength = 160)
+        val setup = cleanInput(body.optString("setup"), maxLength = 900)
+        val openingLine = cleanInput(body.optString("openingLine"), maxLength = 240)
+        if (title.length < 3 || setup.length < 20 || openingLine.length < 3) {
+            return@runBlocking sendJson(
+                exchange,
+                400,
+                JSONObject().put("ok", false).put("error", "Заполни название, описание сцены и первое сообщение.")
+            )
+        }
+
+        customStoryRepository.updateStory(
+            userId = user.id,
+            storyId = storyId,
+            title = title,
+            shortDescription = description.ifBlank { "Твоя собственная история с ${character.name}." },
+            setup = setup,
+            openingLine = openingLine
+        )
+
+        sendJson(
+            exchange = exchange,
+            status = 200,
+            body = JSONObject()
+                .put("ok", true)
+                .put("stories", storiesJson(user.id, characterId))
+        )
+    }
+
+    private fun handleDeleteCustomStory(exchange: HttpExchange) = runBlocking {
+        val user = authenticate(exchange) ?: return@runBlocking
+        val body = readJson(exchange)
+        val storyId = body.optString("storyId")
+        val characterId = body.optString("characterId")
+
+        val existing = customStoryRepository.getStory(user.id, storyId)
+            ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "История не найдена"))
+
+        customStoryRepository.deleteStory(user.id, storyId)
+
+        sendJson(
+            exchange = exchange,
+            status = 200,
+            body = JSONObject()
+                .put("ok", true)
+                .put("stories", storiesJson(user.id, characterId))
+                .put("customStory", customStoryAccessJson(customStoryRepository.getAccess(user.id)))
         )
     }
 
@@ -1052,14 +1129,14 @@ class MiniAppServer(
         .put("storySlotsTotal", access.storySlotsTotal)
         .put("storySlotsUsed", access.storySlotsUsed)
         .put("storySlotsLeft", access.storySlotsLeft)
-        .put("priceRub", CustomStoryPack.priceRub)
-        .put("storySlots", CustomStoryPack.storySlots)
 
     private fun CustomStory.toMiniAppJson(): JSONObject = JSONObject()
         .put("id", id)
+        .put("characterId", characterId)
         .put("title", title)
         .put("description", shortDescription)
         .put("setup", setup)
+        .put("openingLine", openingLine)
         .put("custom", true)
 
     private fun cleanInput(value: String, maxLength: Int): String {

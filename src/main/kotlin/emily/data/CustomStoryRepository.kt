@@ -41,13 +41,25 @@ data class CustomStory(
 class CustomStoryRepository(
     private val database: FirebaseDatabase = FirebaseDatabase.getInstance()
 ) {
+    companion object {
+        const val FREE_STORY_SLOTS = 30
+    }
+
     private val accessRef by lazy { database.getReference("customStoryAccess") }
     private val promoRef by lazy { database.getReference("customStoryPromoRedemptions") }
     private val storiesRef by lazy { database.getReference("customStories") }
 
     suspend fun getAccess(userId: Long): CustomStoryAccess = withContext(Dispatchers.IO) {
         val snapshot = accessRef.child(userId.toString()).awaitSingle()
-        snapshot.toAccess(userId)
+        var access = snapshot.toAccess(userId)
+        if (access.storySlotsTotal < FREE_STORY_SLOTS) {
+            access = access.copy(
+                storySlotsTotal = FREE_STORY_SLOTS,
+                updatedAt = System.currentTimeMillis()
+            )
+            accessRef.child(userId.toString()).setValueAsync(access.toPayload())
+        }
+        access
     }
 
     suspend fun grantPack(userId: Long, storySlots: Int): CustomStoryAccess = withContext(Dispatchers.IO) {
@@ -109,6 +121,38 @@ class CustomStoryRepository(
         )
         accessRef.child(userId.toString()).setValueAsync(updatedAccess.toPayload())
         story
+    }
+
+    suspend fun deleteStory(userId: Long, storyId: String) = withContext(Dispatchers.IO) {
+        val key = storyId.removePrefix("custom_")
+        storiesRef.child(userId.toString()).child(key).removeValueAsync()
+
+        val current = accessRef.child(userId.toString()).awaitSingle().toAccess(userId)
+        val updated = current.copy(
+            storySlotsUsed = (current.storySlotsUsed - 1).coerceAtLeast(0),
+            updatedAt = System.currentTimeMillis()
+        )
+        accessRef.child(userId.toString()).setValueAsync(updated.toPayload())
+    }
+
+    suspend fun updateStory(
+        userId: Long,
+        storyId: String,
+        title: String,
+        shortDescription: String,
+        setup: String,
+        openingLine: String
+    ) = withContext(Dispatchers.IO) {
+        val key = storyId.removePrefix("custom_")
+        val now = System.currentTimeMillis()
+        val updates = mapOf(
+            "title" to title,
+            "shortDescription" to shortDescription,
+            "setup" to setup,
+            "openingLine" to openingLine,
+            "updatedAt" to now
+        )
+        storiesRef.child(userId.toString()).child(key).updateChildrenAsync(updates)
     }
 
     suspend fun listStories(userId: Long, characterId: String): List<CustomStory> = withContext(Dispatchers.IO) {

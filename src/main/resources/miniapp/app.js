@@ -2,9 +2,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
 const DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
 const GALLERY_CACHE_KEY = "emily:validatedGalleries:v1";
+const PENDING_AUDIENCE_KEY = "emily:pendingAudience";
 
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
+console.log("[audit] app.js loaded");
 
 const state = {
   bootstrap: null,
@@ -168,6 +170,7 @@ async function loadBootstrap(nextScreen = null) {
     cacheBootstrap(data);
     state.bootstrap = data;
     syncStoriesByCharacter(data.storiesByCharacter);
+    applyPendingAudience();
 
     if (state.pendingAudienceTarget) {
       const pendingAudience = state.pendingAudienceTarget;
@@ -214,6 +217,7 @@ function hydrateCachedBootstrap() {
 
   state.bootstrap = cached;
   syncStoriesByCharacter(cached.storiesByCharacter);
+  applyPendingAudience();
   reconcileAudienceState({ persist: true });
   const settings = state.bootstrap.settings || {};
   state.audiencePreference = resolveAudiencePreference();
@@ -253,6 +257,27 @@ function cacheBootstrap(data) {
   }
 }
 
+function persistPendingAudience(audience) {
+  try {
+    localStorage.setItem(PENDING_AUDIENCE_KEY, audience);
+  } catch (_e) {}
+}
+
+function clearPendingAudience() {
+  try {
+    localStorage.removeItem(PENDING_AUDIENCE_KEY);
+  } catch (_e) {}
+}
+
+function applyPendingAudience() {
+  try {
+    const pending = localStorage.getItem(PENDING_AUDIENCE_KEY);
+    if (pending && state.bootstrap && state.bootstrap.settings) {
+      state.bootstrap.settings.audiencePreference = pending;
+    }
+  } catch (_e) {}
+}
+
 function hydrateCachedGalleries() {
   try {
     const cached = JSON.parse(localStorage.getItem(GALLERY_CACHE_KEY) || "null");
@@ -278,6 +303,7 @@ function cacheValidatedGalleries() {
     // Browser image cache remains the primary fast path.
   }
 }
+
 
 async function api(path, options = {}) {
   const timeoutMs = options.timeoutMs || 20_000;
@@ -432,8 +458,8 @@ function resolveAudiencePreference() {
   if (state.pendingAudienceTarget) return state.pendingAudienceTarget;
 
   const settingsAudience =
-    (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference) ||
-    state.audiencePreference;
+    state.audiencePreference ||
+    (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference);
   const inferred = inferAudienceFromCharacters(state.bootstrap && state.bootstrap.characters);
 
   if (inferred && settingsAudience && inferred !== settingsAudience) {
@@ -462,21 +488,10 @@ function reconcileAudienceState(options = {}) {
 
   if (!audience) return null;
 
-  syncAudiencePreference(audience);
+  console.log("[audit] reconcileAudienceState audience=%s selectedCharacterId=%s",
+    audience, state.selectedCharacterId);
 
-  const expectedCharacters = charactersForAudience(audience);
-  const currentAudience = inferAudienceFromCharacters(state.bootstrap.characters);
-  if (expectedCharacters && currentAudience !== audience) {
-    state.bootstrap.characters = expectedCharacters;
-    const selectedId =
-      (state.bootstrap.settings && state.bootstrap.settings.selectedCharacter) ||
-      state.selectedCharacterId;
-    const stillValid = expectedCharacters.some((item) => item.id === selectedId);
-    state.selectedCharacterId = stillValid ? selectedId : firstId(expectedCharacters);
-    if (state.bootstrap.settings) {
-      state.bootstrap.settings.selectedCharacter = state.selectedCharacterId;
-    }
-  }
+  syncAudiencePreference(audience);
 
   if (options.persist) cacheBootstrap(state.bootstrap);
   return audience;
@@ -492,7 +507,11 @@ function renderStatus() {
 }
 
 function renderCharacters() {
-  const characters = state.bootstrap && state.bootstrap.characters || [];
+  const allCharacters = state.bootstrap && state.bootstrap.characters || [];
+  const audience = resolveAudiencePreference();
+  const characters = audience
+    ? allCharacters.filter(function (c) { return c.audience === audience; })
+    : allCharacters;
   els.charactersGrid.replaceChildren();
 
   characters.forEach((character) => {
@@ -678,8 +697,12 @@ function applyAudienceSwitch(audience, payload = {}) {
   if (!state.bootstrap) return;
   if (!state.bootstrap.settings) state.bootstrap.settings = {};
 
-  const characters = payload.characters || charactersForAudience(audience) || [];
-  const selectedCharacter = payload.selectedCharacter || firstId(characters);
+  const characters = payload.characters !== undefined
+    ? payload.characters
+    : (state.bootstrap.characters || charactersForAudience(audience) || []);
+  const selectedCharacter = payload.selectedCharacter !== undefined
+    ? payload.selectedCharacter
+    : (state.selectedCharacterId || firstId(characters));
   const stories =
     payload.stories ||
     (selectedCharacter ? storiesForCharacterFromCache(selectedCharacter) : null) ||
@@ -696,6 +719,9 @@ function applyAudienceSwitch(audience, payload = {}) {
   state.selectedCharacterId = selectedCharacter;
   cacheBootstrap(state.bootstrap);
 
+  console.log("[audit] applyAudienceSwitch audience=%s selectedCharacterId=%s charactersCount=%s storiesCount=%s",
+    audience, selectedCharacter, characters.length, stories.length);
+
   renderCharacters();
   renderSelectedCharacter();
   renderStories();
@@ -706,23 +732,36 @@ async function selectAudience(audience, options = {}) {
   if (!audience) return;
   if (resolveAudiencePreference() === audience) return;
 
+  console.log("[audit] selectAudience audience=%s currentSelectedCharacterId=%s",
+    audience, state.selectedCharacterId);
+
   state.pendingAudienceTarget = audience;
   const requestId = ++state.pendingAudienceSwitchRequestId;
   const previousSnapshot = snapshotAudienceState();
-  const localCharacters = charactersForAudience(audience);
+  let localCharacters = charactersForAudience(audience);
+  if (!localCharacters && state.bootstrap) {
+    localCharacters = (state.bootstrap.characters || []).filter(function (c) { return c.audience === audience; });
+    if (localCharacters.length === 0) localCharacters = null;
+  }
   const targetScreen = options.stayOnSettings ? "settings" : "characters";
 
   try {
+    persistPendingAudience(audience);
+
     if (localCharacters) {
-      applyAudienceSwitch(audience, {
-        characters: localCharacters,
-        selectedCharacter: firstId(localCharacters),
-        selectedStory: null,
-      });
+      state.audiencePreference = audience;
+      if (state.bootstrap && state.bootstrap.settings) {
+        state.bootstrap.settings.audiencePreference = audience;
+      }
+      cacheBootstrap(state.bootstrap);
+      renderCharacters();
+      renderSelectedCharacter();
+      renderSettings();
       showScreen(targetScreen);
       prefetchGalleries(localCharacters);
     } else {
       syncAudiencePreference(audience);
+      cacheBootstrap(state.bootstrap);
       renderAudienceSettings();
     }
 
@@ -732,13 +771,26 @@ async function selectAudience(audience, options = {}) {
     });
     if (requestId !== state.pendingAudienceSwitchRequestId) return;
 
-    applyAudienceSwitch(data.audiencePreference, data);
+    console.log("[audit] selectAudience API response audience=%s serverSelectedCharacter=%s", audience, data.selectedCharacter);
+    console.log("[audit] selectAudience before API apply selectedCharacterId=%s", state.selectedCharacterId);
+
+    clearPendingAudience();
+
+    applyAudienceSwitch(data.audiencePreference, {
+      characters: data.characters,
+      storiesByCharacter: data.storiesByCharacter,
+      selectedCharacter: data.selectedCharacter,
+    });
+
+    console.log("[audit] selectAudience after API apply selectedCharacterId=%s", state.selectedCharacterId);
     if (state.currentScreen === targetScreen) {
       showScreen(targetScreen);
     }
     prefetchGalleries(data.characters || []);
   } catch (error) {
     if (requestId !== state.pendingAudienceSwitchRequestId) return;
+
+    clearPendingAudience();
 
     if (localCharacters) {
       restoreAudienceSnapshot(previousSnapshot);
@@ -866,9 +918,23 @@ function selectCharacter(characterId) {
     return;
   }
 
+  console.log("[audit] selectCharacter characterId=%s previousSelected=%s",
+    characterId, state.selectedCharacterId);
+
+  state.selectedCharacterId = characterId;
   state.previewCharacterId = characterId;
+  if (state.bootstrap && state.bootstrap.settings) {
+    state.bootstrap.settings.selectedCharacter = characterId;
+  }
+  cacheBootstrap(state.bootstrap);
   renderSelectedCharacter();
   showScreen("stories");
+  renderStoriesPending();
+
+  api("/miniapp/api/select-character", {
+    method: "POST",
+    body: { characterId },
+  }).catch(function () {});
 
   const cachedStories = storiesForCharacterFromCache(characterId);
   if (cachedStories) {
@@ -877,7 +943,6 @@ function selectCharacter(characterId) {
     return;
   }
 
-  renderStoriesPending();
   loadStoriesForCharacter(characterId);
 }
 
@@ -1020,6 +1085,9 @@ function syncStoriesByCharacter(storiesByCharacter) {
 function setCachedStories(characterId, stories) {
   if (!characterId || !Array.isArray(stories)) return;
   state.storiesByCharacter[characterId] = [...stories];
+  if (state.bootstrap && state.bootstrap.storiesByCharacter) {
+    state.bootstrap.storiesByCharacter[characterId] = [...stories];
+  }
 }
 
 function storiesForCharacterFromCache(characterId) {
@@ -1057,6 +1125,31 @@ function renderStories() {
 
     copy.append(title, description);
     card.append(copy, arrow, setup);
+
+    if (story.custom) {
+      card.classList.add("story-card-custom");
+      const controls = document.createElement("span");
+      controls.className = "story-card-controls";
+      controls.addEventListener("click", (event) => event.stopPropagation());
+
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "story-card-edit";
+      editBtn.textContent = "✎";
+      editBtn.title = "Редактировать";
+      editBtn.addEventListener("click", () => openCustomStoryEditor(story));
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "story-card-delete";
+      deleteBtn.textContent = "×";
+      deleteBtn.title = "Удалить";
+      deleteBtn.addEventListener("click", () => deleteCustomStory(story.id));
+
+      controls.append(editBtn, deleteBtn);
+      card.append(controls);
+    }
+
     els.storiesList.append(card);
   });
 
@@ -1066,13 +1159,12 @@ function renderStories() {
 function customStoryCard() {
   const access = state.bootstrap && state.bootstrap.customStory || {};
   const slotsLeft = Number(access.storySlotsLeft || 0);
-  const priceRub = Number(access.priceRub || 150);
-  const storySlots = Number(access.storySlots || 3);
+  const slotsTotal = Number(access.storySlotsTotal || 30);
 
   const card = document.createElement("button");
   card.type = "button";
   card.className = "story-card custom-story-card";
-  card.addEventListener("click", () => handleCustomStoryClick(slotsLeft, priceRub));
+  card.addEventListener("click", () => openCustomStoryEditor());
   if (slotsLeft > 0) {
     card.classList.add("custom-story-card-unlocked");
   }
@@ -1085,85 +1177,58 @@ function customStoryCard() {
   copy.className = "custom-story-copy";
 
   const title = document.createElement("h2");
-  title.textContent = slotsLeft > 0 ? "Создать свою ролевую игру" : "Добавить свою историю";
+  title.textContent = "Создать свою ролевую игру";
 
   const arrow = document.createElement("span");
   arrow.className = "custom-story-arrow";
   arrow.setAttribute("aria-hidden", "true");
   arrow.textContent = "→";
 
-  if (slotsLeft > 0) {
-    const badge = document.createElement("span");
-    badge.className = "custom-story-badge";
-    badge.textContent = `Доступно: ${slotsLeft}`;
-    copy.append(title, badge);
-    card.append(plus, copy, arrow);
-    return card;
-  }
-
-  const description = document.createElement("p");
-  description.textContent = `Платная функция: ${priceRub} ₽, до ${storySlots} своих историй.`;
-  copy.append(title, description);
+  const badge = document.createElement("span");
+  badge.className = "custom-story-badge";
+  badge.textContent = slotsLeft > 0
+    ? `Осталось: ${slotsLeft} из ${slotsTotal}`
+    : `Лимит ${slotsTotal} историй исчерпан. Удали одну, чтобы создать новую.`;
+  if (slotsLeft === 0) badge.style.color = "var(--danger, #ff4444)";
+  copy.append(title, badge);
   card.append(plus, copy, arrow);
   return card;
 }
 
-async function handleCustomStoryClick(slotsLeft, priceRub) {
-  if (slotsLeft > 0) {
-    openCustomStoryEditor();
-    return;
-  }
-
-  setLoading(true);
-  try {
-    const data = await api("/miniapp/api/create-invoice", {
-      method: "POST",
-      body: { type: "custom_story" },
-    });
-
-    if (openInvoice(data.invoiceLink, () => loadBootstrap("stories"))) {
-      return;
-    }
-
-    await sendInvoiceToChat("custom_story", null, `Счёт на ${priceRub} ₽ отправлен в чат бота.`);
-  } catch (error) {
-    showToast(error.message || "Не удалось открыть оплату");
-  } finally {
-    setLoading(false);
-  }
-}
-
-function openCustomStoryEditor() {
-  const character = previewedCharacter();
+function openCustomStoryEditor(existingStory) {
+  const character = existingStory
+    ? (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === existingStory.characterId)
+    : previewedCharacter();
   if (!character) {
     showToast("Сначала выбери персонажа");
     return;
   }
 
+  const isEditing = Boolean(existingStory);
   const overlay = document.createElement("div");
   overlay.className = "custom-story-modal";
   overlay.innerHTML = `
     <form class="custom-story-form">
       <button class="custom-story-close" type="button" aria-label="Закрыть">×</button>
       <p class="custom-story-kicker">Своя история для ${escapeHtml(character.name)}</p>
-      <h2>Создай сценарий</h2>
+      <h2>${isEditing ? "Редактировать сценарий" : "Создай сценарий"}</h2>
       <label>
         Название
-        <input name="title" maxlength="60" placeholder="Например: Ночная поездка" required>
+        <input name="title" maxlength="60" placeholder="Например: Ночная поездка" value="${escapeHtml(isEditing ? existingStory.title : '')}" required>
       </label>
       <label>
         Короткое описание
-        <input name="description" maxlength="160" placeholder="Что увидит пользователь на карточке">
+        <input name="description" maxlength="160" placeholder="Что увидит пользователь на карточке" value="${escapeHtml(isEditing ? (existingStory.description || '') : '')}">
       </label>
       <label>
         Сцена и правила истории
-        <textarea name="setup" maxlength="900" rows="5" placeholder="Где вы, что происходит, какая роль у персонажа..." required></textarea>
+        <textarea name="setup" maxlength="900" rows="5" placeholder="Где вы, что происходит, какая роль у персонажа..." required>${escapeHtml(isEditing ? (existingStory.setup || '') : '')}</textarea>
       </label>
       <label>
         Первое сообщение персонажа
-        <textarea name="openingLine" maxlength="240" rows="3" placeholder="Фраза, с которой начнется чат" required></textarea>
+        <textarea name="openingLine" maxlength="240" rows="3" placeholder="Фраза, с которой начнется чат" required>${escapeHtml(isEditing ? (existingStory.openingLine || '') : '')}</textarea>
       </label>
-      <button class="primary-button" type="submit">Сохранить историю</button>
+      <button class="primary-button" type="submit">${isEditing ? "Сохранить изменения" : "Сохранить историю"}</button>
     </form>
   `;
 
@@ -1175,13 +1240,18 @@ function openCustomStoryEditor() {
   overlay.querySelector("form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    await createCustomStory({
+    const payload = {
       characterId: character.id,
       title: String(form.get("title") || ""),
       description: String(form.get("description") || ""),
       setup: String(form.get("setup") || ""),
       openingLine: String(form.get("openingLine") || ""),
-    });
+    };
+    if (isEditing) {
+      await updateCustomStory(existingStory.id, payload);
+    } else {
+      await createCustomStory(payload);
+    }
     close();
   });
 
@@ -1205,6 +1275,48 @@ async function createCustomStory(payload) {
     showToast("История создана. Теперь её можно выбрать.");
   } catch (error) {
     showToast(error.message || "Не удалось создать историю");
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function updateCustomStory(storyId, payload) {
+  setLoading(true);
+  try {
+    const data = await api("/miniapp/api/custom-story", {
+      method: "PUT",
+      body: { storyId, ...payload },
+    });
+    state.bootstrap.stories = data.stories || state.bootstrap.stories;
+    setCachedStories(payload.characterId, state.bootstrap.stories);
+    cacheBootstrap(state.bootstrap);
+    renderStories();
+    showToast("История обновлена.");
+  } catch (error) {
+    showToast(error.message || "Не удалось обновить историю");
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function deleteCustomStory(storyId) {
+  if (!confirm("Удалить эту историю? Это действие нельзя отменить.")) return;
+
+  const character = previewedCharacter();
+  setLoading(true);
+  try {
+    const data = await api("/miniapp/api/delete-custom-story", {
+      method: "POST",
+      body: { storyId, characterId: character ? character.id : "" },
+    });
+    state.bootstrap.stories = data.stories || state.bootstrap.stories;
+    state.bootstrap.customStory = data.customStory || state.bootstrap.customStory;
+    setCachedStories(character ? character.id : "", state.bootstrap.stories);
+    cacheBootstrap(state.bootstrap);
+    renderStories();
+    showToast("История удалена. Слот освобождён.");
+  } catch (error) {
+    showToast(error.message || "Не удалось удалить историю");
   } finally {
     setLoading(false);
   }

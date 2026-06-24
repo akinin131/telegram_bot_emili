@@ -39,6 +39,7 @@ var tg = window.Telegram && window.Telegram.WebApp;
 var DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 var BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
 var GALLERY_CACHE_KEY = "emily:validatedGalleries:v1";
+var PENDING_AUDIENCE_KEY = "emily:pendingAudience";
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
 var state = {
@@ -208,6 +209,7 @@ function loadBootstrap() {
                     cacheBootstrap(data);
                     state.bootstrap = data;
                     syncStoriesByCharacter(data.storiesByCharacter);
+                    applyPendingAudience();
                     if (state.pendingAudienceTarget) {
                         pendingAudience = state.pendingAudienceTarget;
                         localCharacters = charactersForAudience(pendingAudience);
@@ -258,6 +260,7 @@ function hydrateCachedBootstrap() {
         return false;
     state.bootstrap = cached;
     syncStoriesByCharacter(cached.storiesByCharacter);
+    applyPendingAudience();
     reconcileAudienceState({ persist: true });
     var settings = state.bootstrap.settings || {};
     state.audiencePreference = resolveAudiencePreference();
@@ -294,6 +297,27 @@ function cacheBootstrap(data) {
     }
     catch (_error) {
     }
+}
+function persistPendingAudience(audience) {
+    try {
+        localStorage.setItem(PENDING_AUDIENCE_KEY, audience);
+    }
+    catch (_e) { }
+}
+function clearPendingAudience() {
+    try {
+        localStorage.removeItem(PENDING_AUDIENCE_KEY);
+    }
+    catch (_e) { }
+}
+function applyPendingAudience() {
+    try {
+        var pending = localStorage.getItem(PENDING_AUDIENCE_KEY);
+        if (pending && state.bootstrap && state.bootstrap.settings) {
+            state.bootstrap.settings.audiencePreference = pending;
+        }
+    }
+    catch (_e) { }
 }
 function hydrateCachedGalleries() {
     try {
@@ -505,8 +529,8 @@ function resolveAudiencePreference() {
     var settingsAudience, inferred;
     if (state.pendingAudienceTarget)
         return state.pendingAudienceTarget;
-    settingsAudience = (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference) ||
-        state.audiencePreference;
+    settingsAudience = state.audiencePreference ||
+        (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference);
     inferred = inferAudienceFromCharacters(state.bootstrap && state.bootstrap.characters);
     if (inferred && settingsAudience && inferred !== settingsAudience) {
         return inferred;
@@ -523,7 +547,7 @@ function syncAudiencePreference(audience) {
 }
 function reconcileAudienceState(options) {
     if (options === void 0) { options = {}; }
-    var inferred, audience, expectedCharacters, currentAudience, selectedId, stillValid;
+    var inferred, audience;
     if (!state.bootstrap)
         return null;
     inferred = inferAudienceFromCharacters(state.bootstrap.characters);
@@ -534,18 +558,6 @@ function reconcileAudienceState(options) {
     if (!audience)
         return null;
     syncAudiencePreference(audience);
-    expectedCharacters = charactersForAudience(audience);
-    currentAudience = inferAudienceFromCharacters(state.bootstrap.characters);
-    if (expectedCharacters && currentAudience !== audience) {
-        state.bootstrap.characters = expectedCharacters;
-        selectedId = (state.bootstrap.settings && state.bootstrap.settings.selectedCharacter) ||
-            state.selectedCharacterId;
-        stillValid = expectedCharacters.some(function (item) { return item.id === selectedId; });
-        state.selectedCharacterId = stillValid ? selectedId : firstId(expectedCharacters);
-        if (state.bootstrap.settings) {
-            state.bootstrap.settings.selectedCharacter = state.selectedCharacterId;
-        }
-    }
     if (options.persist)
         cacheBootstrap(state.bootstrap);
     return audience;
@@ -559,7 +571,11 @@ function renderStatus() {
         : "Нет данных";
 }
 function renderCharacters() {
-    var characters = state.bootstrap && state.bootstrap.characters || [];
+    var allCharacters = state.bootstrap && state.bootstrap.characters || [];
+    var audience = resolveAudiencePreference();
+    var characters = audience
+        ? allCharacters.filter(function (c) { return c.audience === audience; })
+        : allCharacters;
     els.charactersGrid.replaceChildren();
     characters.forEach(function (character) {
         var card = document.createElement("button");
@@ -739,8 +755,12 @@ function applyAudienceSwitch(audience, payload) {
         return;
     if (!state.bootstrap.settings)
         state.bootstrap.settings = {};
-    var characters = payload.characters || charactersForAudience(audience) || [];
-    var selectedCharacter = payload.selectedCharacter || firstId(characters);
+    var characters = payload.characters !== undefined
+        ? payload.characters
+        : (state.bootstrap.characters || charactersForAudience(audience) || []);
+    var selectedCharacter = payload.selectedCharacter !== undefined
+        ? payload.selectedCharacter
+        : (state.selectedCharacterId || firstId(characters));
     var stories = payload.stories ||
         (selectedCharacter ? storiesForCharacterFromCache(selectedCharacter) : null) ||
         [];
@@ -775,21 +795,30 @@ function selectAudience(audience_1) {
                     requestId = ++state.pendingAudienceSwitchRequestId;
                     previousSnapshot = snapshotAudienceState();
                     localCharacters = charactersForAudience(audience);
+                    if (!localCharacters && state.bootstrap) {
+                        localCharacters = (state.bootstrap.characters || []).filter(function (c) { return c.audience === audience; });
+                        if (localCharacters.length === 0) { localCharacters = null; }
+                    }
                     targetScreen = options.stayOnSettings ? "settings" : "characters";
                     _a.label = 1;
                 case 1:
                     _a.trys.push([1, 3, 4, 5]);
+                    persistPendingAudience(audience);
                     if (localCharacters) {
-                        applyAudienceSwitch(audience, {
-                            characters: localCharacters,
-                            selectedCharacter: firstId(localCharacters),
-                            selectedStory: null,
-                        });
+                        state.audiencePreference = audience;
+                        if (state.bootstrap && state.bootstrap.settings) {
+                            state.bootstrap.settings.audiencePreference = audience;
+                        }
+                        cacheBootstrap(state.bootstrap);
+                        renderCharacters();
+                        renderSelectedCharacter();
+                        renderSettings();
                         showScreen(targetScreen);
                         prefetchGalleries(localCharacters);
                     }
                     else {
                         syncAudiencePreference(audience);
+                        cacheBootstrap(state.bootstrap);
                         renderAudienceSettings();
                     }
                     return [4 /*yield*/, api("/miniapp/api/audience", {
@@ -800,7 +829,12 @@ function selectAudience(audience_1) {
                     data = _a.sent();
                     if (requestId !== state.pendingAudienceSwitchRequestId)
                         return [2 /*return*/];
-                    applyAudienceSwitch(data.audiencePreference, data);
+                    clearPendingAudience();
+                    applyAudienceSwitch(data.audiencePreference, {
+                        characters: data.characters,
+                        storiesByCharacter: data.storiesByCharacter,
+                        selectedCharacter: data.selectedCharacter,
+                    });
                     if (state.currentScreen === targetScreen) {
                         showScreen(targetScreen);
                     }
@@ -810,6 +844,7 @@ function selectAudience(audience_1) {
                     error_3 = _a.sent();
                     if (requestId !== state.pendingAudienceSwitchRequestId)
                         return [2 /*return*/];
+                    clearPendingAudience();
                     if (localCharacters) {
                         restoreAudienceSnapshot(previousSnapshot);
                         if (state.currentScreen === targetScreen) {
@@ -934,16 +969,25 @@ function selectCharacter(characterId) {
         showToast("Персонаж не найден");
         return;
     }
+    state.selectedCharacterId = characterId;
     state.previewCharacterId = characterId;
+    if (state.bootstrap && state.bootstrap.settings) {
+        state.bootstrap.settings.selectedCharacter = characterId;
+    }
+    cacheBootstrap(state.bootstrap);
     renderSelectedCharacter();
     showScreen("stories");
+    renderStoriesPending();
+    api("/miniapp/api/select-character", {
+        method: "POST",
+        body: { characterId: characterId },
+    }).catch(function () {});
     var cachedStories = storiesForCharacterFromCache(characterId);
     if (cachedStories) {
         state.bootstrap.stories = cachedStories;
         renderStories();
         return;
     }
-    renderStoriesPending();
     loadStoriesForCharacter(characterId);
 }
 function refreshStoriesScreenIfPending() {
@@ -1086,6 +1130,9 @@ function setCachedStories(characterId, stories) {
     if (!characterId || !Array.isArray(stories))
         return;
     state.storiesByCharacter[characterId] = stories.slice();
+    if (state.bootstrap && state.bootstrap.storiesByCharacter) {
+        state.bootstrap.storiesByCharacter[characterId] = stories.slice();
+    }
 }
 function storiesForCharacterFromCache(characterId) {
     var stories = state.storiesByCharacter && state.storiesByCharacter[characterId];
@@ -1101,6 +1148,7 @@ function renderStories() {
         card.addEventListener("click", function () { return selectStory(story.id, card); });
         var copy = document.createElement("span");
         copy.className = "story-card-copy";
+        if (story.custom) { card.classList.add("story-card-custom"); }
         var title = document.createElement("h2");
         title.textContent = story.title;
         var description = document.createElement("p");
@@ -1114,6 +1162,28 @@ function renderStories() {
         arrow.textContent = "→";
         copy.append(title, description);
         card.append(copy, arrow, setup);
+        if (story.custom) {
+            var controls = document.createElement("span");
+            controls.className = "story-card-controls";
+            var editBtn = document.createElement("button");
+            editBtn.className = "story-card-edit";
+            editBtn.type = "button";
+            editBtn.textContent = "\u270E";
+            editBtn.addEventListener("click", function (event) {
+                event.stopPropagation();
+                openCustomStoryEditor(story);
+            });
+            var deleteBtn = document.createElement("button");
+            deleteBtn.className = "story-card-delete";
+            deleteBtn.type = "button";
+            deleteBtn.textContent = "\u00D7";
+            deleteBtn.addEventListener("click", function (event) {
+                event.stopPropagation();
+                deleteCustomStory(story.id);
+            });
+            controls.append(editBtn, deleteBtn);
+            card.append(controls);
+        }
         els.storiesList.append(card);
     });
     els.storiesList.append(customStoryCard());
@@ -1121,12 +1191,11 @@ function renderStories() {
 function customStoryCard() {
     var access = state.bootstrap && state.bootstrap.customStory || {};
     var slotsLeft = Number(access.storySlotsLeft || 0);
-    var priceRub = Number(access.priceRub || 150);
-    var storySlots = Number(access.storySlots || 3);
+    var slotsTotal = Number(access.storySlotsTotal || 30);
     var card = document.createElement("button");
     card.type = "button";
     card.className = "story-card custom-story-card";
-    card.addEventListener("click", function () { return handleCustomStoryClick(slotsLeft, priceRub); });
+    card.addEventListener("click", function () { return openCustomStoryEditor(); });
     if (slotsLeft > 0) {
         card.classList.add("custom-story-card-unlocked");
     }
@@ -1136,74 +1205,49 @@ function customStoryCard() {
     var copy = document.createElement("span");
     copy.className = "custom-story-copy";
     var title = document.createElement("h2");
-    title.textContent = slotsLeft > 0 ? "Создать свою ролевую игру" : "Добавить свою историю";
+    title.textContent = "Создать свою ролевую игру";
     var arrow = document.createElement("span");
     arrow.className = "custom-story-arrow";
     arrow.setAttribute("aria-hidden", "true");
     arrow.textContent = "→";
+    var badge = document.createElement("span");
+    badge.className = "custom-story-badge";
     if (slotsLeft > 0) {
-        var badge = document.createElement("span");
-        badge.className = "custom-story-badge";
-        badge.textContent = "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E: ".concat(slotsLeft);
-        copy.append(title, badge);
-        card.append(plus, copy, arrow);
-        return card;
+        badge.textContent = "Осталось: ".concat(slotsLeft, " из ").concat(slotsTotal);
+    } else {
+        badge.textContent = "Лимит ".concat(slotsTotal, " историй исчерпан. Удали одну, чтобы создать новую.");
+        badge.style.color = "var(--danger, #ff4444)";
     }
-    var description = document.createElement("p");
-    description.textContent = "\u041F\u043B\u0430\u0442\u043D\u0430\u044F \u0444\u0443\u043D\u043A\u0446\u0438\u044F: ".concat(priceRub, " \u20BD, \u0434\u043E ").concat(storySlots, " \u0441\u0432\u043E\u0438\u0445 \u0438\u0441\u0442\u043E\u0440\u0438\u0439.");
-    copy.append(title, description);
+    copy.append(title, badge);
     card.append(plus, copy, arrow);
     return card;
 }
-function handleCustomStoryClick(slotsLeft, priceRub) {
-    return __awaiter(this, void 0, void 0, function () {
-        var data, error_5;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
-                case 0:
-                    if (slotsLeft > 0) {
-                        openCustomStoryEditor();
-                        return [2 /*return*/];
-                    }
-                    setLoading(true);
-                    _a.label = 1;
-                case 1:
-                    _a.trys.push([1, 4, 5, 6]);
-                    return [4 /*yield*/, api("/miniapp/api/create-invoice", {
-                            method: "POST",
-                            body: { type: "custom_story" },
-                        })];
-                case 2:
-                    data = _a.sent();
-                    if (openInvoice(data.invoiceLink, function () { return loadBootstrap("stories"); })) {
-                        return [2 /*return*/];
-                    }
-                    return [4 /*yield*/, sendInvoiceToChat("custom_story", null, "\u0421\u0447\u0451\u0442 \u043D\u0430 ".concat(priceRub, " \u20BD \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D \u0432 \u0447\u0430\u0442 \u0431\u043E\u0442\u0430."))];
-                case 3:
-                    _a.sent();
-                    return [3 /*break*/, 6];
-                case 4:
-                    error_5 = _a.sent();
-                    showToast(error_5.message || "Не удалось открыть оплату");
-                    return [3 /*break*/, 6];
-                case 5:
-                    setLoading(false);
-                    return [7 /*endfinally*/];
-                case 6: return [2 /*return*/];
-            }
-        });
-    });
-}
-function openCustomStoryEditor() {
+function openCustomStoryEditor(existingStory) {
     var _this = this;
-    var character = previewedCharacter();
+    var character;
+    if (existingStory) {
+        character = (state.bootstrap && state.bootstrap.characters || []).find(function (item) { return item.id === existingStory.characterId; });
+    } else {
+        character = previewedCharacter();
+    }
     if (!character) {
         showToast("Сначала выбери персонажа");
         return;
     }
+    var isEditing = Boolean(existingStory);
     var overlay = document.createElement("div");
     overlay.className = "custom-story-modal";
-    overlay.innerHTML = "\n    <form class=\"custom-story-form\">\n      <button class=\"custom-story-close\" type=\"button\" aria-label=\"\u0417\u0430\u043A\u0440\u044B\u0442\u044C\">\u00D7</button>\n      <p class=\"custom-story-kicker\">\u0421\u0432\u043E\u044F \u0438\u0441\u0442\u043E\u0440\u0438\u044F \u0434\u043B\u044F ".concat(escapeHtml(character.name), "</p>\n      <h2>\u0421\u043E\u0437\u0434\u0430\u0439 \u0441\u0446\u0435\u043D\u0430\u0440\u0438\u0439</h2>\n      <label>\n        \u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435\n        <input name=\"title\" maxlength=\"60\" placeholder=\"\u041D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \u041D\u043E\u0447\u043D\u0430\u044F \u043F\u043E\u0435\u0437\u0434\u043A\u0430\" required>\n      </label>\n      <label>\n        \u041A\u043E\u0440\u043E\u0442\u043A\u043E\u0435 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435\n        <input name=\"description\" maxlength=\"160\" placeholder=\"\u0427\u0442\u043E \u0443\u0432\u0438\u0434\u0438\u0442 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0430 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0435\">\n      </label>\n      <label>\n        \u0421\u0446\u0435\u043D\u0430 \u0438 \u043F\u0440\u0430\u0432\u0438\u043B\u0430 \u0438\u0441\u0442\u043E\u0440\u0438\u0438\n        <textarea name=\"setup\" maxlength=\"900\" rows=\"5\" placeholder=\"\u0413\u0434\u0435 \u0432\u044B, \u0447\u0442\u043E \u043F\u0440\u043E\u0438\u0441\u0445\u043E\u0434\u0438\u0442, \u043A\u0430\u043A\u0430\u044F \u0440\u043E\u043B\u044C \u0443 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430...\" required></textarea>\n      </label>\n      <label>\n        \u041F\u0435\u0440\u0432\u043E\u0435 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u0435 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430\n        <textarea name=\"openingLine\" maxlength=\"240\" rows=\"3\" placeholder=\"\u0424\u0440\u0430\u0437\u0430, \u0441 \u043A\u043E\u0442\u043E\u0440\u043E\u0439 \u043D\u0430\u0447\u043D\u0435\u0442\u0441\u044F \u0447\u0430\u0442\" required></textarea>\n      </label>\n      <button class=\"primary-button\" type=\"submit\">\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0438\u0441\u0442\u043E\u0440\u0438\u044E</button>\n    </form>\n  ");
+    overlay.innerHTML = "\n    <form class=\"custom-story-form\">\n      <button class=\"custom-story-close\" type=\"button\" aria-label=\"\u0417\u0430\u043A\u0440\u044B\u0442\u044C\">\u00D7</button>\n      <p class=\"custom-story-kicker\">\u0421\u0432\u043E\u044F \u0438\u0441\u0442\u043E\u0440\u0438\u044F \u0434\u043B\u044F ".concat(escapeHtml(character.name), "</p>\n      <h2>").concat(isEditing ? "Редактировать сценарий" : "Создай сценарий", "</h2>\n      <label>\n        \u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435\n        <input name=\"title\" maxlength=\"60\" placeholder=\"\u041D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \u041D\u043E\u0447\u043D\u0430\u044F \u043F\u043E\u0435\u0437\u0434\u043A\u0430\" required>\n      </label>\n      <label>\n        \u041A\u043E\u0440\u043E\u0442\u043A\u043E\u0435 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435\n        <input name=\"description\" maxlength=\"160\" placeholder=\"\u0427\u0442\u043E \u0443\u0432\u0438\u0434\u0438\u0442 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0430 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0435\">\n      </label>\n      <label>\n        \u0421\u0446\u0435\u043D\u0430 \u0438 \u043F\u0440\u0430\u0432\u0438\u043B\u0430 \u0438\u0441\u0442\u043E\u0440\u0438\u0438\n        <textarea name=\"setup\" maxlength=\"900\" rows=\"5\" placeholder=\"\u0413\u0434\u0435 \u0432\u044B, \u0447\u0442\u043E \u043F\u0440\u043E\u0438\u0441\u0445\u043E\u0434\u0438\u0442, \u043A\u0430\u043A\u0430\u044F \u0440\u043E\u043B\u044C \u0443 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430...\" required></textarea>\n      </label>\n      <label>\n        \u041F\u0435\u0440\u0432\u043E\u0435 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u0435 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430\n        <textarea name=\"openingLine\" maxlength=\"240\" rows=\"3\" placeholder=\"\u0424\u0440\u0430\u0437\u0430, \u0441 \u043A\u043E\u0442\u043E\u0440\u043E\u0439 \u043D\u0430\u0447\u043D\u0435\u0442\u0441\u044F \u0447\u0430\u0442\" required></textarea>\n      </label>\n      <button class=\"primary-button\" type=\"submit\">").concat(isEditing ? "Сохранить изменения" : "Сохранить историю", "</button>\n    </form>\n  ");
+    if (isEditing) {
+        var titleInput = overlay.querySelector("input[name=\"title\"]");
+        if (titleInput) titleInput.value = existingStory.title;
+        var descInput = overlay.querySelector("input[name=\"description\"]");
+        if (descInput) descInput.value = existingStory.description || "";
+        var setupTA = overlay.querySelector("textarea[name=\"setup\"]");
+        if (setupTA) setupTA.value = existingStory.setup || "";
+        var openingTA = overlay.querySelector("textarea[name=\"openingLine\"]");
+        if (openingTA) openingTA.value = existingStory.openingLine || "";
+    }
     var close = function () { return overlay.remove(); };
     overlay.addEventListener("click", function (event) {
         if (event.target === overlay)
@@ -1211,21 +1255,29 @@ function openCustomStoryEditor() {
     });
     overlay.querySelector(".custom-story-close").addEventListener("click", close);
     overlay.querySelector("form").addEventListener("submit", function (event) { return __awaiter(_this, void 0, void 0, function () {
-        var form;
+        var form, payload;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
                     event.preventDefault();
                     form = new FormData(event.currentTarget);
-                    return [4 /*yield*/, createCustomStory({
-                            characterId: character.id,
-                            title: String(form.get("title") || ""),
-                            description: String(form.get("description") || ""),
-                            setup: String(form.get("setup") || ""),
-                            openingLine: String(form.get("openingLine") || ""),
-                        })];
+                    payload = {
+                        characterId: character.id,
+                        title: String(form.get("title") || ""),
+                        description: String(form.get("description") || ""),
+                        setup: String(form.get("setup") || ""),
+                        openingLine: String(form.get("openingLine") || ""),
+                    };
+                    if (!isEditing) return [3 /*break*/, 2];
+                    return [4 /*yield*/, updateCustomStory(existingStory.id, payload)];
                 case 1:
                     _a.sent();
+                    return [3 /*break*/, 4];
+                case 2: return [4 /*yield*/, createCustomStory(payload)];
+                case 3:
+                    _a.sent();
+                    _a.label = 4;
+                case 4:
                     close();
                     return [2 /*return*/];
             }
@@ -1262,6 +1314,77 @@ function createCustomStory(payload) {
                 case 3:
                     error_6 = _a.sent();
                     showToast(error_6.message || "Не удалось создать историю");
+                    return [3 /*break*/, 5];
+                case 4:
+                    setLoading(false);
+                    return [7 /*endfinally*/];
+                case 5: return [2 /*return*/];
+            }
+        });
+    });
+}
+function updateCustomStory(storyId, payload) {
+    return __awaiter(this, void 0, void 0, function () {
+        var data, error_7;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    setLoading(true);
+                    _a.label = 1;
+                case 1:
+                    _a.trys.push([1, 3, 4, 5]);
+                    return [4 /*yield*/, api("/miniapp/api/custom-story", {
+                            method: "PUT",
+                            body: { storyId: storyId, characterId: payload.characterId, title: payload.title, description: payload.description, setup: payload.setup, openingLine: payload.openingLine },
+                        })];
+                case 2:
+                    data = _a.sent();
+                    state.bootstrap.stories = data.stories || state.bootstrap.stories;
+                    setCachedStories(payload.characterId, state.bootstrap.stories);
+                    cacheBootstrap(state.bootstrap);
+                    renderStories();
+                    showToast("История обновлена.");
+                    return [3 /*break*/, 5];
+                case 3:
+                    error_7 = _a.sent();
+                    showToast(error_7.message || "Не удалось обновить историю");
+                    return [3 /*break*/, 5];
+                case 4:
+                    setLoading(false);
+                    return [7 /*endfinally*/];
+                case 5: return [2 /*return*/];
+            }
+        });
+    });
+}
+function deleteCustomStory(storyId) {
+    return __awaiter(this, void 0, void 0, function () {
+        var character, data, error_8;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    if (!confirm("Удалить эту историю? Это действие нельзя отменить.")) return [2 /*return*/];
+                    character = previewedCharacter();
+                    setLoading(true);
+                    _a.label = 1;
+                case 1:
+                    _a.trys.push([1, 3, 4, 5]);
+                    return [4 /*yield*/, api("/miniapp/api/delete-custom-story", {
+                            method: "POST",
+                            body: { storyId: storyId, characterId: character ? character.id : "" },
+                        })];
+                case 2:
+                    data = _a.sent();
+                    state.bootstrap.stories = data.stories || state.bootstrap.stories;
+                    state.bootstrap.customStory = data.customStory || state.bootstrap.customStory;
+                    setCachedStories(character ? character.id : "", state.bootstrap.stories);
+                    cacheBootstrap(state.bootstrap);
+                    renderStories();
+                    showToast("История удалена. Слот освобождён.");
+                    return [3 /*break*/, 5];
+                case 3:
+                    error_8 = _a.sent();
+                    showToast(error_8.message || "Не удалось удалить историю");
                     return [3 /*break*/, 5];
                 case 4:
                     setLoading(false);
