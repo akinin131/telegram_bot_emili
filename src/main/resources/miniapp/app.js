@@ -1709,7 +1709,7 @@ function renderSettings() {
   const character = selectedCharacter();
   const storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
   const activeStories = character ? storiesForCharacterFromCache(character.id) : null;
-  const story = (activeStories || []).find((item) => item.id === storyId);
+  const story = (activeStories || []).find((item) => item.id && storyId && item.id.toLowerCase() === storyId.toLowerCase());
   const storyText = story ? story.title : "Свободный чат";
   els.currentSelection.textContent = character
     ? storyText

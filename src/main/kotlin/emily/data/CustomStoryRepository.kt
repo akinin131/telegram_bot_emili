@@ -5,6 +5,7 @@ import com.google.firebase.database.FirebaseDatabase
 import emily.domain.StoryScenario
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 data class CustomStoryAccess(
     val userId: Long,
@@ -101,7 +102,8 @@ class CustomStoryRepository(
         require(current.storySlotsLeft > 0) { "No custom story slots left" }
 
         val now = System.currentTimeMillis()
-        val key = storiesRef.child(userId.toString()).push().key ?: "custom_$now"
+        val rawKey = storiesRef.child(userId.toString()).push().key ?: "custom_$now"
+        val key = rawKey.lowercase(Locale.ROOT)
         val story = CustomStory(
             id = "custom_$key",
             userId = userId,
@@ -123,9 +125,26 @@ class CustomStoryRepository(
         story
     }
 
-    suspend fun deleteStory(userId: Long, storyId: String) = withContext(Dispatchers.IO) {
+    private suspend fun resolveStoryChild(userId: Long, storyId: String): DataSnapshot? = withContext(Dispatchers.IO) {
         val key = storyId.removePrefix("custom_")
-        storiesRef.child(userId.toString()).child(key).removeValueAsync()
+        val ref = storiesRef.child(userId.toString())
+
+        val direct = ref.child(key).awaitSingle()
+        if (direct.exists()) return@withContext direct
+
+        val all = ref.awaitSingle()
+        for (child in all.children) {
+            val id = child.child("id").getValue(String::class.java)
+            if (id != null && id.equals(storyId, ignoreCase = true)) return@withContext child
+        }
+        null
+    }
+
+    suspend fun deleteStory(userId: Long, storyId: String) = withContext(Dispatchers.IO) {
+        val child = resolveStoryChild(userId, storyId)
+        if (child != null) {
+            storiesRef.child(userId.toString()).child(child.key).removeValueAsync()
+        }
 
         val current = accessRef.child(userId.toString()).awaitSingle().toAccess(userId)
         val updated = current.copy(
@@ -143,7 +162,7 @@ class CustomStoryRepository(
         setup: String,
         openingLine: String
     ) = withContext(Dispatchers.IO) {
-        val key = storyId.removePrefix("custom_")
+        val child = resolveStoryChild(userId, storyId) ?: return@withContext
         val now = System.currentTimeMillis()
         val updates = mapOf(
             "title" to title,
@@ -152,7 +171,7 @@ class CustomStoryRepository(
             "openingLine" to openingLine,
             "updatedAt" to now
         )
-        storiesRef.child(userId.toString()).child(key).updateChildrenAsync(updates)
+        storiesRef.child(userId.toString()).child(child.key).updateChildrenAsync(updates)
     }
 
     suspend fun listStories(userId: Long, characterId: String): List<CustomStory> = withContext(Dispatchers.IO) {
@@ -168,8 +187,8 @@ class CustomStoryRepository(
     }
 
     suspend fun getStory(userId: Long, storyId: String): CustomStory? = withContext(Dispatchers.IO) {
-        val key = storyId.removePrefix("custom_")
-        storiesRef.child(userId.toString()).child(key).awaitSingle().toCustomStory(userId)
+        val child = resolveStoryChild(userId, storyId)
+        child?.toCustomStory(userId)
     }
 
     private fun DataSnapshot.toAccess(userId: Long): CustomStoryAccess {
@@ -206,7 +225,7 @@ class CustomStoryRepository(
 
     private fun DataSnapshot.toCustomStory(userId: Long): CustomStory? {
         if (!exists()) return null
-        val id = child("id").getValue(String::class.java) ?: "custom_${key ?: return null}"
+        val id = (child("id").getValue(String::class.java) ?: "custom_${key ?: return null}").lowercase(Locale.ROOT)
         val characterId = child("characterId").getValue(String::class.java)?.takeIf { it.isNotBlank() } ?: return null
         val title = child("title").getValue(String::class.java)?.takeIf { it.isNotBlank() } ?: return null
         val shortDescription = child("shortDescription").getValue(String::class.java)?.takeIf { it.isNotBlank() } ?: ""

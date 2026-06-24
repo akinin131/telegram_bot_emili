@@ -1099,7 +1099,7 @@ p {
 }
 
 .dialog-choice-continue::after {
-  content: "в†’";
+  content: "→";
 }
 
 .dialog-choice-restart {
@@ -1109,7 +1109,7 @@ p {
 }
 
 .dialog-choice-restart::after {
-  content: "в†»";
+  content: "→»";
   color: rgba(167, 172, 184, 0.78);
 }
 

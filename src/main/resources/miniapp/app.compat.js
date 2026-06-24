@@ -1802,7 +1802,7 @@ function renderSettings() {
     var character = selectedCharacter();
     var storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
     var activeStories = character ? storiesForCharacterFromCache(character.id) : null;
-    var story = (activeStories || []).find(function (item) { return item.id === storyId; });
+    var story = (activeStories || []).find(function (item) { return item.id && storyId && item.id.toLowerCase() === storyId.toLowerCase(); });
     var storyText = story ? story.title : "Свободный чат";
     els.currentSelection.textContent = character
         ? storyText
