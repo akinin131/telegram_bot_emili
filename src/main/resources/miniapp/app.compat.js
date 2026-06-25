@@ -196,7 +196,7 @@ function on(element, eventName, handler) {
 }
 function loadBootstrap() {
     return __awaiter(this, arguments, void 0, function (nextScreen) {
-        var data, targetScreen, settings, pendingAudience, localCharacters, error_1;
+        var data, targetScreen, settings, pendingAudience, error_1;
         if (nextScreen === void 0) { nextScreen = null; }
         return __generator(this, function (_a) {
             switch (_a.label) {
@@ -212,11 +212,12 @@ function loadBootstrap() {
                     applyPendingAudience();
                     if (state.pendingAudienceTarget) {
                         pendingAudience = state.pendingAudienceTarget;
-                        localCharacters = charactersForAudience(pendingAudience);
                         applyAudienceSwitch(pendingAudience, {
-                            characters: localCharacters || data.characters || [],
-                            selectedCharacter: firstId(localCharacters || data.characters || []),
-                            selectedStory: null,
+                            characters: data.characters || [],
+                            stories: data.stories,
+                            selectedCharacter: (data.settings && data.settings.selectedCharacter) ||
+                                state.selectedCharacterId ||
+                                firstId(data.characters || []),
                         });
                     }
                     else {
@@ -755,6 +756,7 @@ function applyAudienceSwitch(audience, payload) {
         return;
     if (!state.bootstrap.settings)
         state.bootstrap.settings = {};
+    var currentStory = state.bootstrap.settings.selectedStory || null;
     var characters = payload.characters !== undefined
         ? payload.characters
         : (state.bootstrap.characters || charactersForAudience(audience) || []);
@@ -768,7 +770,7 @@ function applyAudienceSwitch(audience, payload) {
     state.bootstrap.settings.audiencePreference = audience;
     state.bootstrap.settings.selectedCharacter = selectedCharacter;
     state.bootstrap.settings.selectedStory =
-        payload.selectedStory !== undefined ? payload.selectedStory : null;
+        payload.selectedStory !== undefined ? payload.selectedStory : currentStory;
     state.bootstrap.characters = characters;
     state.bootstrap.stories = stories;
     if (payload.storiesByCharacter)
@@ -832,8 +834,10 @@ function selectAudience(audience_1) {
                     clearPendingAudience();
                     applyAudienceSwitch(data.audiencePreference, {
                         characters: data.characters,
+                        stories: data.stories,
                         storiesByCharacter: data.storiesByCharacter,
                         selectedCharacter: data.selectedCharacter,
+                        selectedStory: data.selectedStory,
                     });
                     if (state.currentScreen === targetScreen) {
                         showScreen(targetScreen);
@@ -1514,33 +1518,52 @@ function dialogVisual(dialog) {
     return { color: palette[Math.abs(hash) % palette.length], mark: mark };
 }
 function restoreDialog(dialogId) {
-    return __awaiter(this, void 0, void 0, function () {
-        var data, error_7;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
-                case 0:
-                    setLoading(true);
-                    _a.label = 1;
-                case 1:
-                    _a.trys.push([1, 3, 4, 5]);
-                    return [4 /*yield*/, api("/miniapp/api/restore-dialog", {
-                            method: "POST",
-                            body: { dialogId: dialogId },
-                        })];
-                case 2:
-                    data = _a.sent();
-                    finishInTelegram(data.sendData, "Диалог восстановлен. Возвращаю в чат бота.");
-                    return [3 /*break*/, 5];
-                case 3:
-                    error_7 = _a.sent();
-                    showToast(error_7.message || "Не удалось восстановить диалог");
-                    return [3 /*break*/, 5];
-                case 4:
-                    setLoading(false);
-                    return [7 /*endfinally*/];
-                case 5: return [2 /*return*/];
-            }
+    var dialog = findDialogById(dialogId) || { id: dialogId };
+    return confirmDialogReuse(dialog, {
+        allowRestart: false,
+        title: "Открыть сохранённый диалог?",
+        secondaryLabel: "Отмена",
+    })
+        .then(function (shouldContinue) {
+        if (shouldContinue !== true)
+            return null;
+        setLoading(true);
+        return api("/miniapp/api/restore-dialog", {
+            method: "POST",
+            body: { dialogId: dialogId },
+        })
+            .then(function (data) {
+            finishInTelegram(data.sendData, "Диалог восстановлен. Возвращаю в чат бота.");
+        })
+            .catch(function (error) {
+            showToast(error.message || "Не удалось восстановить диалог");
+        })
+            .then(function () {
+            setLoading(false);
         });
+    });
+}
+function findDialogById(dialogId) {
+    return (state.bootstrap && state.bootstrap.dialogs || [])
+        .find(function (dialog) { return dialog.id === dialogId; }) || null;
+}
+function loadDialogPreview(dialog) {
+    if (!dialog || !dialog.id)
+        return Promise.resolve(dialog);
+    if (Array.isArray(dialog.recentMessages) && Object.prototype.hasOwnProperty.call(dialog, "story"))
+        return Promise.resolve(dialog);
+    return api("/miniapp/api/dialog-preview?dialogId=".concat(encodeURIComponent(dialog.id)))
+        .then(function (data) {
+        var nextDialog = Object.assign({}, dialog, data.dialog || {}, {
+            story: data.story || null,
+            recentMessages: Array.isArray(data.recentMessages) ? data.recentMessages : [],
+        });
+        if (state.bootstrap && Array.isArray(state.bootstrap.dialogs)) {
+            var index = state.bootstrap.dialogs.findIndex(function (item) { return item.id === nextDialog.id; });
+            if (index >= 0)
+                state.bootstrap.dialogs[index] = nextDialog;
+        }
+        return nextDialog;
     });
 }
 function findExistingDialogForContext(characterId, storyId) {
@@ -1550,12 +1573,14 @@ function findExistingDialogForContext(characterId, storyId) {
         .filter(function (dialog) { return dialog.characterId === characterId && (dialog.storyId || null) === normalizedStoryId; })
         .sort(function (left, right) { return Number(right.updatedAt || 0) - Number(left.updatedAt || 0); })[0] || null;
 }
-function confirmDialogReuse(dialog) {
-    var mode;
+function confirmDialogReuse(dialog, options) {
+    if (options === void 0) { options = {}; }
     if (!dialog || document.querySelector(".dialog-choice-modal"))
         return Promise.resolve(null);
-    mode = dialog.storyTitle || "Свободный чат";
+    var allowRestart = options.allowRestart !== false;
     return new Promise(function (resolve) {
+        var hydratedDialog = dialog;
+        var mode = hydratedDialog.storyTitle || "Свободный чат";
         var overlay = document.createElement("div");
         overlay.className = "dialog-choice-modal";
         overlay.setAttribute("role", "dialog");
@@ -1569,7 +1594,7 @@ function confirmDialogReuse(dialog) {
         closeButton.textContent = "×";
         var avatar = document.createElement("img");
         avatar.className = "dialog-choice-avatar";
-        avatar.src = dialog.characterImageUrl;
+        avatar.src = hydratedDialog.characterImageUrl || "";
         avatar.alt = "";
         var heading = document.createElement("div");
         heading.className = "dialog-choice-heading";
@@ -1577,12 +1602,18 @@ function confirmDialogReuse(dialog) {
         kicker.className = "dialog-choice-kicker";
         kicker.textContent = "Сохранённый диалог";
         var title = document.createElement("h2");
-        title.textContent = "Продолжить разговор?";
+        title.textContent = options.title || "Продолжить разговор?";
         var context = document.createElement("div");
         context.className = "dialog-choice-context";
-        context.textContent = "".concat(dialog.characterName, " \u00B7 ").concat(mode);
+        context.textContent = "".concat(hydratedDialog.characterName || "Диалог", " \u00B7 ").concat(mode);
+        var meta = document.createElement("div");
+        meta.className = "dialog-choice-meta";
+        meta.textContent = hydratedDialog.updatedAt ? "\u041E\u0431\u043D\u043E\u0432\u043B\u0451\u043D ".concat(formatDialogTime(hydratedDialog.updatedAt)) : "Загружаю детали...";
         var description = document.createElement("p");
-        description.textContent = dialog.lastMessage || "В этом диалоге уже есть сохранённая история.";
+        description.className = "dialog-choice-description";
+        description.textContent = "Сцена и последние реплики помогут быстро вспомнить, где остановился разговор.";
+        var storyContext = dialogStoryContext(hydratedDialog);
+        var recent = dialogRecentMessages(hydratedDialog);
         var actions = document.createElement("div");
         actions.className = "dialog-choice-actions";
         var continueButton = document.createElement("button");
@@ -1592,25 +1623,100 @@ function confirmDialogReuse(dialog) {
         var restartButton = document.createElement("button");
         restartButton.type = "button";
         restartButton.className = "dialog-choice-restart";
-        restartButton.textContent = "Начать заново";
+        restartButton.textContent = options.secondaryLabel || "Начать заново";
         var finish = function (choice) {
             overlay.remove();
             resolve(choice);
         };
         continueButton.addEventListener("click", function () { return finish(true); });
-        restartButton.addEventListener("click", function () { return finish(false); });
+        restartButton.addEventListener("click", function () { return finish(allowRestart ? false : null); });
         closeButton.addEventListener("click", function () { return finish(null); });
         overlay.addEventListener("click", function (event) {
             if (event.target === overlay)
                 finish(null);
         });
         actions.append(continueButton, restartButton);
-        heading.append(kicker, title, context);
-        panel.append(closeButton, avatar, heading, description, actions);
+        heading.append(kicker, title, context, meta);
+        panel.append(closeButton, avatar, heading, description);
+        if (storyContext)
+            panel.append(storyContext);
+        panel.append(recent, actions);
         overlay.append(panel);
         document.body.append(overlay);
         continueButton.focus();
+        loadDialogPreview(dialog)
+            .then(function (nextDialog) {
+            if (!nextDialog || !overlay.isConnected)
+                return;
+            hydratedDialog = nextDialog;
+            var nextMode = hydratedDialog.storyTitle || "Свободный чат";
+            avatar.src = hydratedDialog.characterImageUrl || avatar.src;
+            context.textContent = "".concat(hydratedDialog.characterName || "Диалог", " \u00B7 ").concat(nextMode);
+            meta.textContent = hydratedDialog.updatedAt ? "\u041E\u0431\u043D\u043E\u0432\u043B\u0451\u043D ".concat(formatDialogTime(hydratedDialog.updatedAt)) : "";
+            var nextStoryContext = dialogStoryContext(hydratedDialog);
+            if (storyContext && nextStoryContext) {
+                storyContext.replaceWith(nextStoryContext);
+                storyContext = nextStoryContext;
+            }
+            else if (!storyContext && nextStoryContext) {
+                panel.insertBefore(nextStoryContext, recent);
+                storyContext = nextStoryContext;
+            }
+            else if (storyContext && !nextStoryContext) {
+                storyContext.remove();
+                storyContext = null;
+            }
+            var nextRecent = dialogRecentMessages(hydratedDialog);
+            recent.replaceWith(nextRecent);
+            recent = nextRecent;
+        })
+            .catch(function () { });
     });
+}
+function dialogStoryContext(dialog) {
+    var story = dialog && dialog.story;
+    if (!story)
+        return null;
+    var text = story.setup || story.description || "";
+    if (!text.trim())
+        return null;
+    var wrapper = document.createElement("div");
+    wrapper.className = "dialog-choice-story";
+    var label = document.createElement("span");
+    label.className = "dialog-choice-section-label";
+    label.textContent = "Сцена";
+    var body = document.createElement("p");
+    body.textContent = text;
+    wrapper.append(label, body);
+    return wrapper;
+}
+function dialogRecentMessages(dialog) {
+    var wrapper = document.createElement("div");
+    wrapper.className = "dialog-choice-recent";
+    var label = document.createElement("span");
+    label.className = "dialog-choice-section-label";
+    label.textContent = "Последние реплики";
+    wrapper.append(label);
+    var messages = Array.isArray(dialog.recentMessages) ? dialog.recentMessages : [];
+    if (messages.length === 0) {
+        var empty = document.createElement("p");
+        empty.className = "dialog-choice-recent-empty";
+        empty.textContent = dialog.lastMessage || "Сообщения пока не найдены.";
+        wrapper.append(empty);
+        return wrapper;
+    }
+    messages.forEach(function (message) {
+        var item = document.createElement("div");
+        item.className = "dialog-choice-message dialog-choice-message--".concat(message.role === "user" ? "user" : "assistant");
+        var author = document.createElement("span");
+        author.className = "dialog-choice-message-author";
+        author.textContent = message.role === "user" ? "Ты" : dialog.characterName;
+        var text = document.createElement("p");
+        text.textContent = message.text || "";
+        item.append(author, text);
+        wrapper.append(item);
+    });
+    return wrapper;
 }
 function selectStory(storyId, card) {
     var characterId = state.previewCharacterId || state.selectedCharacterId;
@@ -1794,6 +1900,35 @@ function escapeHtml(value) {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
 }
+function findKnownStory(characterId, storyId) {
+    if (!storyId)
+        return null;
+    var normalizedStoryId = String(storyId).toLowerCase();
+    var sources = [];
+    if (characterId) {
+        sources.push(storiesForCharacterFromCache(characterId));
+    }
+    sources.push(state.bootstrap && state.bootstrap.stories);
+    var storiesByCharacter = state.storiesByCharacter || {};
+    Object.keys(storiesByCharacter).forEach(function (characterKey) { return sources.push(storiesByCharacter[characterKey]); });
+    for (var _i = 0, sources_1 = sources; _i < sources_1.length; _i++) {
+        var stories = sources_1[_i];
+        if (!Array.isArray(stories))
+            continue;
+        var story = stories.find(function (item) { return item.id && item.id.toLowerCase() === normalizedStoryId; });
+        if (story)
+            return story;
+    }
+    return null;
+}
+function findKnownStoryTitle(characterId, storyId) {
+    if (!storyId)
+        return null;
+    var normalizedStoryId = String(storyId).toLowerCase();
+    var dialog = (state.bootstrap && state.bootstrap.dialogs || [])
+        .find(function (item) { return item.characterId === characterId && item.storyId && item.storyId.toLowerCase() === normalizedStoryId; });
+    return dialog && dialog.storyTitle ? dialog.storyTitle : null;
+}
 function renderSettings() {
     if (!state.bootstrap)
         return;
@@ -1801,14 +1936,16 @@ function renderSettings() {
     renderAudienceSettings();
     var character = selectedCharacter();
     var storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
-    var activeStories = character ? storiesForCharacterFromCache(character.id) : null;
-    var story = (activeStories || []).find(function (item) { return item.id && storyId && item.id.toLowerCase() === storyId.toLowerCase(); });
-    var storyText = story ? story.title : "Свободный чат";
+    var story = character ? findKnownStory(character.id, storyId) : null;
+    var fallbackStoryTitle = character ? findKnownStoryTitle(character.id, storyId) : null;
+    var storyTitle = story ? story.title : fallbackStoryTitle;
     els.currentSelection.textContent = character
-        ? storyText
-        : "История ещё не выбрана";
+        ? character.name
+        : "Персонаж не выбран";
     els.currentStoryHint.textContent = character
-        ? "".concat(character.name).concat(story ? " · сюжет выбран" : " · без сюжета")
+        ? storyId
+            ? "".concat(storyTitle || "История выбрана").concat(story && story.description ? " \u00B7 ".concat(story.description) : "")
+            : "Свободный чат · без сюжета"
         : "Выбери персонажа, потом историю или свободный чат.";
     var balance = state.bootstrap.balance;
     if (balance) {

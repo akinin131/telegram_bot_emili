@@ -1043,7 +1043,15 @@ p {
   white-space: normal;
 }
 
-.dialog-choice-panel p {
+.dialog-choice-meta {
+  margin-top: 4px;
+  color: rgba(231, 233, 239, 0.42);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.dialog-choice-description {
   grid-column: 1 / -1;
   margin: 0;
   color: rgba(231, 233, 239, 0.58);
@@ -1052,6 +1060,86 @@ p {
   line-height: 1.48;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.dialog-choice-story,
+.dialog-choice-recent {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.dialog-choice-story {
+  padding: 10px 11px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+}
+
+.dialog-choice-section-label {
+  color: rgba(231, 233, 239, 0.52);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dialog-choice-story p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: rgba(231, 233, 239, 0.72);
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.dialog-choice-message {
+  display: grid;
+  gap: 3px;
+  width: min(100%, 420px);
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+.dialog-choice-message--user {
+  justify-self: end;
+  background: rgba(112, 216, 206, 0.12);
+  border-color: rgba(112, 216, 206, 0.22);
+}
+
+.dialog-choice-message--assistant {
+  justify-self: start;
+  background: rgba(184, 164, 255, 0.11);
+  border-color: rgba(184, 164, 255, 0.2);
+}
+
+.dialog-choice-message-author {
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.dialog-choice-message p,
+.dialog-choice-recent-empty {
+  margin: 0;
+  color: rgba(231, 233, 239, 0.82);
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1.36;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.dialog-choice-recent-empty {
+  color: rgba(231, 233, 239, 0.58);
 }
 
 .dialog-choice-actions {

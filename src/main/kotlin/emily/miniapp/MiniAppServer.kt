@@ -112,6 +112,7 @@ class MiniAppServer(
             path.startsWith("/miniapp/image/gallery/") && exchange.requestMethod == "GET" -> serveGalleryImage(exchange)
             path == "/miniapp/api/bootstrap" && exchange.requestMethod == "GET" -> handleBootstrap(exchange)
             path == "/miniapp/api/gallery" && exchange.requestMethod == "GET" -> handleGallery(exchange)
+            path == "/miniapp/api/dialog-preview" && exchange.requestMethod == "GET" -> handleDialogPreview(exchange)
             path == "/miniapp/api/stories" && exchange.requestMethod == "GET" -> handleStories(exchange)
             path == "/miniapp/api/audience" && exchange.requestMethod == "POST" -> handleAudiencePreference(exchange)
             path == "/miniapp/api/select-character" && exchange.requestMethod == "POST" -> handleSelectCharacter(exchange)
@@ -446,6 +447,26 @@ class MiniAppServer(
         )
     }
 
+    private fun handleDialogPreview(exchange: HttpExchange) = runBlocking {
+        val user = authenticate(exchange) ?: return@runBlocking
+        val dialogId = queryParam(exchange, "dialogId")
+            ?: return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "dialogId is required"))
+        val dialog = dialogRepository.getDialog(user.id, dialogId)
+            ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Dialog not found"))
+        val story = dialog.storyId?.let { resolveStory(user.id, it) }
+        val recentMessages = dialogRepository.getMessages(user.id, dialog.id, limit = 8)
+
+        sendJson(
+            exchange = exchange,
+            status = 200,
+            body = JSONObject()
+                .put("ok", true)
+                .put("dialog", dialog.toMiniAppJson())
+                .put("story", story?.toMiniAppJson() ?: JSONObject.NULL)
+                .put("recentMessages", JSONArray(recentMessages.map { it.toMiniAppJson() }))
+        )
+    }
+
     private fun handleCreateCustomStory(exchange: HttpExchange) = runBlocking {
         val user = authenticate(exchange) ?: return@runBlocking
         val body = readJson(exchange)
@@ -707,7 +728,8 @@ class MiniAppServer(
 
         val messages = dialogRepository.getMessages(user.id, dialog.id, limit = 80)
         restoreConversation(user.id, character, story, messages)
-        val telegramResult = notifyDialogRestored(user.id, dialog)
+        val recentMessages = messages.takeLast(8)
+        val telegramResult = notifyDialogRestored(user.id, dialog, recentMessages)
 
         sendJson(
             exchange = exchange,
@@ -717,6 +739,7 @@ class MiniAppServer(
                 .put("activeDialogId", dialog.id)
                 .put("selectedCharacter", character.id)
                 .put("selectedStory", story?.id ?: JSONObject.NULL)
+                .put("recentMessages", JSONArray(recentMessages.map { it.toMiniAppJson() }))
                 .put("telegram", telegramResult.toJson())
                 .put("sendData", JSONObject()
                     .put("action", "dialog_restored")
@@ -843,7 +866,11 @@ class MiniAppServer(
         return sendCharacterPhotoNotice(userId, character, text)
     }
 
-    private fun notifyDialogRestored(userId: Long, dialog: DialogSummary): TelegramSendResult {
+    private fun notifyDialogRestored(
+        userId: Long,
+        dialog: DialogSummary,
+        recentMessages: List<DialogMessage>
+    ): TelegramSendResult {
         val text = buildString {
             append("<b>↩️ Диалог открыт</b>\n\n")
             append("👤 <b>Персонаж:</b> ")
@@ -851,6 +878,13 @@ class MiniAppServer(
             append("\n")
             append("📖 <b>История:</b> ")
             append(html(dialog.storyTitle ?: "Свободный чат"))
+            if (recentMessages.isNotEmpty()) {
+                append("\n\n")
+                append("<b>Последние сообщения:</b>\n")
+                append("<blockquote>")
+                append(html(dialogMessagePreview(dialog, recentMessages)))
+                append("</blockquote>")
+            }
             append("\n\n")
             append("Продолжай с того места, где остановился.")
         }
@@ -860,6 +894,16 @@ class MiniAppServer(
         } else {
             telegramApi.sendMessage(userId, text, parseMode = "HTML")
         }
+    }
+
+    private fun dialogMessagePreview(dialog: DialogSummary, messages: List<DialogMessage>): String {
+        return messages
+            .filter { it.role == "user" || it.role == "assistant" }
+            .takeLast(8)
+            .joinToString("\n") { message ->
+                val author = if (message.role == "assistant") dialog.characterName else "Ты"
+                "$author: ${message.text.compactForPreview(130)}"
+            }
     }
 
     private fun sendCharacterPhotoNotice(
@@ -891,6 +935,12 @@ class MiniAppServer(
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+
+    private fun String.compactForPreview(maxLength: Int): String {
+        val compact = trim().replace(Regex("\\s+"), " ")
+        if (compact.length <= maxLength) return compact
+        return compact.take(maxLength).trimEnd() + "..."
+    }
 
     private fun authenticate(exchange: HttpExchange): MiniAppUser? {
         val initData = exchange.requestHeaders.getFirst("X-Telegram-Init-Data").orEmpty()
@@ -1128,6 +1178,11 @@ class MiniAppServer(
         .put("lastRole", lastRole ?: JSONObject.NULL)
         .put("createdAt", createdAt)
         .put("updatedAt", updatedAt)
+
+    private fun DialogMessage.toMiniAppJson(): JSONObject = JSONObject()
+        .put("role", role)
+        .put("text", text)
+        .put("createdAt", createdAt)
 
     private fun characterImagePath(characterId: String): String =
         "/miniapp/image/character/$characterId?v=$characterImageVersion"

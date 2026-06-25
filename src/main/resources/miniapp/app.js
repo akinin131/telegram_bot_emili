@@ -174,11 +174,13 @@ async function loadBootstrap(nextScreen = null) {
 
     if (state.pendingAudienceTarget) {
       const pendingAudience = state.pendingAudienceTarget;
-      const localCharacters = charactersForAudience(pendingAudience);
       applyAudienceSwitch(pendingAudience, {
-        characters: localCharacters || data.characters || [],
-        selectedCharacter: firstId(localCharacters || data.characters || []),
-        selectedStory: null,
+        characters: data.characters || [],
+        stories: data.stories,
+        selectedCharacter:
+          (data.settings && data.settings.selectedCharacter) ||
+          state.selectedCharacterId ||
+          firstId(data.characters || []),
       });
     } else {
       reconcileAudienceState({ persist: true });
@@ -696,6 +698,7 @@ function restoreAudienceSnapshot(snapshot) {
 function applyAudienceSwitch(audience, payload = {}) {
   if (!state.bootstrap) return;
   if (!state.bootstrap.settings) state.bootstrap.settings = {};
+  const currentStory = state.bootstrap.settings.selectedStory || null;
 
   const characters = payload.characters !== undefined
     ? payload.characters
@@ -712,7 +715,7 @@ function applyAudienceSwitch(audience, payload = {}) {
   state.bootstrap.settings.audiencePreference = audience;
   state.bootstrap.settings.selectedCharacter = selectedCharacter;
   state.bootstrap.settings.selectedStory =
-    payload.selectedStory !== undefined ? payload.selectedStory : null;
+    payload.selectedStory !== undefined ? payload.selectedStory : currentStory;
   state.bootstrap.characters = characters;
   state.bootstrap.stories = stories;
   if (payload.storiesByCharacter) syncStoriesByCharacter(payload.storiesByCharacter);
@@ -778,8 +781,10 @@ async function selectAudience(audience, options = {}) {
 
     applyAudienceSwitch(data.audiencePreference, {
       characters: data.characters,
+      stories: data.stories,
       storiesByCharacter: data.storiesByCharacter,
       selectedCharacter: data.selectedCharacter,
+      selectedStory: data.selectedStory,
     });
 
     console.log("[audit] selectAudience after API apply selectedCharacterId=%s", state.selectedCharacterId);
@@ -1444,6 +1449,14 @@ function dialogVisual(dialog) {
 }
 
 async function restoreDialog(dialogId) {
+  const dialog = findDialogById(dialogId) || { id: dialogId };
+  const shouldContinue = await confirmDialogReuse(dialog, {
+    allowRestart: false,
+    title: "Открыть сохранённый диалог?",
+    secondaryLabel: "Отмена",
+  });
+  if (shouldContinue !== true) return;
+
   setLoading(true);
   try {
     const data = await api("/miniapp/api/restore-dialog", {
@@ -1458,6 +1471,31 @@ async function restoreDialog(dialogId) {
   }
 }
 
+function findDialogById(dialogId) {
+  return (state.bootstrap && state.bootstrap.dialogs || [])
+    .find((dialog) => dialog.id === dialogId) || null;
+}
+
+async function loadDialogPreview(dialog) {
+  if (!dialog || !dialog.id) return dialog;
+  if (Array.isArray(dialog.recentMessages) && Object.prototype.hasOwnProperty.call(dialog, "story")) return dialog;
+
+  const data = await api(`/miniapp/api/dialog-preview?dialogId=${encodeURIComponent(dialog.id)}`);
+  const nextDialog = {
+    ...dialog,
+    ...(data.dialog || {}),
+    story: data.story || null,
+    recentMessages: Array.isArray(data.recentMessages) ? data.recentMessages : [],
+  };
+
+  if (state.bootstrap && Array.isArray(state.bootstrap.dialogs)) {
+    const index = state.bootstrap.dialogs.findIndex((item) => item.id === nextDialog.id);
+    if (index >= 0) state.bootstrap.dialogs[index] = nextDialog;
+  }
+
+  return nextDialog;
+}
+
 function findExistingDialogForContext(characterId, storyId) {
   const dialogs = state.bootstrap && state.bootstrap.dialogs || [];
   const normalizedStoryId = storyId || null;
@@ -1466,10 +1504,12 @@ function findExistingDialogForContext(characterId, storyId) {
     .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))[0] || null;
 }
 
-function confirmDialogReuse(dialog) {
+function confirmDialogReuse(dialog, options = {}) {
   if (!dialog || document.querySelector(".dialog-choice-modal")) return Promise.resolve(null);
-  const mode = dialog.storyTitle || "Свободный чат";
+  const allowRestart = options.allowRestart !== false;
   return new Promise((resolve) => {
+    let hydratedDialog = dialog;
+    const mode = hydratedDialog.storyTitle || "Свободный чат";
     const overlay = document.createElement("div");
     overlay.className = "dialog-choice-modal";
     overlay.setAttribute("role", "dialog");
@@ -1486,7 +1526,7 @@ function confirmDialogReuse(dialog) {
 
     const avatar = document.createElement("img");
     avatar.className = "dialog-choice-avatar";
-    avatar.src = dialog.characterImageUrl;
+    avatar.src = hydratedDialog.characterImageUrl || "";
     avatar.alt = "";
 
     const heading = document.createElement("div");
@@ -1495,13 +1535,20 @@ function confirmDialogReuse(dialog) {
     kicker.className = "dialog-choice-kicker";
     kicker.textContent = "Сохранённый диалог";
     const title = document.createElement("h2");
-    title.textContent = "Продолжить разговор?";
+    title.textContent = options.title || "Продолжить разговор?";
     const context = document.createElement("div");
     context.className = "dialog-choice-context";
-    context.textContent = `${dialog.characterName} · ${mode}`;
+    context.textContent = `${hydratedDialog.characterName || "Диалог"} · ${mode}`;
+    const meta = document.createElement("div");
+    meta.className = "dialog-choice-meta";
+    meta.textContent = hydratedDialog.updatedAt ? `Обновлён ${formatDialogTime(hydratedDialog.updatedAt)}` : "Загружаю детали...";
 
     const description = document.createElement("p");
-    description.textContent = dialog.lastMessage || "В этом диалоге уже есть сохранённая история.";
+    description.className = "dialog-choice-description";
+    description.textContent = "Сцена и последние реплики помогут быстро вспомнить, где остановился разговор.";
+
+    let storyContext = dialogStoryContext(hydratedDialog);
+    let recent = dialogRecentMessages(hydratedDialog);
 
     const actions = document.createElement("div");
     actions.className = "dialog-choice-actions";
@@ -1512,26 +1559,111 @@ function confirmDialogReuse(dialog) {
     const restartButton = document.createElement("button");
     restartButton.type = "button";
     restartButton.className = "dialog-choice-restart";
-    restartButton.textContent = "Начать заново";
+    restartButton.textContent = options.secondaryLabel || "Начать заново";
 
     const finish = (choice) => {
       overlay.remove();
       resolve(choice);
     };
     continueButton.addEventListener("click", () => finish(true));
-    restartButton.addEventListener("click", () => finish(false));
+    restartButton.addEventListener("click", () => finish(allowRestart ? false : null));
     closeButton.addEventListener("click", () => finish(null));
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) finish(null);
     });
 
     actions.append(continueButton, restartButton);
-    heading.append(kicker, title, context);
-    panel.append(closeButton, avatar, heading, description, actions);
+    heading.append(kicker, title, context, meta);
+    panel.append(closeButton, avatar, heading, description);
+    if (storyContext) panel.append(storyContext);
+    panel.append(recent, actions);
     overlay.append(panel);
     document.body.append(overlay);
     continueButton.focus();
+
+    loadDialogPreview(dialog)
+      .then((nextDialog) => {
+        if (!nextDialog || !overlay.isConnected) return;
+        hydratedDialog = nextDialog;
+        const nextMode = hydratedDialog.storyTitle || "Свободный чат";
+        avatar.src = hydratedDialog.characterImageUrl || avatar.src;
+        context.textContent = `${hydratedDialog.characterName || "Диалог"} · ${nextMode}`;
+        meta.textContent = hydratedDialog.updatedAt ? `Обновлён ${formatDialogTime(hydratedDialog.updatedAt)}` : "";
+
+        const nextStoryContext = dialogStoryContext(hydratedDialog);
+        if (storyContext && nextStoryContext) {
+          storyContext.replaceWith(nextStoryContext);
+          storyContext = nextStoryContext;
+        } else if (!storyContext && nextStoryContext) {
+          panel.insertBefore(nextStoryContext, recent);
+          storyContext = nextStoryContext;
+        } else if (storyContext && !nextStoryContext) {
+          storyContext.remove();
+          storyContext = null;
+        }
+
+        const nextRecent = dialogRecentMessages(hydratedDialog);
+        recent.replaceWith(nextRecent);
+        recent = nextRecent;
+      })
+      .catch(() => {});
   });
+}
+
+function dialogStoryContext(dialog) {
+  const story = dialog && dialog.story;
+  if (!story) return null;
+  const text = story.setup || story.description || "";
+  if (!text.trim()) return null;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "dialog-choice-story";
+
+  const label = document.createElement("span");
+  label.className = "dialog-choice-section-label";
+  label.textContent = "Сцена";
+
+  const body = document.createElement("p");
+  body.textContent = text;
+
+  wrapper.append(label, body);
+  return wrapper;
+}
+
+function dialogRecentMessages(dialog) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "dialog-choice-recent";
+
+  const label = document.createElement("span");
+  label.className = "dialog-choice-section-label";
+  label.textContent = "Последние реплики";
+  wrapper.append(label);
+
+  const messages = Array.isArray(dialog.recentMessages) ? dialog.recentMessages : [];
+  if (messages.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "dialog-choice-recent-empty";
+    empty.textContent = dialog.lastMessage || "Сообщения пока не найдены.";
+    wrapper.append(empty);
+    return wrapper;
+  }
+
+  messages.forEach((message) => {
+    const item = document.createElement("div");
+    item.className = `dialog-choice-message dialog-choice-message--${message.role === "user" ? "user" : "assistant"}`;
+
+    const author = document.createElement("span");
+    author.className = "dialog-choice-message-author";
+    author.textContent = message.role === "user" ? "Ты" : dialog.characterName;
+
+    const text = document.createElement("p");
+    text.textContent = message.text || "";
+
+    item.append(author, text);
+    wrapper.append(item);
+  });
+
+  return wrapper;
 }
 
 async function selectStory(storyId, card = null) {
@@ -1700,6 +1832,34 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function findKnownStory(characterId, storyId) {
+  if (!storyId) return null;
+  const normalizedStoryId = String(storyId).toLowerCase();
+  const sources = [];
+
+  if (characterId) {
+    sources.push(storiesForCharacterFromCache(characterId));
+  }
+  sources.push(state.bootstrap && state.bootstrap.stories);
+  Object.values(state.storiesByCharacter || {}).forEach((stories) => sources.push(stories));
+
+  for (const stories of sources) {
+    if (!Array.isArray(stories)) continue;
+    const story = stories.find((item) => item.id && item.id.toLowerCase() === normalizedStoryId);
+    if (story) return story;
+  }
+
+  return null;
+}
+
+function findKnownStoryTitle(characterId, storyId) {
+  if (!storyId) return null;
+  const normalizedStoryId = String(storyId).toLowerCase();
+  const dialog = (state.bootstrap && state.bootstrap.dialogs || [])
+    .find((item) => item.characterId === characterId && item.storyId && item.storyId.toLowerCase() === normalizedStoryId);
+  return dialog && dialog.storyTitle ? dialog.storyTitle : null;
+}
+
 function renderSettings() {
   if (!state.bootstrap) return;
 
@@ -1708,14 +1868,17 @@ function renderSettings() {
 
   const character = selectedCharacter();
   const storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
-  const activeStories = character ? storiesForCharacterFromCache(character.id) : null;
-  const story = (activeStories || []).find((item) => item.id && storyId && item.id.toLowerCase() === storyId.toLowerCase());
-  const storyText = story ? story.title : "Свободный чат";
+  const story = character ? findKnownStory(character.id, storyId) : null;
+  const fallbackStoryTitle = character ? findKnownStoryTitle(character.id, storyId) : null;
+  const storyTitle = story ? story.title : fallbackStoryTitle;
+
   els.currentSelection.textContent = character
-    ? storyText
-    : "История ещё не выбрана";
+    ? character.name
+    : "Персонаж не выбран";
   els.currentStoryHint.textContent = character
-    ? `${character.name}${story ? " · сюжет выбран" : " · без сюжета"}`
+    ? storyId
+      ? `${storyTitle || "История выбрана"}${story && story.description ? ` · ${story.description}` : ""}`
+      : "Свободный чат · без сюжета"
     : "Выбери персонажа, потом историю или свободный чат.";
 
   const balance = state.bootstrap.balance;
