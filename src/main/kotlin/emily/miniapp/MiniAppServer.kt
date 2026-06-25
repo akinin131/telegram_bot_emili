@@ -146,6 +146,10 @@ class MiniAppServer(
         val dialogs = dialogRepository.listDialogs(user.id, limit = 50)
         val selectedCharacter = BotCatalog.characterById(selectedCharacterId)
             ?: BotCatalog.defaultCharacterForAudience(audiencePreference)
+        val selectedStory = selectedStoryId?.let { resolveStory(user.id, it) }
+        val selectedStoryTitle = selectedStory?.title
+            ?: dialogs.firstOrNull { it.id == activeDialogId && it.storyId == selectedStoryId }?.storyTitle
+            ?: dialogs.firstOrNull { it.storyId == selectedStoryId }?.storyTitle
         println("MiniAppServer: bootstrap resolved selectedCharacter=${selectedCharacter.id}")
         val customStoryAccess = customStoryRepository.getAccess(user.id)
 
@@ -164,6 +168,7 @@ class MiniAppServer(
                     .put("audiencePreference", audiencePreference ?: JSONObject.NULL)
                     .put("selectedCharacter", selectedCharacter.id)
                     .put("selectedStory", selectedStoryId)
+                    .put("selectedStoryTitle", selectedStoryTitle ?: JSONObject.NULL)
                     .put("activeDialogId", activeDialogId)
                 )
                 .put("balance", JSONObject()
@@ -213,6 +218,7 @@ class MiniAppServer(
         println("MiniAppServer: audiencePreference selectedId=$selectedId")
 
         val currentStoryId = userSettingsRepository.getSelectedStory(user.id)
+        val currentStory = currentStoryId?.let { resolveStory(user.id, it) }
         println("MiniAppServer: audiencePreference currentStoryId=$currentStoryId")
 
         sendJson(
@@ -223,6 +229,7 @@ class MiniAppServer(
                 .put("audiencePreference", audience)
                 .put("selectedCharacter", selectedId)
                 .put("selectedStory", currentStoryId ?: JSONObject.NULL)
+                .put("selectedStoryTitle", currentStory?.title ?: JSONObject.NULL)
                 .put("characters", JSONArray(BotCatalog.characters.map { it.toMiniAppJson() }))
                 .put("charactersByAudience", charactersByAudienceJson())
                 .put("stories", storiesJson(user.id, selectedId))

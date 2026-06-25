@@ -757,6 +757,7 @@ function applyAudienceSwitch(audience, payload) {
     if (!state.bootstrap.settings)
         state.bootstrap.settings = {};
     var currentStory = state.bootstrap.settings.selectedStory || null;
+    var currentStoryTitle = state.bootstrap.settings.selectedStoryTitle || null;
     var characters = payload.characters !== undefined
         ? payload.characters
         : (state.bootstrap.characters || charactersForAudience(audience) || []);
@@ -771,6 +772,8 @@ function applyAudienceSwitch(audience, payload) {
     state.bootstrap.settings.selectedCharacter = selectedCharacter;
     state.bootstrap.settings.selectedStory =
         payload.selectedStory !== undefined ? payload.selectedStory : currentStory;
+    state.bootstrap.settings.selectedStoryTitle =
+        payload.selectedStoryTitle !== undefined ? payload.selectedStoryTitle : currentStoryTitle;
     state.bootstrap.characters = characters;
     state.bootstrap.stories = stories;
     if (payload.storiesByCharacter)
@@ -838,6 +841,7 @@ function selectAudience(audience_1) {
                         storiesByCharacter: data.storiesByCharacter,
                         selectedCharacter: data.selectedCharacter,
                         selectedStory: data.selectedStory,
+                        selectedStoryTitle: data.selectedStoryTitle,
                     });
                     if (state.currentScreen === targetScreen) {
                         showScreen(targetScreen);
@@ -1518,11 +1522,26 @@ function dialogVisual(dialog) {
     return { color: palette[Math.abs(hash) % palette.length], mark: mark };
 }
 function restoreDialog(dialogId) {
-    var dialog = findDialogById(dialogId) || { id: dialogId };
-    return confirmDialogReuse(dialog, {
-        allowRestart: false,
-        title: "Открыть сохранённый диалог?",
-        secondaryLabel: "Отмена",
+    var dialog = findDialogById(dialogId);
+    setLoading(true);
+    return loadDialogPreview(dialog || { id: dialogId })
+        .then(function (previewDialog) {
+        dialog = previewDialog;
+    })
+        .catch(function (error) {
+        showToast(error.message || "Не удалось загрузить диалог");
+        dialog = null;
+        return null;
+    })
+        .then(function () {
+        setLoading(false);
+        if (!dialog)
+            return null;
+        return confirmDialogReuse(dialog, {
+            allowRestart: false,
+            title: "Открыть сохранённый диалог?",
+            secondaryLabel: "Отмена",
+        });
     })
         .then(function (shouldContinue) {
         if (shouldContinue !== true)
@@ -1578,9 +1597,8 @@ function confirmDialogReuse(dialog, options) {
     if (!dialog || document.querySelector(".dialog-choice-modal"))
         return Promise.resolve(null);
     var allowRestart = options.allowRestart !== false;
+    var mode = dialog.storyTitle || "Свободный чат";
     return new Promise(function (resolve) {
-        var hydratedDialog = dialog;
-        var mode = hydratedDialog.storyTitle || "Свободный чат";
         var overlay = document.createElement("div");
         overlay.className = "dialog-choice-modal";
         overlay.setAttribute("role", "dialog");
@@ -1594,7 +1612,7 @@ function confirmDialogReuse(dialog, options) {
         closeButton.textContent = "×";
         var avatar = document.createElement("img");
         avatar.className = "dialog-choice-avatar";
-        avatar.src = hydratedDialog.characterImageUrl || "";
+        avatar.src = dialog.characterImageUrl || "";
         avatar.alt = "";
         var heading = document.createElement("div");
         heading.className = "dialog-choice-heading";
@@ -1605,15 +1623,15 @@ function confirmDialogReuse(dialog, options) {
         title.textContent = options.title || "Продолжить разговор?";
         var context = document.createElement("div");
         context.className = "dialog-choice-context";
-        context.textContent = "".concat(hydratedDialog.characterName || "Диалог", " \u00B7 ").concat(mode);
+        context.textContent = "".concat(dialog.characterName || "Диалог", " \u00B7 ").concat(mode);
         var meta = document.createElement("div");
         meta.className = "dialog-choice-meta";
-        meta.textContent = hydratedDialog.updatedAt ? "\u041E\u0431\u043D\u043E\u0432\u043B\u0451\u043D ".concat(formatDialogTime(hydratedDialog.updatedAt)) : "Загружаю детали...";
+        meta.textContent = dialog.updatedAt ? "\u041E\u0431\u043D\u043E\u0432\u043B\u0451\u043D ".concat(formatDialogTime(dialog.updatedAt)) : "";
         var description = document.createElement("p");
         description.className = "dialog-choice-description";
         description.textContent = "Сцена и последние реплики помогут быстро вспомнить, где остановился разговор.";
-        var storyContext = dialogStoryContext(hydratedDialog);
-        var recent = dialogRecentMessages(hydratedDialog);
+        var storyContext = dialogStoryContext(dialog);
+        var recent = dialogRecentMessages(dialog);
         var actions = document.createElement("div");
         actions.className = "dialog-choice-actions";
         var continueButton = document.createElement("button");
@@ -1644,33 +1662,6 @@ function confirmDialogReuse(dialog, options) {
         overlay.append(panel);
         document.body.append(overlay);
         continueButton.focus();
-        loadDialogPreview(dialog)
-            .then(function (nextDialog) {
-            if (!nextDialog || !overlay.isConnected)
-                return;
-            hydratedDialog = nextDialog;
-            var nextMode = hydratedDialog.storyTitle || "Свободный чат";
-            avatar.src = hydratedDialog.characterImageUrl || avatar.src;
-            context.textContent = "".concat(hydratedDialog.characterName || "Диалог", " \u00B7 ").concat(nextMode);
-            meta.textContent = hydratedDialog.updatedAt ? "\u041E\u0431\u043D\u043E\u0432\u043B\u0451\u043D ".concat(formatDialogTime(hydratedDialog.updatedAt)) : "";
-            var nextStoryContext = dialogStoryContext(hydratedDialog);
-            if (storyContext && nextStoryContext) {
-                storyContext.replaceWith(nextStoryContext);
-                storyContext = nextStoryContext;
-            }
-            else if (!storyContext && nextStoryContext) {
-                panel.insertBefore(nextStoryContext, recent);
-                storyContext = nextStoryContext;
-            }
-            else if (storyContext && !nextStoryContext) {
-                storyContext.remove();
-                storyContext = null;
-            }
-            var nextRecent = dialogRecentMessages(hydratedDialog);
-            recent.replaceWith(nextRecent);
-            recent = nextRecent;
-        })
-            .catch(function () { });
     });
 }
 function dialogStoryContext(dialog) {
@@ -1925,7 +1916,16 @@ function findKnownStoryTitle(characterId, storyId) {
     if (!storyId)
         return null;
     var normalizedStoryId = String(storyId).toLowerCase();
-    var dialog = (state.bootstrap && state.bootstrap.dialogs || [])
+    var settings = state.bootstrap && state.bootstrap.settings || {};
+    if (settings.selectedStory && settings.selectedStory.toLowerCase() === normalizedStoryId && settings.selectedStoryTitle) {
+        return settings.selectedStoryTitle;
+    }
+    var dialogs = state.bootstrap && state.bootstrap.dialogs || [];
+    var activeDialog = dialogs
+        .find(function (item) { return item.id === settings.activeDialogId && item.storyId && item.storyId.toLowerCase() === normalizedStoryId; });
+    if (activeDialog && activeDialog.storyTitle)
+        return activeDialog.storyTitle;
+    var dialog = dialogs
         .find(function (item) { return item.characterId === characterId && item.storyId && item.storyId.toLowerCase() === normalizedStoryId; });
     return dialog && dialog.storyTitle ? dialog.storyTitle : null;
 }
@@ -1944,7 +1944,7 @@ function renderSettings() {
         : "Персонаж не выбран";
     els.currentStoryHint.textContent = character
         ? storyId
-            ? "".concat(storyTitle || "История выбрана").concat(story && story.description ? " \u00B7 ".concat(story.description) : "")
+            ? storyTitle || "История выбрана"
             : "Свободный чат · без сюжета"
         : "Выбери персонажа, потом историю или свободный чат.";
     var balance = state.bootstrap.balance;
