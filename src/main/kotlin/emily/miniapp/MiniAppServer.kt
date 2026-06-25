@@ -150,8 +150,9 @@ class MiniAppServer(
         val selectedStoryTitle = selectedStory?.title
             ?: dialogs.firstOrNull { it.id == activeDialogId && it.storyId == selectedStoryId }?.storyTitle
             ?: dialogs.firstOrNull { it.storyId == selectedStoryId }?.storyTitle
-        println("MiniAppServer: bootstrap resolved selectedCharacter=${selectedCharacter.id}")
+        println("MiniAppServer: bootstrap resolved selectedCharacter=${selectedCharacter.id} selectedStory=$selectedStory selectedStoryTitle=$selectedStoryTitle")
         val customStoryAccess = customStoryRepository.getAccess(user.id)
+        val allCustomStories = customStoryRepository.listAllStories(user.id)
 
         sendJson(
             exchange = exchange,
@@ -182,8 +183,8 @@ class MiniAppServer(
                 )
                 .put("characters", JSONArray(BotCatalog.characters.map { it.toMiniAppJson() }))
                 .put("charactersByAudience", charactersByAudienceJson())
-                .put("stories", storiesJson(user.id, selectedCharacter.id))
-                .put("storiesByCharacter", storiesByCharacterJson(user.id, BotCatalog.characters))
+                .put("stories", storiesJson(user.id, selectedCharacter.id, allCustomStories))
+                .put("storiesByCharacter", storiesByCharacterJson(BotCatalog.characters, allCustomStories))
                 .put("dialogs", JSONArray(dialogs.map { it.toMiniAppJson() }))
                 .put("customStory", customStoryAccessJson(customStoryAccess))
                 .put("payments", JSONObject()
@@ -219,6 +220,7 @@ class MiniAppServer(
 
         val currentStoryId = userSettingsRepository.getSelectedStory(user.id)
         val currentStory = currentStoryId?.let { resolveStory(user.id, it) }
+        val allCustomStories = customStoryRepository.listAllStories(user.id)
         println("MiniAppServer: audiencePreference currentStoryId=$currentStoryId")
 
         sendJson(
@@ -232,8 +234,8 @@ class MiniAppServer(
                 .put("selectedStoryTitle", currentStory?.title ?: JSONObject.NULL)
                 .put("characters", JSONArray(BotCatalog.characters.map { it.toMiniAppJson() }))
                 .put("charactersByAudience", charactersByAudienceJson())
-                .put("stories", storiesJson(user.id, selectedId))
-                .put("storiesByCharacter", storiesByCharacterJson(user.id, BotCatalog.characters))
+                .put("stories", storiesJson(user.id, selectedId, allCustomStories))
+                .put("storiesByCharacter", storiesByCharacterJson(BotCatalog.characters, allCustomStories))
         )
     }
 
@@ -723,7 +725,7 @@ class MiniAppServer(
             ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Dialog not found"))
         val character = BotCatalog.characterById(dialog.characterId)
             ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Character not found"))
-        val story = BotCatalog.storyById(dialog.storyId)
+        val story = dialog.storyId?.let { resolveStory(user.id, it) }
 
         if (story != null) {
             userSettingsRepository.setSelectedStory(user.id, story.id)
@@ -1194,10 +1196,10 @@ class MiniAppServer(
     private fun characterImagePath(characterId: String): String =
         "/miniapp/image/character/$characterId?v=$characterImageVersion"
 
-    private suspend fun storiesJson(userId: Long, characterId: String): JSONArray {
+    private suspend fun storiesJson(userId: Long, characterId: String, customStories: List<CustomStory>? = null): JSONArray {
+        val allCustom = customStories ?: customStoryRepository.listStories(userId, characterId)
         val builtInStories = BotCatalog.storiesForCharacter(characterId).map { it.toMiniAppJson() }
-        val customStories = customStoryRepository.listStories(userId, characterId).map { it.toMiniAppJson() }
-        return JSONArray(builtInStories + customStories)
+        return JSONArray(builtInStories + allCustom.filter { it.characterId == characterId }.map { it.toMiniAppJson() })
     }
 
     private fun charactersByAudienceJson(): JSONObject = JSONObject()
@@ -1210,10 +1212,13 @@ class MiniAppServer(
             JSONArray(BotCatalog.charactersForAudience(AudiencePreference.MALE).map { it.toMiniAppJson() })
         )
 
-    private suspend fun storiesByCharacterJson(userId: Long, characters: List<CharacterProfile>): JSONObject {
+    private suspend fun storiesByCharacterJson(characters: List<CharacterProfile>, allCustom: List<CustomStory>): JSONObject {
+        val customByCharacter = allCustom.groupBy { it.characterId }
         val result = JSONObject()
         characters.forEach { character ->
-            result.put(character.id, storiesJson(userId, character.id))
+            val builtIn = BotCatalog.storiesForCharacter(character.id).map { it.toMiniAppJson() }
+            val custom = (customByCharacter[character.id] ?: emptyList()).map { it.toMiniAppJson() }
+            result.put(character.id, JSONArray(builtIn + custom))
         }
         return result
     }

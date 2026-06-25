@@ -1674,6 +1674,7 @@ async function selectStory(storyId, card = null) {
         body: { characterId, storyId },
       });
       if (!data.needsDecision) {
+        applyStorySelection(data);
         finishInTelegram(data.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
         return;
       }
@@ -1688,6 +1689,7 @@ async function selectStory(storyId, card = null) {
           method: "POST",
           body: { dialogId: existingDialog.id },
         });
+        applyStorySelection(data);
         finishInTelegram(data.sendData, "Старый диалог восстановлен. Возвращаю в чат.");
         return;
       }
@@ -1697,6 +1699,7 @@ async function selectStory(storyId, card = null) {
         body: { characterId, storyId, replaceExisting: true },
       });
     }
+    applyStorySelection(data);
     finishInTelegram(data.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
   } catch (error) {
     if (error.status === 502 && error.data && error.data.error === "Telegram message was not delivered") {
@@ -1717,6 +1720,18 @@ async function selectStory(storyId, card = null) {
       card.removeAttribute("aria-busy");
     }
   }
+}
+
+function applyStorySelection(data) {
+  if (!data || !data.selectedStory) return;
+  if (state.bootstrap && state.bootstrap.settings) {
+    state.bootstrap.settings.selectedStory = data.selectedStory;
+    if (data.selectedCharacter) {
+      state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
+      state.selectedCharacterId = data.selectedCharacter;
+    }
+  }
+  renderSettings();
 }
 
 async function skipStory() {

@@ -1731,6 +1731,7 @@ function selectStory(storyId, card) {
         });
     return initial.then(function (data) {
         if (!data.needsDecision) {
+            applyStorySelection(data);
             finishInTelegram(data.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
             return null;
         }
@@ -1743,6 +1744,7 @@ function selectStory(storyId, card) {
                     method: "POST",
                     body: { dialogId: existingDialog.id },
                 }).then(function (result) {
+                    applyStorySelection(result);
                     finishInTelegram(result.sendData, "Старый диалог восстановлен. Возвращаю в чат.");
                 });
             }
@@ -1750,6 +1752,7 @@ function selectStory(storyId, card) {
                 method: "POST",
                 body: { characterId: characterId, storyId: storyId, replaceExisting: true },
             }).then(function (result) {
+                applyStorySelection(result);
                 finishInTelegram(result.sendData, "История выбрана. Вернись в чат, чтобы продолжить.");
             });
         });
@@ -1769,6 +1772,18 @@ function selectStory(storyId, card) {
         }
         return result;
     });
+}
+function applyStorySelection(data) {
+    if (!data || !data.selectedStory)
+        return;
+    if (state.bootstrap && state.bootstrap.settings) {
+        state.bootstrap.settings.selectedStory = data.selectedStory;
+        if (data.selectedCharacter) {
+            state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
+            state.selectedCharacterId = data.selectedCharacter;
+        }
+    }
+    renderSettings();
 }
 function skipStory() {
     var characterId = state.previewCharacterId || state.selectedCharacterId;

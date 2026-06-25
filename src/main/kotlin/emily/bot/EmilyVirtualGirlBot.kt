@@ -688,7 +688,9 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             sendSystemText(session, chatId, "Не удалось открыть диалог: персонаж больше недоступен.", html = false)
             return
         }
-        val story = dialog.storyId?.let { storyById(it) }
+        val story = if (dialog.storyId != null) {
+            storyById(dialog.storyId) ?: customStoryRepository.getStory(chatId, dialog.storyId)?.toScenario()
+        } else null
         if (!dialog.storyId.isNullOrBlank() && story == null) {
             sendSystemText(session, chatId, "Этот диалог можно продолжить только через Mini App.", html = false)
             return
@@ -729,7 +731,9 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             sendSystemText(session, chatId, "Не удалось начать заново: персонаж больше недоступен.", html = false)
             return
         }
-        val story = dialog.storyId?.let { storyById(it) }
+        val story = if (dialog.storyId != null) {
+            storyById(dialog.storyId) ?: customStoryRepository.getStory(chatId, dialog.storyId)?.toScenario()
+        } else null
         if (!dialog.storyId.isNullOrBlank() && story == null) {
             sendSystemText(session, chatId, "Эту историю можно перезапустить только через Mini App.", html = false)
             return

@@ -174,6 +174,12 @@ class CustomStoryRepository(
         storiesRef.child(userId.toString()).child(child.key).updateChildrenAsync(updates)
     }
 
+    suspend fun listAllStories(userId: Long): List<CustomStory> = withContext(Dispatchers.IO) {
+        storiesRef.child(userId.toString()).awaitSingle().children
+            .mapNotNull { it.toCustomStory(userId) }
+            .sortedByDescending { it.updatedAt }
+    }
+
     suspend fun listStories(userId: Long, characterId: String): List<CustomStory> = withContext(Dispatchers.IO) {
         val snapshot = storiesRef
             .child(userId.toString())
