@@ -40,6 +40,7 @@ var DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 var BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
 var GALLERY_CACHE_KEY = "emily:validatedGalleries:v1";
 var PENDING_AUDIENCE_KEY = "emily:pendingAudience";
+var DIALOG_PREVIEW_MESSAGE_LIMIT = 12;
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
 var state = {
@@ -269,6 +270,9 @@ function hydrateCachedBootstrap() {
         settings.selectedCharacter ||
             firstId(state.bootstrap.characters) ||
             null;
+    if (ensureSelectedStoryTitle()) {
+        cacheBootstrap(state.bootstrap);
+    }
     renderStatus();
     renderCharacters();
     renderDialogs();
@@ -1569,7 +1573,9 @@ function findDialogById(dialogId) {
 function loadDialogPreview(dialog) {
     if (!dialog || !dialog.id)
         return Promise.resolve(dialog);
-    if (Array.isArray(dialog.recentMessages) && Object.prototype.hasOwnProperty.call(dialog, "story"))
+    if (Array.isArray(dialog.recentMessages) &&
+        dialog.recentMessages.length >= DIALOG_PREVIEW_MESSAGE_LIMIT &&
+        Object.prototype.hasOwnProperty.call(dialog, "story"))
         return Promise.resolve(dialog);
     return api("/miniapp/api/dialog-preview?dialogId=".concat(encodeURIComponent(dialog.id)))
         .then(function (data) {
@@ -1583,6 +1589,34 @@ function loadDialogPreview(dialog) {
                 state.bootstrap.dialogs[index] = nextDialog;
         }
         return nextDialog;
+    });
+}
+function confirmExistingDialog(dialog, options) {
+    if (options === void 0) { options = {}; }
+    return __awaiter(this, void 0, void 0, function () {
+        var previewDialog, error_6;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    previewDialog = dialog;
+                    _a.label = 1;
+                case 1:
+                    _a.trys.push([1, 3, 4, 5]);
+                    setLoading(true);
+                    return [4 /*yield*/, loadDialogPreview(dialog)];
+                case 2:
+                    previewDialog = _a.sent();
+                    return [3 /*break*/, 5];
+                case 3:
+                    error_6 = _a.sent();
+                    showToast(error_6.message || "Не удалось загрузить диалог");
+                    return [2 /*return*/, null];
+                case 4:
+                    setLoading(false);
+                    return [7 /*endfinally*/];
+                case 5: return [2 /*return*/, confirmDialogReuse(previewDialog, options)];
+            }
+        });
     });
 }
 function findExistingDialogForContext(characterId, storyId) {
@@ -1736,7 +1770,7 @@ function selectStory(storyId, card) {
             return null;
         }
         var existingDialog = data.existingDialog || knownDialog;
-        return confirmDialogReuse(existingDialog).then(function (shouldContinue) {
+        return confirmExistingDialog(existingDialog).then(function (shouldContinue) {
             if (shouldContinue === null)
                 return null;
             if (shouldContinue && existingDialog && existingDialog.id) {
@@ -1774,15 +1808,22 @@ function selectStory(storyId, card) {
     });
 }
 function applyStorySelection(data) {
-    if (!data || !data.selectedStory)
+    if (!data || !state.bootstrap || !state.bootstrap.settings)
         return;
-    if (state.bootstrap && state.bootstrap.settings) {
-        state.bootstrap.settings.selectedStory = data.selectedStory;
-        if (data.selectedCharacter) {
-            state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
-            state.selectedCharacterId = data.selectedCharacter;
-        }
+    state.bootstrap.settings.selectedStory =
+        data.selectedStory !== undefined ? data.selectedStory : state.bootstrap.settings.selectedStory || null;
+    state.bootstrap.settings.selectedStoryTitle =
+        data.selectedStoryTitle !== undefined
+            ? data.selectedStoryTitle
+            : data.sendData && data.sendData.storyTitle || state.bootstrap.settings.selectedStoryTitle || null;
+    if (data.activeDialogId) {
+        state.bootstrap.settings.activeDialogId = data.activeDialogId;
     }
+    if (data.selectedCharacter) {
+        state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
+        state.selectedCharacterId = data.selectedCharacter;
+    }
+    cacheBootstrap(state.bootstrap);
     renderSettings();
 }
 function skipStory() {
@@ -1802,7 +1843,7 @@ function skipStory() {
             return null;
         }
         var existingDialog = data.existingDialog || knownDialog;
-        return confirmDialogReuse(existingDialog).then(function (shouldContinue) {
+        return confirmExistingDialog(existingDialog).then(function (shouldContinue) {
             if (shouldContinue === null)
                 return null;
             if (shouldContinue && existingDialog && existingDialog.id) {
@@ -1944,11 +1985,27 @@ function findKnownStoryTitle(characterId, storyId) {
         .find(function (item) { return item.characterId === characterId && item.storyId && item.storyId.toLowerCase() === normalizedStoryId; });
     return dialog && dialog.storyTitle ? dialog.storyTitle : null;
 }
+function ensureSelectedStoryTitle() {
+    if (!state.bootstrap || !state.bootstrap.settings)
+        return false;
+    var settings = state.bootstrap.settings;
+    if (!settings.selectedStory || settings.selectedStoryTitle)
+        return false;
+    var characterId = settings.selectedCharacter || state.selectedCharacterId;
+    var story = characterId ? findKnownStory(characterId, settings.selectedStory) : null;
+    var fallbackTitle = characterId ? findKnownStoryTitle(characterId, settings.selectedStory) : null;
+    var resolvedTitle = story ? story.title : fallbackTitle;
+    if (!resolvedTitle)
+        return false;
+    settings.selectedStoryTitle = resolvedTitle;
+    return true;
+}
 function renderSettings() {
     if (!state.bootstrap)
         return;
     renderPaymentOptions();
     renderAudienceSettings();
+    ensureSelectedStoryTitle();
     var character = selectedCharacter();
     var storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
     var story = character ? findKnownStory(character.id, storyId) : null;

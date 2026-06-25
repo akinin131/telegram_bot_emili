@@ -62,6 +62,10 @@ class MiniAppServer(
     private val memory: ConversationMemory,
     private val chatService: ChatService
 ) {
+    companion object {
+        private const val DIALOG_PREVIEW_MESSAGE_LIMIT = 12
+    }
+
     private var server: HttpServer? = null
     private val verifier = TelegramInitDataVerifier(config.botToken)
     private val telegramApi = TelegramBotApiClient(config.botToken)
@@ -463,7 +467,7 @@ class MiniAppServer(
         val dialog = dialogRepository.getDialog(user.id, dialogId)
             ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Dialog not found"))
         val story = dialog.storyId?.let { resolveStory(user.id, it) }
-        val recentMessages = dialogRepository.getMessages(user.id, dialog.id, limit = 8)
+        val recentMessages = dialogRepository.getMessages(user.id, dialog.id, limit = DIALOG_PREVIEW_MESSAGE_LIMIT)
 
         sendJson(
             exchange = exchange,
@@ -647,6 +651,7 @@ class MiniAppServer(
                 .put("ok", true)
                 .put("selectedCharacter", character.id)
                 .put("selectedStory", story.id)
+                .put("selectedStoryTitle", story.title)
                 .put("activeDialogId", dialogId)
                 .put("telegram", telegramResult.toJson())
                 .put("sendData", JSONObject()
@@ -704,6 +709,7 @@ class MiniAppServer(
                 .put("ok", true)
                 .put("selectedCharacter", character.id)
                 .put("selectedStory", JSONObject.NULL)
+                .put("selectedStoryTitle", JSONObject.NULL)
                 .put("activeDialogId", dialogId)
                 .put("telegram", telegramResult.toJson())
                 .put("sendData", JSONObject()
@@ -737,7 +743,7 @@ class MiniAppServer(
 
         val messages = dialogRepository.getMessages(user.id, dialog.id, limit = 80)
         restoreConversation(user.id, character, story, messages)
-        val recentMessages = messages.takeLast(8)
+        val recentMessages = messages.takeLast(DIALOG_PREVIEW_MESSAGE_LIMIT)
         val telegramResult = notifyDialogRestored(user.id, dialog, recentMessages)
 
         sendJson(
@@ -748,6 +754,7 @@ class MiniAppServer(
                 .put("activeDialogId", dialog.id)
                 .put("selectedCharacter", character.id)
                 .put("selectedStory", story?.id ?: JSONObject.NULL)
+                .put("selectedStoryTitle", story?.title ?: dialog.storyTitle ?: JSONObject.NULL)
                 .put("recentMessages", JSONArray(recentMessages.map { it.toMiniAppJson() }))
                 .put("telegram", telegramResult.toJson())
                 .put("sendData", JSONObject()
@@ -906,10 +913,11 @@ class MiniAppServer(
     }
 
     private fun dialogMessagePreview(dialog: DialogSummary, messages: List<DialogMessage>): String {
-        return messages
-            .filter { it.role == "user" || it.role == "assistant" }
-            .takeLast(8)
-            .joinToString("\n") { message ->
+        val dialogueMessages = messages.filter { it.role == "user" || it.role == "assistant" }
+        val visibleMessages = dialogueMessages.takeLast(DIALOG_PREVIEW_MESSAGE_LIMIT)
+        val prefix = if (visibleMessages.size < dialogueMessages.size) "...\n" else ""
+
+        return prefix + visibleMessages.joinToString("\n") { message ->
                 val author = if (message.role == "assistant") dialog.characterName else "Ты"
                 "$author: ${message.text.compactForPreview(130)}"
             }

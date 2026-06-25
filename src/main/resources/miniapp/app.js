@@ -3,6 +3,7 @@ const DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
 const GALLERY_CACHE_KEY = "emily:validatedGalleries:v1";
 const PENDING_AUDIENCE_KEY = "emily:pendingAudience";
+const DIALOG_PREVIEW_MESSAGE_LIMIT = 12;
 
 document.documentElement.setAttribute("data-miniapp-boot", "started");
 window.__miniappBootState = "started";
@@ -227,6 +228,9 @@ function hydrateCachedBootstrap() {
     settings.selectedCharacter ||
     firstId(state.bootstrap.characters) ||
     null;
+  if (ensureSelectedStoryTitle()) {
+    cacheBootstrap(state.bootstrap);
+  }
 
   renderStatus();
   renderCharacters();
@@ -1492,7 +1496,11 @@ function findDialogById(dialogId) {
 
 async function loadDialogPreview(dialog) {
   if (!dialog || !dialog.id) return dialog;
-  if (Array.isArray(dialog.recentMessages) && Object.prototype.hasOwnProperty.call(dialog, "story")) return dialog;
+  if (
+    Array.isArray(dialog.recentMessages) &&
+    dialog.recentMessages.length >= DIALOG_PREVIEW_MESSAGE_LIMIT &&
+    Object.prototype.hasOwnProperty.call(dialog, "story")
+  ) return dialog;
 
   const data = await api(`/miniapp/api/dialog-preview?dialogId=${encodeURIComponent(dialog.id)}`);
   const nextDialog = {
@@ -1508,6 +1516,21 @@ async function loadDialogPreview(dialog) {
   }
 
   return nextDialog;
+}
+
+async function confirmExistingDialog(dialog, options = {}) {
+  let previewDialog = dialog;
+  try {
+    setLoading(true);
+    previewDialog = await loadDialogPreview(dialog);
+  } catch (error) {
+    showToast(error.message || "Не удалось загрузить диалог");
+    return null;
+  } finally {
+    setLoading(false);
+  }
+
+  return confirmDialogReuse(previewDialog, options);
 }
 
 function findExistingDialogForContext(characterId, storyId) {
@@ -1682,7 +1705,7 @@ async function selectStory(storyId, card = null) {
     }
 
     if (existingDialog) {
-      const shouldContinue = await confirmDialogReuse(existingDialog);
+      const shouldContinue = await confirmExistingDialog(existingDialog);
       if (shouldContinue === null) return;
       if (shouldContinue && existingDialog && existingDialog.id) {
         data = await api("/miniapp/api/restore-dialog", {
@@ -1723,14 +1746,25 @@ async function selectStory(storyId, card = null) {
 }
 
 function applyStorySelection(data) {
-  if (!data || !data.selectedStory) return;
-  if (state.bootstrap && state.bootstrap.settings) {
-    state.bootstrap.settings.selectedStory = data.selectedStory;
-    if (data.selectedCharacter) {
-      state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
-      state.selectedCharacterId = data.selectedCharacter;
-    }
+  if (!data || !state.bootstrap || !state.bootstrap.settings) return;
+
+  state.bootstrap.settings.selectedStory =
+    data.selectedStory !== undefined ? data.selectedStory : (state.bootstrap.settings.selectedStory || null);
+  state.bootstrap.settings.selectedStoryTitle =
+    data.selectedStoryTitle !== undefined
+      ? data.selectedStoryTitle
+      : (data.sendData && data.sendData.storyTitle) || state.bootstrap.settings.selectedStoryTitle || null;
+
+  if (data.activeDialogId) {
+    state.bootstrap.settings.activeDialogId = data.activeDialogId;
   }
+
+  if (data.selectedCharacter) {
+    state.bootstrap.settings.selectedCharacter = data.selectedCharacter;
+    state.selectedCharacterId = data.selectedCharacter;
+  }
+
+  cacheBootstrap(state.bootstrap);
   renderSettings();
 }
 
@@ -1754,7 +1788,7 @@ async function skipStory() {
     }
 
     if (existingDialog) {
-      const shouldContinue = await confirmDialogReuse(existingDialog);
+      const shouldContinue = await confirmExistingDialog(existingDialog);
       if (shouldContinue === null) return;
       if (shouldContinue && existingDialog && existingDialog.id) {
         data = await api("/miniapp/api/restore-dialog", {
@@ -1871,11 +1905,29 @@ function findKnownStoryTitle(characterId, storyId) {
   return dialog && dialog.storyTitle ? dialog.storyTitle : null;
 }
 
+function ensureSelectedStoryTitle() {
+  if (!state.bootstrap || !state.bootstrap.settings) return false;
+
+  const settings = state.bootstrap.settings;
+  if (!settings.selectedStory || settings.selectedStoryTitle) return false;
+
+  const characterId = settings.selectedCharacter || state.selectedCharacterId;
+  const story = characterId ? findKnownStory(characterId, settings.selectedStory) : null;
+  const fallbackTitle = characterId ? findKnownStoryTitle(characterId, settings.selectedStory) : null;
+  const resolvedTitle = story ? story.title : fallbackTitle;
+
+  if (!resolvedTitle) return false;
+
+  settings.selectedStoryTitle = resolvedTitle;
+  return true;
+}
+
 function renderSettings() {
   if (!state.bootstrap) return;
 
   renderPaymentOptions();
   renderAudienceSettings();
+  ensureSelectedStoryTitle();
 
   const character = selectedCharacter();
   const storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
