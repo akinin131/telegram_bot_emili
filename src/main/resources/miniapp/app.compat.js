@@ -210,6 +210,10 @@ function loadBootstrap() {
                     cacheBootstrap(data);
                     state.bootstrap = data;
                     syncStoriesByCharacter(data.storiesByCharacter);
+                    if (!data.settings || !data.settings.audiencePreference) {
+                        state.audiencePreference = null;
+                        clearPendingAudience();
+                    }
                     applyPendingAudience();
                     if (state.pendingAudienceTarget) {
                         pendingAudience = state.pendingAudienceTarget;
@@ -531,11 +535,17 @@ function inferAudienceFromCharacters(characters) {
     return characters.every(function (item) { return item.audience === audience; }) ? audience : null;
 }
 function resolveAudiencePreference() {
-    var settingsAudience, inferred;
+    var hasBootstrapAudience, bootstrapAudience, settingsAudience, inferred;
     if (state.pendingAudienceTarget)
         return state.pendingAudienceTarget;
-    settingsAudience = state.audiencePreference ||
-        (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference);
+    hasBootstrapAudience = Boolean(state.bootstrap && state.bootstrap.settings) &&
+        Object.prototype.hasOwnProperty.call(state.bootstrap.settings, "audiencePreference");
+    bootstrapAudience = hasBootstrapAudience
+        ? state.bootstrap.settings.audiencePreference || null
+        : null;
+    settingsAudience = hasBootstrapAudience
+        ? bootstrapAudience
+        : state.audiencePreference;
     inferred = inferAudienceFromCharacters(state.bootstrap && state.bootstrap.characters);
     if (inferred && settingsAudience && inferred !== settingsAudience) {
         return inferred;
@@ -549,6 +559,11 @@ function syncAudiencePreference(audience) {
     if (!state.bootstrap.settings)
         state.bootstrap.settings = {};
     state.bootstrap.settings.audiencePreference = audience;
+}
+function characterImagePosition(character) {
+    if (!character)
+        return "center";
+    return character.audience === "male" ? "center 13%" : "center";
 }
 function reconcileAudienceState(options) {
     if (options === void 0) { options = {}; }
@@ -593,6 +608,7 @@ function renderCharacters() {
         image.src = character.imageUrl;
         image.alt = character.name;
         image.loading = "lazy";
+        image.style.objectPosition = characterImagePosition(character);
         var info = document.createElement("div");
         info.className = "character-info";
         var title = document.createElement("h2");
@@ -1085,6 +1101,7 @@ function renderSelectedCharacter() {
     image.className = "selected-character-avatar";
     image.src = character.imageUrl;
     image.alt = character.name;
+    image.style.objectPosition = characterImagePosition(character);
     var copy = document.createElement("div");
     copy.className = "selected-character-copy";
     var label = document.createElement("span");

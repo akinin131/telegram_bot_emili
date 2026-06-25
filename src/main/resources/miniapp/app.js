@@ -171,6 +171,10 @@ async function loadBootstrap(nextScreen = null) {
     cacheBootstrap(data);
     state.bootstrap = data;
     syncStoriesByCharacter(data.storiesByCharacter);
+    if (!data.settings || !data.settings.audiencePreference) {
+      state.audiencePreference = null;
+      clearPendingAudience();
+    }
     applyPendingAudience();
 
     if (state.pendingAudienceTarget) {
@@ -463,9 +467,15 @@ function inferAudienceFromCharacters(characters) {
 function resolveAudiencePreference() {
   if (state.pendingAudienceTarget) return state.pendingAudienceTarget;
 
-  const settingsAudience =
-    state.audiencePreference ||
-    (state.bootstrap && state.bootstrap.settings && state.bootstrap.settings.audiencePreference);
+  const hasBootstrapAudience =
+    Boolean(state.bootstrap && state.bootstrap.settings) &&
+    Object.prototype.hasOwnProperty.call(state.bootstrap.settings, "audiencePreference");
+  const bootstrapAudience = hasBootstrapAudience
+    ? state.bootstrap.settings.audiencePreference || null
+    : null;
+  const settingsAudience = hasBootstrapAudience
+    ? bootstrapAudience
+    : state.audiencePreference;
   const inferred = inferAudienceFromCharacters(state.bootstrap && state.bootstrap.characters);
 
   if (inferred && settingsAudience && inferred !== settingsAudience) {
@@ -480,6 +490,11 @@ function syncAudiencePreference(audience) {
   state.audiencePreference = audience;
   if (!state.bootstrap.settings) state.bootstrap.settings = {};
   state.bootstrap.settings.audiencePreference = audience;
+}
+
+function characterImagePosition(character) {
+  if (!character) return "center";
+  return character.audience === "male" ? "center 13%" : "center";
 }
 
 function reconcileAudienceState(options = {}) {
@@ -531,6 +546,7 @@ function renderCharacters() {
     image.src = character.imageUrl;
     image.alt = character.name;
     image.loading = "lazy";
+    image.style.objectPosition = characterImagePosition(character);
 
     const info = document.createElement("div");
     info.className = "character-info";
@@ -1021,6 +1037,7 @@ function renderSelectedCharacter() {
   image.className = "selected-character-avatar";
   image.src = character.imageUrl;
   image.alt = character.name;
+  image.style.objectPosition = characterImagePosition(character);
 
   const copy = document.createElement("div");
   copy.className = "selected-character-copy";

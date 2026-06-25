@@ -176,14 +176,14 @@ p {
 .preference-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  width: min(100%, 780px);
-  margin: 12px auto 0;
+  gap: 18px;
+  width: min(100%, 820px);
+  margin: 10px auto 0;
 }
 
 .preference-card {
   position: relative;
-  min-height: 360px;
+  min-height: 388px;
   overflow: hidden;
   padding: 0;
   color: var(--text);
@@ -219,7 +219,7 @@ p {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(5, 5, 8, 0.02) 0%, rgba(5, 5, 8, 0.10) 44%, rgba(5, 5, 8, 0.90) 100%),
+    linear-gradient(180deg, rgba(5, 5, 8, 0.01) 0%, rgba(5, 5, 8, 0.08) 40%, rgba(5, 5, 8, 0.84) 100%),
     radial-gradient(circle at 50% 100%, rgba(184, 164, 255, 0.18), transparent 46%);
   pointer-events: none;
 }
@@ -233,8 +233,8 @@ p {
 .preference-portraits img {
   position: absolute;
   left: 50%;
-  top: 34px;
-  width: min(68%, 250px);
+  top: 22px;
+  width: min(76%, 288px);
   aspect-ratio: 1;
   object-fit: cover;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -244,14 +244,22 @@ p {
   transform: translateX(-50%);
 }
 
+.preference-portrait--male {
+  object-position: center 13%;
+}
+
+.preference-portrait--female {
+  object-position: center 6%;
+}
+
 .preference-card-copy {
   position: absolute;
-  left: 24px;
-  right: 24px;
-  bottom: 24px;
+  left: 20px;
+  right: 20px;
+  bottom: 18px;
   z-index: 5;
   display: grid;
-  gap: 8px;
+  gap: 6px;
   justify-items: center;
   text-shadow: 0 8px 24px rgba(0, 0, 0, 0.72);
 }
@@ -260,7 +268,7 @@ p {
   display: block;
   max-width: 260px;
   color: #fff;
-  font-size: clamp(31px, 5vw, 48px);
+  font-size: clamp(29px, 4.6vw, 44px);
   font-weight: 800;
   line-height: 0.92;
   letter-spacing: -0.06em;
@@ -270,9 +278,9 @@ p {
   display: block;
   max-width: 240px;
   color: rgba(231, 233, 239, 0.72);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 1.25;
+  line-height: 1.3;
 }
 
 .status-panel {
@@ -325,7 +333,7 @@ p {
 .character-card {
   position: relative;
   width: 100%;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 5 / 7;
   min-height: 0;
   padding: 0;
   overflow: hidden;
@@ -461,7 +469,7 @@ p {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(0, 0, 0, 0) 44%, rgba(12, 12, 14, 0.22) 60%, rgba(16, 16, 20, 0.82) 100%);
+    linear-gradient(180deg, rgba(0, 0, 0, 0) 52%, rgba(12, 12, 14, 0.18) 66%, rgba(16, 16, 20, 0.78) 100%);
   pointer-events: none;
 }
 
@@ -471,8 +479,8 @@ p {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 12px 12px 14px;
-  background: linear-gradient(180deg, rgba(14, 14, 18, 0) 0%, rgba(16, 16, 20, 0.88) 34%, rgba(16, 16, 20, 0.96) 100%);
+  padding: 10px 12px 12px;
+  background: linear-gradient(180deg, rgba(14, 14, 18, 0) 0%, rgba(16, 16, 20, 0.72) 38%, rgba(16, 16, 20, 0.92) 100%);
 }
 
 .character-gallery-button {
@@ -492,18 +500,18 @@ p {
 }
 
 .character-info h2 {
-  margin-bottom: 4px;
-  font-size: 15px;
-  font-weight: 700;
+  margin-bottom: 3px;
+  font-size: 16px;
+  font-weight: 800;
   line-height: 1.18;
 }
 
 .character-info p {
   color: var(--muted);
-  font-size: 11.5px;
-  line-height: 1.25;
+  font-size: 11px;
+  line-height: 1.22;
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1197,7 +1205,7 @@ p {
 }
 
 .dialog-choice-restart::after {
-  content: "→»";
+  content: "→";
   color: rgba(167, 172, 184, 0.78);
 }
 
@@ -2304,7 +2312,7 @@ p {
   }
 
   .preference-card {
-    min-height: 214px;
+    min-height: 228px;
     border-radius: 24px;
   }
 
@@ -2318,14 +2326,14 @@ p {
   }
 
   .preference-portraits img {
-    top: 22px;
-    width: 132px;
+    top: 16px;
+    width: 144px;
   }
 
   .preference-card-copy {
     left: 18px;
     right: 18px;
-    bottom: 18px;
+    bottom: 14px;
   }
 
   .preference-card-copy strong {
@@ -2339,6 +2347,10 @@ p {
   .character-grid {
     grid-template-columns: 1fr 1fr;
     gap: 10px;
+  }
+
+  .character-card {
+    aspect-ratio: 9 / 13;
   }
 
   .story-list {
