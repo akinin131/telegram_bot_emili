@@ -600,6 +600,7 @@ class MiniAppServer(
             ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "История не найдена"))
 
         customStoryRepository.deleteStory(user.id, storyId)
+        dialogRepository.deleteDialogsByContext(user.id, characterId, storyId)
 
         sendJson(
             exchange = exchange,

@@ -197,6 +197,8 @@ p {
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     0 20px 48px rgba(0, 0, 0, 0.5);
   cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
   transform: translateZ(0);
   transition: transform 0.22s var(--ease), border-color 0.22s var(--ease), box-shadow 0.22s var(--ease);
 }
@@ -212,6 +214,13 @@ p {
 
 .preference-card:active {
   transform: translateY(-1px) scale(0.992);
+}
+
+.preference-card:focus-visible {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 2px var(--accent),
+    0 20px 48px rgba(0, 0, 0, 0.5);
 }
 
 .preference-card::after {
@@ -343,8 +352,9 @@ p {
   border-radius: var(--radius-md);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
   cursor: pointer;
-  transition: transform 0.18s var(--ease), border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+  outline: none;
   -webkit-tap-highlight-color: transparent;
+  transition: transform 0.18s var(--ease), border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
 
 .character-card:hover {
@@ -362,6 +372,10 @@ p {
   box-shadow:
     inset 0 0 0 2px rgba(255, 255, 255, 0.16),
     0 10px 24px rgba(0, 0, 0, 0.4);
+}
+
+.character-card:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent), 0 10px 24px rgba(0, 0, 0, 0.4);
 }
 
 .character-card-skeleton {
@@ -497,6 +511,8 @@ p {
   backdrop-filter: blur(14px);
   font-size: 12px;
   font-weight: 800;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .character-info h2 {
@@ -769,8 +785,8 @@ p {
 }
 
 .story-card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
   border-color: var(--accent);
 }
 
@@ -925,8 +941,9 @@ p {
   cursor: pointer;
   font-size: 15px;
   line-height: 1;
-  transition: background 0.12s var(--ease);
+  outline: none;
   -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s var(--ease);
 }
 
 .story-card-edit:hover,
@@ -1360,6 +1377,8 @@ p {
   border: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .dialog-row::before {
@@ -1542,6 +1561,8 @@ p {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--radius-sm);
   cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.38);
   transition: transform 0.18s var(--ease), border-color 0.2s var(--ease);
 }
@@ -1549,6 +1570,10 @@ p {
 .gallery-tile:hover {
   transform: translateY(-2px);
   border-color: rgba(184, 164, 255, 0.26);
+}
+
+.gallery-tile:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .gallery-tile-skeleton {
