@@ -219,7 +219,7 @@ p {
 .preference-card:focus-visible {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 0 0 2px var(--accent),
+    inset 0 0 0 2px var(--accent),
     0 20px 48px rgba(0, 0, 0, 0.5);
 }
 
@@ -375,7 +375,7 @@ p {
 }
 
 .character-card:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent), 0 10px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 0 0 2px var(--accent), 0 10px 24px rgba(0, 0, 0, 0.4);
 }
 
 .character-card-skeleton {
@@ -786,7 +786,7 @@ p {
 
 .story-card:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent);
   border-color: var(--accent);
 }
 
@@ -1201,7 +1201,7 @@ p {
 }
 
 .dialog-choice-actions button:focus-visible {
-  box-shadow: 0 0 0 3px rgba(105, 216, 206, 0.2);
+  box-shadow: inset 0 0 0 2px rgba(105, 216, 206, 0.28);
 }
 
 .dialog-choice-continue {
@@ -1284,7 +1284,7 @@ p {
 .custom-story-form input:focus,
 .custom-story-form textarea:focus {
   border-color: rgba(184, 164, 255, 0.78);
-  box-shadow: 0 0 0 3px rgba(184, 164, 255, 0.12);
+  box-shadow: inset 0 0 0 2px rgba(184, 164, 255, 0.24);
 }
 
 .custom-story-close {
@@ -1573,7 +1573,7 @@ p {
 }
 
 .gallery-tile:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent), 0 10px 24px rgba(0, 0, 0, 0.38);
 }
 
 .gallery-tile-skeleton {
