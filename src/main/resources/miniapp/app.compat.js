@@ -195,6 +195,13 @@ function on(element, eventName, handler) {
         element.addEventListener(eventName, handler);
     }
 }
+function buildDialogMap(dialogs) {
+    var map = Object.create(null);
+    if (Array.isArray(dialogs)) {
+        dialogs.forEach(function (dialog) { map[dialog.id] = dialog; });
+    }
+    return map;
+}
 function loadBootstrap() {
     return __awaiter(this, arguments, void 0, function (nextScreen) {
         var data, targetScreen, settings, pendingAudience, error_1;
@@ -209,6 +216,7 @@ function loadBootstrap() {
                     targetScreen = nextScreen || state.currentScreen || "characters";
                     cacheBootstrap(data);
                     state.bootstrap = data;
+                    state.dialogMap = buildDialogMap(data.dialogs);
                     syncStoriesByCharacter(data.storiesByCharacter);
                     if (!data.settings || !data.settings.audiencePreference) {
                         state.audiencePreference = null;
@@ -265,6 +273,7 @@ function hydrateCachedBootstrap() {
     if (!cached)
         return false;
     state.bootstrap = cached;
+    state.dialogMap = buildDialogMap(cached.dialogs);
     syncStoriesByCharacter(cached.storiesByCharacter);
     applyPendingAudience();
     reconcileAudienceState({ persist: true });
@@ -1544,26 +1553,15 @@ function dialogVisual(dialog) {
 }
 function restoreDialog(dialogId) {
     var dialog = findDialogById(dialogId);
-    setLoading(true);
-    return loadDialogPreview(dialog || { id: dialogId })
-        .then(function (previewDialog) {
-        dialog = previewDialog;
-    })
-        .catch(function (error) {
-        showToast(error.message || "Не удалось загрузить диалог");
-        dialog = null;
-        return null;
-    })
-        .then(function () {
-        setLoading(false);
-        if (!dialog)
-            return null;
-        return confirmDialogReuse(dialog, {
+    if (!dialog) {
+        showToast("Диалог не найден");
+        return Promise.resolve(null);
+    }
+    return confirmDialogReuse(dialog, {
             allowRestart: false,
             title: "Открыть сохранённый диалог?",
             secondaryLabel: "Отмена",
-        });
-    })
+        })
         .then(function (shouldContinue) {
         if (shouldContinue !== true)
             return null;
@@ -1584,57 +1582,11 @@ function restoreDialog(dialogId) {
     });
 }
 function findDialogById(dialogId) {
-    return (state.bootstrap && state.bootstrap.dialogs || [])
-        .find(function (dialog) { return dialog.id === dialogId; }) || null;
-}
-function loadDialogPreview(dialog) {
-    if (!dialog || !dialog.id)
-        return Promise.resolve(dialog);
-    if (Array.isArray(dialog.recentMessages) &&
-        dialog.recentMessages.length >= DIALOG_PREVIEW_MESSAGE_LIMIT &&
-        Object.prototype.hasOwnProperty.call(dialog, "story"))
-        return Promise.resolve(dialog);
-    return api("/miniapp/api/dialog-preview?dialogId=".concat(encodeURIComponent(dialog.id)))
-        .then(function (data) {
-        var nextDialog = Object.assign({}, dialog, data.dialog || {}, {
-            story: data.story || null,
-            recentMessages: Array.isArray(data.recentMessages) ? data.recentMessages : [],
-        });
-        if (state.bootstrap && Array.isArray(state.bootstrap.dialogs)) {
-            var index = state.bootstrap.dialogs.findIndex(function (item) { return item.id === nextDialog.id; });
-            if (index >= 0)
-                state.bootstrap.dialogs[index] = nextDialog;
-        }
-        return nextDialog;
-    });
+    return (state.dialogMap && state.dialogMap[dialogId]) || null;
 }
 function confirmExistingDialog(dialog, options) {
     if (options === void 0) { options = {}; }
-    return __awaiter(this, void 0, void 0, function () {
-        var previewDialog, error_6;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
-                case 0:
-                    previewDialog = dialog;
-                    _a.label = 1;
-                case 1:
-                    _a.trys.push([1, 3, 4, 5]);
-                    setLoading(true);
-                    return [4 /*yield*/, loadDialogPreview(dialog)];
-                case 2:
-                    previewDialog = _a.sent();
-                    return [3 /*break*/, 5];
-                case 3:
-                    error_6 = _a.sent();
-                    showToast(error_6.message || "Не удалось загрузить диалог");
-                    return [2 /*return*/, null];
-                case 4:
-                    setLoading(false);
-                    return [7 /*endfinally*/];
-                case 5: return [2 /*return*/, confirmDialogReuse(previewDialog, options)];
-            }
-        });
-    });
+    return confirmDialogReuse(dialog, options);
 }
 function findExistingDialogForContext(characterId, storyId) {
     var dialogs = state.bootstrap && state.bootstrap.dialogs || [];
@@ -1680,7 +1632,7 @@ function confirmDialogReuse(dialog, options) {
         meta.textContent = dialog.updatedAt ? "\u041E\u0431\u043D\u043E\u0432\u043B\u0451\u043D ".concat(formatDialogTime(dialog.updatedAt)) : "";
         var description = document.createElement("p");
         description.className = "dialog-choice-description";
-        description.textContent = "Сцена и последние реплики помогут быстро вспомнить, где остановился разговор.";
+
         var storyContext = dialogStoryContext(dialog);
         var recent = dialogRecentMessages(dialog);
         var actions = document.createElement("div");

@@ -157,6 +157,22 @@ class MiniAppServer(
         println("MiniAppServer: bootstrap resolved selectedCharacter=${selectedCharacter.id} selectedStory=$selectedStory selectedStoryTitle=$selectedStoryTitle")
         val customStoryAccess = customStoryRepository.getAccess(user.id)
         val allCustomStories = customStoryRepository.listAllStories(user.id)
+        // Load preview messages: prefer recentMessages from summary, fall back to getAllMessages for old dialogs
+        val hasDialogMissingPreview = dialogs.any { it.recentMessages.isEmpty() }
+        val allDialogMessages = if (hasDialogMissingPreview) {
+            dialogRepository.getAllMessages(user.id)
+        } else {
+            emptyMap()
+        }
+        val dialogsWithPreview = dialogs.map { dialog ->
+            val msgJson = if (dialog.recentMessages.isNotEmpty()) {
+                dialog.recentMessages.map { it.toMiniAppJson() }
+            } else {
+                allDialogMessages[dialog.id]?.map { it.toMiniAppJson() } ?: emptyList()
+            }
+            val story = dialog.storyId?.let { resolveStory(user.id, it) }
+            dialog.toDialogWithPreviewJson(msgJson, story)
+        }
 
         sendJson(
             exchange = exchange,
@@ -189,7 +205,7 @@ class MiniAppServer(
                 .put("charactersByAudience", charactersByAudienceJson())
                 .put("stories", storiesJson(user.id, selectedCharacter.id, allCustomStories))
                 .put("storiesByCharacter", storiesByCharacterJson(BotCatalog.characters, allCustomStories))
-                .put("dialogs", JSONArray(dialogs.map { it.toMiniAppJson() }))
+                .put("dialogs", JSONArray(dialogsWithPreview.map { it }))
                 .put("customStory", customStoryAccessJson(customStoryAccess))
                 .put("payments", JSONObject()
                     .put("plans", JSONArray(Plan.entries.map { it.toMiniAppJson() }))
@@ -1195,6 +1211,13 @@ class MiniAppServer(
         .put("lastRole", lastRole ?: JSONObject.NULL)
         .put("createdAt", createdAt)
         .put("updatedAt", updatedAt)
+
+    private fun DialogSummary.toDialogWithPreviewJson(
+        recentMessages: List<JSONObject>,
+        story: StoryScenario?
+    ): JSONObject = toMiniAppJson()
+        .put("recentMessages", JSONArray(recentMessages))
+        .put("story", story?.toMiniAppJson() ?: JSONObject.NULL)
 
     private fun DialogMessage.toMiniAppJson(): JSONObject = JSONObject()
         .put("role", role)

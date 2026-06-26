@@ -6,6 +6,8 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+const val RECENT_PREVIEW_LIMIT = 8
+
 data class DialogSummary(
     val id: String,
     val characterId: String,
@@ -15,6 +17,7 @@ data class DialogSummary(
     val storyTitle: String?,
     val lastMessage: String,
     val lastRole: String?,
+    val recentMessages: List<DialogMessage> = emptyList(),
     val createdAt: Long,
     val updatedAt: Long
 )
@@ -48,6 +51,12 @@ class DialogRepository(
         } else {
             storyTitle
         }
+        val initialMsg = initialMessage?.takeIf { it.isNotBlank() }
+        val recentMessages = if (initialMsg != null) {
+            listOf(mapOf("role" to initialRole, "text" to initialMsg, "createdAt" to now))
+        } else {
+            emptyList<Map<String, Any>>()
+        }
         val summary = mapOf(
             "id" to dialogId,
             "characterId" to characterId,
@@ -55,15 +64,16 @@ class DialogRepository(
             "characterImageUrl" to characterImageUrl,
             "storyId" to storyId,
             "storyTitle" to storyTitle,
-            "lastMessage" to (initialMessage?.takeIf { it.isNotBlank() } ?: fallbackLastMessage),
-            "lastRole" to initialMessage?.takeIf { it.isNotBlank() }?.let { initialRole },
+            "lastMessage" to (initialMsg ?: fallbackLastMessage),
+            "lastRole" to initialMsg?.let { initialRole },
+            "recentMessages" to recentMessages,
             "createdAt" to now,
             "updatedAt" to now
         )
         dialogsRef.child(userId.toString()).child(dialogId).setValueAsync(summary)
 
-        if (!initialMessage.isNullOrBlank()) {
-            appendMessageInternal(userId, dialogId, initialRole, initialMessage, now, updateSummary = false)
+        if (initialMsg != null) {
+            appendMessageInternal(userId, dialogId, initialRole, initialMsg, now, updateSummary = false)
         }
 
         dialogId
@@ -103,7 +113,30 @@ class DialogRepository(
             .sortedBy { it.createdAt }
     }
 
-    suspend fun findLatestDialogByContext(userId: Long, characterId: String, storyId: String?): DialogSummary? =
+    suspend fun getAllMessages(userId: Long, perDialogLimit: Int = RECENT_PREVIEW_LIMIT): Map<String, List<DialogMessage>> =
+        withContext(Dispatchers.IO) {
+            val snapshot = messagesRef.child(userId.toString()).awaitSingle()
+            val result = mutableMapOf<String, List<DialogMessage>>()
+            snapshot.children.forEach { dialogSnapshot ->
+                val dialogId = dialogSnapshot.key ?: return@forEach
+                val messages = dialogSnapshot.children
+                    .mapNotNull { it.toDialogMessage() }
+                    .sortedBy { it.createdAt }
+                    .takeLast(perDialogLimit)
+                if (messages.isNotEmpty()) {
+                    result[dialogId] = messages
+                }
+            }
+            result
+        }
+
+    private fun DialogMessage.toRecentMap(): Map<String, Any> = mapOf(
+        "role" to role,
+        "text" to text,
+        "createdAt" to createdAt
+    )
+
+    suspend fun findLatestDialogByContext(userId: Long, characterId: String, storyId: String?) =
         withContext(Dispatchers.IO) {
             findDialogsByContext(userId, characterId, storyId).maxByOrNull { it.updatedAt }
         }
@@ -130,20 +163,20 @@ class DialogRepository(
         messagesRef.child(userId.toString()).child(normalizedDialogId).setValueAsync(null)
     }
 
-    suspend fun deleteDialogsByContext(userId: Long, characterId: String, storyId: String?): Any? = withContext(Dispatchers.IO) {
+    suspend fun deleteDialogsByContext(userId: Long, characterId: String, storyId: String?) = withContext(Dispatchers.IO) {
         findDialogsByContext(userId, characterId, storyId).forEach { dialog ->
             deleteDialog(userId, dialog.id)
         }
     }
 
-    private fun appendMessageInternal(
+    private suspend fun appendMessageInternal(
         userId: Long,
         dialogId: String,
         role: String,
         text: String,
         createdAt: Long,
         updateSummary: Boolean
-    ): Any? {
+    ) {
         val payload = mapOf(
             "role" to role,
             "text" to text,
@@ -151,14 +184,23 @@ class DialogRepository(
         )
         messagesRef.child(userId.toString()).child(dialogId).push().setValueAsync(payload)
 
-        if (!updateSummary) return null
+        if (!updateSummary) return
 
-        val summaryUpdate = mapOf(
+        // Read current recent messages, append new one, keep last N
+        val existing = dialogsRef.child(userId.toString()).child(dialogId).child("recentMessages").awaitSingle()
+        val currentRecent = existing.children
+            .mapNotNull { it.toDialogMessage() }
+            .toMutableList()
+        currentRecent.add(DialogMessage(role = role, text = text, createdAt = createdAt))
+        val updatedRecent = currentRecent.takeLast(RECENT_PREVIEW_LIMIT).map { it.toRecentMap() }
+
+        val summaryUpdate = mapOf<String, Any>(
             "lastMessage" to text,
             "lastRole" to role,
-            "updatedAt" to createdAt
+            "updatedAt" to createdAt,
+            "recentMessages" to updatedRecent
         )
-        return dialogsRef.child(userId.toString()).child(dialogId).updateChildrenAsync(summaryUpdate)
+        dialogsRef.child(userId.toString()).child(dialogId).updateChildrenAsync(summaryUpdate)
     }
 
     private fun DataSnapshot.toDialogSummary(): DialogSummary? {
@@ -178,6 +220,7 @@ class DialogRepository(
             storyTitle = child("storyTitle").getValue(String::class.java),
             lastMessage = child("lastMessage").getValue(String::class.java).orEmpty(),
             lastRole = child("lastRole").getValue(String::class.java),
+            recentMessages = child("recentMessages").children.mapNotNull { it.toDialogMessage() },
             createdAt = createdAt,
             updatedAt = updatedAt
         )

@@ -164,12 +164,21 @@ function on(element, eventName, handler) {
   }
 }
 
+function buildDialogMap(dialogs) {
+  const map = Object.create(null);
+  if (Array.isArray(dialogs)) {
+    dialogs.forEach((dialog) => { map[dialog.id] = dialog; });
+  }
+  return map;
+}
+
 async function loadBootstrap(nextScreen = null) {
   try {
     const data = await api("/miniapp/api/bootstrap");
     const targetScreen = nextScreen || state.currentScreen || "characters";
     cacheBootstrap(data);
     state.bootstrap = data;
+    state.dialogMap = buildDialogMap(data.dialogs);
     syncStoriesByCharacter(data.storiesByCharacter);
     if (!data.settings || !data.settings.audiencePreference) {
       state.audiencePreference = null;
@@ -223,6 +232,7 @@ function hydrateCachedBootstrap() {
   if (!cached) return false;
 
   state.bootstrap = cached;
+  state.dialogMap = buildDialogMap(cached.dialogs);
   syncStoriesByCharacter(cached.storiesByCharacter);
   applyPendingAudience();
   reconcileAudienceState({ persist: true });
@@ -1474,15 +1484,10 @@ function dialogVisual(dialog) {
 }
 
 async function restoreDialog(dialogId) {
-  let dialog = findDialogById(dialogId);
-  try {
-    setLoading(true);
-    dialog = await loadDialogPreview(dialog || { id: dialogId });
-  } catch (error) {
-    showToast(error.message || "Не удалось загрузить диалог");
+  const dialog = findDialogById(dialogId);
+  if (!dialog) {
+    showToast("Диалог не найден");
     return;
-  } finally {
-    setLoading(false);
   }
 
   const shouldContinue = await confirmDialogReuse(dialog, {
@@ -1507,47 +1512,12 @@ async function restoreDialog(dialogId) {
 }
 
 function findDialogById(dialogId) {
-  return (state.bootstrap && state.bootstrap.dialogs || [])
-    .find((dialog) => dialog.id === dialogId) || null;
+  return (state.dialogMap && state.dialogMap[dialogId]) || null;
 }
 
-async function loadDialogPreview(dialog) {
-  if (!dialog || !dialog.id) return dialog;
-  if (
-    Array.isArray(dialog.recentMessages) &&
-    dialog.recentMessages.length >= DIALOG_PREVIEW_MESSAGE_LIMIT &&
-    Object.prototype.hasOwnProperty.call(dialog, "story")
-  ) return dialog;
-
-  const data = await api(`/miniapp/api/dialog-preview?dialogId=${encodeURIComponent(dialog.id)}`);
-  const nextDialog = {
-    ...dialog,
-    ...(data.dialog || {}),
-    story: data.story || null,
-    recentMessages: Array.isArray(data.recentMessages) ? data.recentMessages : [],
-  };
-
-  if (state.bootstrap && Array.isArray(state.bootstrap.dialogs)) {
-    const index = state.bootstrap.dialogs.findIndex((item) => item.id === nextDialog.id);
-    if (index >= 0) state.bootstrap.dialogs[index] = nextDialog;
-  }
-
-  return nextDialog;
-}
 
 async function confirmExistingDialog(dialog, options = {}) {
-  let previewDialog = dialog;
-  try {
-    setLoading(true);
-    previewDialog = await loadDialogPreview(dialog);
-  } catch (error) {
-    showToast(error.message || "Не удалось загрузить диалог");
-    return null;
-  } finally {
-    setLoading(false);
-  }
-
-  return confirmDialogReuse(previewDialog, options);
+  return confirmDialogReuse(dialog, options);
 }
 
 function findExistingDialogForContext(characterId, storyId) {
@@ -1598,7 +1568,7 @@ function confirmDialogReuse(dialog, options = {}) {
 
     const description = document.createElement("p");
     description.className = "dialog-choice-description";
-    description.textContent = "Сцена и последние реплики помогут быстро вспомнить, где остановился разговор.";
+
 
     const storyContext = dialogStoryContext(dialog);
     const recent = dialogRecentMessages(dialog);
