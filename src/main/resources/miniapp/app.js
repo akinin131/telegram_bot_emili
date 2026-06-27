@@ -23,6 +23,14 @@ const state = {
   galleryRequests: {},
   galleryValidationRequests: {},
   brokenGalleryImageIds: new Set(),
+  screenScrollPositions: {
+    preference: 0,
+    characters: 0,
+    stories: 0,
+    dialogs: 0,
+    gallery: 0,
+    settings: 0,
+  },
   lastNonSettingsScreen: "characters",
   finishTimer: null,
   pendingCharacterRequestId: 0,
@@ -410,6 +418,9 @@ function showScreen(name) {
     name = "preference";
   }
 
+  const previousScreen = state.currentScreen;
+  rememberScreenScroll(previousScreen);
+
   if (name === "characters" && state.currentScreen === "stories") {
     state.previewCharacterId = null;
     const savedStories = storiesForCharacterFromCache(state.selectedCharacterId);
@@ -449,6 +460,41 @@ function showScreen(name) {
     if (name === "stories") safeTelegramCall(() => tg.BackButton.show());
     else safeTelegramCall(() => tg.BackButton.hide());
   }
+
+  if (name === "characters") {
+    restoreScreenScroll("characters");
+    return;
+  }
+
+  scrollToTop();
+}
+
+function getScrollTop() {
+  return window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+}
+
+function rememberScreenScroll(screenName) {
+  if (!screenName || !Object.prototype.hasOwnProperty.call(state.screenScrollPositions, screenName)) return;
+  state.screenScrollPositions[screenName] = getScrollTop();
+}
+
+function restoreScreenScroll(screenName) {
+  const target = Object.prototype.hasOwnProperty.call(state.screenScrollPositions, screenName)
+    ? state.screenScrollPositions[screenName]
+    : 0;
+  scheduleScroll(target);
+}
+
+function scrollToTop() {
+  scheduleScroll(0);
+}
+
+function scheduleScroll(top) {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      window.scrollTo(0, top);
+    });
+  });
 }
 
 function safeTelegramCall(callback) {
