@@ -103,6 +103,17 @@ class UserActivityRepository(
         }
     }
 
+    suspend fun listAllUsers(): List<UserActivity> = withContext(Dispatchers.IO) {
+        val snapshot = activityRef.awaitSingle()
+        if (!snapshot.exists()) return@withContext emptyList<UserActivity>()
+
+        snapshot.children.mapNotNull { child ->
+            val userId = child.key?.toLongOrNull() ?: return@mapNotNull null
+            val chatId = child.child("chatId").getValue(Long::class.java) ?: userId
+            child.toUserActivity(userId, chatId)
+        }
+    }
+
     private fun DataSnapshot.toUserActivity(userId: Long, fallbackChatId: Long): UserActivity {
         val now = System.currentTimeMillis()
         return UserActivity(

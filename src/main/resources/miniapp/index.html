@@ -6,7 +6,7 @@
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>document.documentElement.setAttribute("data-inline-js", "ok");</script>
-  <link rel="stylesheet" href="/miniapp/app.css?v=20260627-scroll-fix-1">
+  <link rel="stylesheet" href="/miniapp/app.css?v=20260627-startup-fix-1">
 </head>
 <body>
   <header class="appbar">
@@ -146,6 +146,35 @@
       </div>
     </section>
 
+    <section id="adminScreen" class="screen section" aria-label="Рассылка">
+      <div class="admin-panel">
+        <section class="admin-card">
+          <div class="admin-head">
+            <div>
+              <h2>Рассылка</h2>
+              <p id="adminSubscribersMeta">Подписчики загружаются...</p>
+            </div>
+            <button id="adminRefreshSubscribers" class="admin-icon-button" type="button" aria-label="Обновить список">↻</button>
+          </div>
+          <textarea id="adminPostInput" class="admin-post-input" rows="5" placeholder="Ссылка на пост Telegram или текст сообщения"></textarea>
+          <div class="admin-actions">
+            <button id="adminSendMe" class="admin-action-button secondary" type="button">Отправить только в мой чат</button>
+            <button id="adminSendAll" class="admin-action-button primary" type="button">Отправить всем</button>
+          </div>
+          <div id="adminProgress" class="admin-progress" hidden>
+            <div class="admin-progress-bar"><span id="adminProgressFill"></span></div>
+            <div id="adminProgressText" class="admin-progress-text">...</div>
+          </div>
+        </section>
+        <section class="admin-card">
+          <div class="admin-head compact">
+            <h2>Получатели</h2>
+          </div>
+          <div id="adminSubscribersList" class="admin-subscribers-list"></div>
+        </section>
+      </div>
+    </section>
+
     <section id="loadingScreen" class="loading-screen" hidden aria-hidden="true">
       <div class="loader"></div>
       <p>Загружаю данные...</p>
@@ -172,6 +201,13 @@
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1.82v.08a2 2 0 1 1-4 0v-.08A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33h-.08a2 2 0 1 1 0-4h.08A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06A2 2 0 1 1 7.7 4.3l.06.06A1.65 1.65 0 0 0 9 4.6c.31 0 .62-.1 .88-.27A1.65 1.65 0 0 0 10.9 2.5v-.08a2 2 0 1 1 4 0v.08c.08.33.27.62.52.83.26.17.57.27.88.27.53 0 1.04-.21 1.41-.59l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06c-.38.37-.59.88-.59 1.41 0 .31.1.62.27.88.22.25.5.44.83.52h.08a2 2 0 1 1 0 4h-.08a1.65 1.65 0 0 0-1.82.33c-.17.26-.27.57-.27.88Z"/>
       </svg>
     </button>
+    <div class="nav-sep admin-nav-item" hidden></div>
+    <button class="nav-pill admin-nav-item" type="button" data-target="admin" aria-label="Рассылка" hidden>
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M22 2 11 13"/>
+        <path d="m22 2-7 20-4-9-9-4 20-7Z"/>
+      </svg>
+    </button>
   </nav>
 
   <div class="brand-watermark">@you_emily_bot</div>
@@ -185,7 +221,7 @@
   </div>
 
   <script
-    src="/miniapp/app.compat.js?v=20260627-scroll-fix-1"
+    src="/miniapp/app.js?v=20260627-startup-fix-1"
     onload="document.documentElement.setAttribute('data-app-script', 'loaded')"
     onerror="document.documentElement.setAttribute('data-app-script', 'error')"></script>
 </body>

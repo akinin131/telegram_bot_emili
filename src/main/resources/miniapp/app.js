@@ -1,7 +1,8 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 const DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
-const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v2";
-const GALLERY_CACHE_KEY = "emily:validatedGalleries:v1";
+const DEFAULT_AUDIENCE = "female";
+const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v5";
+const GALLERY_CACHE_KEY = "emily:validatedGalleries:v2";
 const PENDING_AUDIENCE_KEY = "emily:pendingAudience";
 const DIALOG_PREVIEW_MESSAGE_LIMIT = 12;
 
@@ -30,6 +31,7 @@ const state = {
     dialogs: 0,
     gallery: 0,
     settings: 0,
+    admin: 0,
   },
   lastNonSettingsScreen: "characters",
   finishTimer: null,
@@ -38,6 +40,9 @@ const state = {
   pendingAudienceTarget: null,
   pendingStorySelectionKey: null,
   storiesByCharacter: {},
+  adminSubscribers: [],
+  adminJob: null,
+  adminPollTimer: null,
 };
 
 const els = {
@@ -55,6 +60,7 @@ const els = {
   dialogsScreen: document.getElementById("dialogsScreen"),
   galleryScreen: document.getElementById("galleryScreen"),
   settingsScreen: document.getElementById("settingsScreen"),
+  adminScreen: document.getElementById("adminScreen"),
   loadingScreen: document.getElementById("loadingScreen"),
   charactersGrid: document.getElementById("charactersGrid"),
   storiesList: document.getElementById("storiesList"),
@@ -73,6 +79,16 @@ const els = {
   galleryViewerMeta: document.getElementById("galleryViewerMeta"),
   backFromSettings: document.getElementById("backFromSettings"),
   currentSelection: document.getElementById("currentSelection"),
+  adminSubscribersMeta: document.getElementById("adminSubscribersMeta"),
+  adminSubscribersList: document.getElementById("adminSubscribersList"),
+  adminRefreshSubscribers: document.getElementById("adminRefreshSubscribers"),
+  adminPostInput: document.getElementById("adminPostInput"),
+  adminSendMe: document.getElementById("adminSendMe"),
+  adminSendAll: document.getElementById("adminSendAll"),
+  adminProgress: document.getElementById("adminProgress"),
+  adminProgressFill: document.getElementById("adminProgressFill"),
+  adminProgressText: document.getElementById("adminProgressText"),
+  adminNavItems: document.querySelectorAll(".admin-nav-item"),
   navPills: document.querySelectorAll("[data-target]"),
 };
 
@@ -83,6 +99,7 @@ const screenTitles = {
   dialogs: "Диалоги",
   gallery: "Галерея",
   settings: "Настройки",
+  admin: "Рассылка",
 };
 
 try {
@@ -138,8 +155,9 @@ function bindEvents() {
   els.navPills.forEach((button) => {
     button.addEventListener("click", () => {
       const target = button.dataset.target || "characters";
-      if (!hasAudiencePreference()) {
-        showScreen("preference");
+      if (target === "admin") {
+        showScreen("admin");
+        loadAdminSubscribers();
         return;
       }
       if (target === "settings") {
@@ -160,6 +178,9 @@ function bindEvents() {
   on(els.closeGalleryViewer, "click", closeGalleryViewer);
   on(els.prevGalleryImage, "click", () => showGalleryImage(state.galleryIndex - 1));
   on(els.nextGalleryImage, "click", () => showGalleryImage(state.galleryIndex + 1));
+  on(els.adminRefreshSubscribers, "click", loadAdminSubscribers);
+  on(els.adminSendMe, "click", () => startAdminBroadcast("me"));
+  on(els.adminSendAll, "click", () => startAdminBroadcast("all"));
   on(els.galleryViewerImage, "error", handleGalleryViewerError);
   on(els.galleryViewer, "click", (event) => {
     if (event.target === els.galleryViewer) closeGalleryViewer();
@@ -188,10 +209,8 @@ async function loadBootstrap(nextScreen = null) {
     state.bootstrap = data;
     state.dialogMap = buildDialogMap(data.dialogs);
     syncStoriesByCharacter(data.storiesByCharacter);
-    if (!data.settings || !data.settings.audiencePreference) {
-      state.audiencePreference = null;
-      clearPendingAudience();
-    }
+    if (!data.settings) data.settings = {};
+    if (!data.settings.audiencePreference) data.settings.audiencePreference = DEFAULT_AUDIENCE;
     applyPendingAudience();
 
     if (state.pendingAudienceTarget) {
@@ -219,8 +238,10 @@ async function loadBootstrap(nextScreen = null) {
     renderCharacters();
     renderDialogs();
     renderSettings();
+    updateAdminVisibility();
+    renderAdminSubscribers();
     refreshStoriesScreenIfPending();
-    showScreen(state.audiencePreference ? targetScreen : "preference");
+    showScreen(targetScreen);
     setLoading(false);
     prefetchGalleries(data.characters);
     document.documentElement.setAttribute("data-miniapp-stage", "ready");
@@ -258,7 +279,9 @@ function hydrateCachedBootstrap() {
   renderCharacters();
   renderDialogs();
   renderSettings();
-  showScreen(state.audiencePreference ? "characters" : "preference");
+  updateAdminVisibility();
+  renderAdminSubscribers();
+  showScreen("characters");
   setLoading(false);
   prefetchGalleries(cached.characters);
   document.documentElement.setAttribute("data-miniapp-stage", "cached");
@@ -414,8 +437,8 @@ function apiWithXhr(path, options, timeoutMs) {
 }
 
 function showScreen(name) {
-  if (!hasAudiencePreference() && name !== "preference") {
-    name = "preference";
+  if (name === "admin" && !hasAdminAccess()) {
+    name = "characters";
   }
 
   const previousScreen = state.currentScreen;
@@ -441,6 +464,7 @@ function showScreen(name) {
     els.dialogsScreen,
     els.galleryScreen,
     els.settingsScreen,
+    els.adminScreen,
   ].forEach((screen) => screen.classList.remove("active"));
 
   if (name === "preference") els.preferenceScreen.classList.add("active");
@@ -449,6 +473,7 @@ function showScreen(name) {
   if (name === "dialogs") els.dialogsScreen.classList.add("active");
   if (name === "gallery") els.galleryScreen.classList.add("active");
   if (name === "settings") els.settingsScreen.classList.add("active");
+  if (name === "admin") els.adminScreen.classList.add("active");
 
   els.navPills.forEach((button) => {
     const target = button.dataset.target;
@@ -513,6 +538,21 @@ function hasAudiencePreference() {
   return Boolean(resolveAudiencePreference());
 }
 
+function hasAdminAccess() {
+  return Boolean(state.bootstrap && state.bootstrap.admin && state.bootstrap.admin.enabled);
+}
+
+function updateAdminVisibility() {
+  const enabled = hasAdminAccess();
+  els.adminNavItems.forEach((item) => {
+    item.hidden = !enabled;
+    item.style.display = enabled ? "" : "none";
+  });
+  if (!enabled && state.currentScreen === "admin") {
+    showScreen("characters");
+  }
+}
+
 function inferAudienceFromCharacters(characters) {
   if (!Array.isArray(characters) || characters.length === 0) return null;
   const audience = characters[0] && characters[0].audience;
@@ -538,7 +578,7 @@ function resolveAudiencePreference() {
     return inferred;
   }
 
-  return settingsAudience || inferred || null;
+  return settingsAudience || inferred || DEFAULT_AUDIENCE;
 }
 
 function syncAudiencePreference(audience) {
@@ -2230,6 +2270,136 @@ function openBotChat() {
   }
 
   window.location.href = botUrl;
+}
+
+async function loadAdminSubscribers() {
+  if (!hasAdminAccess()) return;
+  if (els.adminSubscribersMeta) els.adminSubscribersMeta.textContent = "Подписчики загружаются...";
+  try {
+    const data = await api("/miniapp/api/admin/subscribers");
+    state.adminSubscribers = data.subscribers || [];
+    renderAdminSubscribers();
+  } catch (error) {
+    showToast(error.message || "Не удалось загрузить подписчиков");
+  }
+}
+
+function renderAdminSubscribers() {
+  if (!els.adminSubscribersList) return;
+  const subscribers = state.adminSubscribers || [];
+  if (els.adminSubscribersMeta) {
+    els.adminSubscribersMeta.textContent = hasAdminAccess()
+      ? `Всего получателей: ${subscribers.length}`
+      : "Админ-доступ выключен";
+  }
+  els.adminSubscribersList.replaceChildren();
+
+  if (!hasAdminAccess()) return;
+
+  if (subscribers.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-dialogs";
+    empty.textContent = "Список пока пуст.";
+    els.adminSubscribersList.append(empty);
+    return;
+  }
+
+  subscribers.slice(0, 80).forEach((subscriber) => {
+    const row = document.createElement("div");
+    row.className = "admin-subscriber-row";
+
+    const main = document.createElement("strong");
+    main.textContent = String(subscriber.chatId);
+
+    const meta = document.createElement("span");
+    meta.textContent = subscriber.lastUsageAt
+      ? new Date(subscriber.lastUsageAt).toLocaleString("ru-RU")
+      : subscriber.source || "users";
+
+    row.append(main, meta);
+    els.adminSubscribersList.append(row);
+  });
+}
+
+async function startAdminBroadcast(target) {
+  if (!hasAdminAccess()) return;
+  const postRef = (els.adminPostInput && els.adminPostInput.value || "").trim();
+  if (!postRef) {
+    showToast("Вставь ссылку на пост или текст сообщения");
+    return;
+  }
+
+  setAdminSending(true);
+  updateAdminProgress({ status: "running", total: 0, sent: 0, failed: 0 });
+
+  try {
+    const data = await api("/miniapp/api/admin/broadcast", {
+      method: "POST",
+      body: { target, postRef },
+      timeoutMs: 30_000,
+    });
+    state.adminJob = data.job;
+    updateAdminProgress(data.job);
+    pollAdminBroadcast(data.job.id);
+  } catch (error) {
+    setAdminSending(false);
+    updateAdminProgress(null);
+    showToast(error.message || "Не удалось запустить рассылку");
+  }
+}
+
+function pollAdminBroadcast(jobId) {
+  if (state.adminPollTimer) window.clearTimeout(state.adminPollTimer);
+
+  const tick = async () => {
+    try {
+      const data = await api(`/miniapp/api/admin/broadcast?jobId=${encodeURIComponent(jobId)}`, {
+        timeoutMs: 15_000,
+      });
+      state.adminJob = data.job;
+      updateAdminProgress(data.job);
+
+      if (data.job && data.job.status === "running") {
+        state.adminPollTimer = window.setTimeout(tick, 900);
+      } else {
+        setAdminSending(false);
+        showToast("Рассылка завершена");
+      }
+    } catch (error) {
+      setAdminSending(false);
+      showToast(error.message || "Не удалось обновить прогресс");
+    }
+  };
+
+  state.adminPollTimer = window.setTimeout(tick, 700);
+}
+
+function updateAdminProgress(job) {
+  if (!els.adminProgress) return;
+  if (!job) {
+    els.adminProgress.hidden = true;
+    return;
+  }
+  els.adminProgress.hidden = false;
+
+  const total = Number(job.total || 0);
+  const sent = Number(job.sent || 0);
+  const failed = Number(job.failed || 0);
+  const done = sent + failed;
+  const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+
+  if (els.adminProgressFill) els.adminProgressFill.style.width = `${percent}%`;
+  if (els.adminProgressText) {
+    const tail = job.lastError ? ` Последняя ошибка: ${job.lastError}` : "";
+    els.adminProgressText.textContent =
+      `Готово ${done}/${total}. Доставлено: ${sent}. Ошибок: ${failed}.${tail}`;
+  }
+}
+
+function setAdminSending(isSending) {
+  [els.adminSendMe, els.adminSendAll, els.adminRefreshSubscribers].forEach((button) => {
+    if (button) button.disabled = isSending;
+  });
 }
 
 function setLoading(isLoading) {

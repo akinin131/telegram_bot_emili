@@ -1898,6 +1898,156 @@ p {
   border-color: rgba(214, 156, 255, 0.18);
 }
 
+.admin-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(260px, 0.9fr);
+  gap: 14px;
+  padding-bottom: 120px;
+}
+
+.admin-card {
+  padding: 16px;
+  background: rgba(17, 17, 23, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+
+.admin-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.admin-head.compact {
+  margin-bottom: 10px;
+}
+
+.admin-head h2 {
+  margin: 0;
+  color: #fff;
+  font-size: 19px;
+  line-height: 1.15;
+}
+
+.admin-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.admin-icon-button {
+  width: 40px;
+  height: 40px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  font-size: 21px;
+  cursor: pointer;
+}
+
+.admin-post-input {
+  width: 100%;
+  min-height: 132px;
+  resize: vertical;
+  padding: 12px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  font: inherit;
+  line-height: 1.42;
+  outline: none;
+}
+
+.admin-post-input:focus {
+  border-color: rgba(184, 164, 255, 0.58);
+  box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.18);
+}
+
+.admin-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.admin-action-button {
+  min-height: 48px;
+  padding: 10px 12px;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.admin-action-button.primary {
+  background: linear-gradient(135deg, #7c5cff, #f05d8f);
+}
+
+.admin-action-button.secondary {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.admin-action-button:disabled {
+  opacity: 0.58;
+  cursor: wait;
+}
+
+.admin-progress {
+  margin-top: 14px;
+}
+
+.admin-progress-bar {
+  height: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+}
+
+.admin-progress-bar span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #7c5cff, #45d19c);
+  transition: width 0.2s var(--ease);
+}
+
+.admin-progress-text {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.admin-subscribers-list {
+  display: grid;
+  gap: 8px;
+  max-height: 430px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.admin-subscriber-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 11px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.admin-subscriber-row span {
+  color: var(--muted);
+}
+
 .settings-kicker {
   color: rgba(255, 255, 255, 0.62);
   font-size: 11px;
@@ -2317,6 +2467,10 @@ p {
 }
 
 @media (max-width: 860px) {
+  .admin-panel {
+    grid-template-columns: 1fr;
+  }
+
   .settings-stack {
     grid-template-columns: 1fr;
   }

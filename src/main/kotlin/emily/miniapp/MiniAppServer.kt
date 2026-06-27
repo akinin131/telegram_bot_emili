@@ -2,6 +2,7 @@ package emily.miniapp
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import emily.data.AdminRepository
 import emily.data.BalanceRepository
 import emily.data.ChatHistoryRepository
 import emily.data.CustomStoryAccess
@@ -17,6 +18,8 @@ import emily.data.GifPack
 import emily.data.ImagePack
 import emily.data.Plan
 import emily.data.ReferralRepository
+import emily.data.UserActivity
+import emily.data.UserActivityRepository
 import emily.data.UserSettingsRepository
 import emily.domain.AudiencePreference
 import emily.domain.BotCatalog
@@ -53,6 +56,8 @@ data class MiniAppConfig(
 class MiniAppServer(
     private val config: MiniAppConfig,
     private val balanceRepository: BalanceRepository,
+    private val adminRepository: AdminRepository,
+    private val userActivityRepository: UserActivityRepository,
     private val chatHistoryRepository: ChatHistoryRepository,
     private val dialogRepository: DialogRepository,
     private val generatedImageRepository: GeneratedImageRepository,
@@ -71,7 +76,55 @@ class MiniAppServer(
     private val telegramApi = TelegramBotApiClient(config.botToken)
     private val imageCache = ConcurrentHashMap<String, CachedImage>()
     private val generatedImageCache = ConcurrentHashMap<String, CachedImage>()
+    private val adminBroadcastJobs = ConcurrentHashMap<String, AdminBroadcastJob>()
     private val characterImageVersion = "20260627-photo-refresh-1"
+
+    private class AdminBroadcastJob(
+        val id: String,
+        val ownerId: Long,
+        val postRef: String,
+        val target: String,
+        val total: Int
+    ) {
+        @Volatile var sent: Int = 0
+        @Volatile var failed: Int = 0
+        @Volatile var status: String = "running"
+        @Volatile var currentChatId: Long? = null
+        @Volatile var lastError: String? = null
+        val createdAt: Long = System.currentTimeMillis()
+        @Volatile var updatedAt: Long = createdAt
+
+        fun toJson(): JSONObject = JSONObject()
+            .put("id", id)
+            .put("target", target)
+            .put("postRef", postRef)
+            .put("total", total)
+            .put("sent", sent)
+            .put("failed", failed)
+            .put("status", status)
+            .put("currentChatId", currentChatId ?: JSONObject.NULL)
+            .put("lastError", lastError ?: JSONObject.NULL)
+            .put("createdAt", createdAt)
+            .put("updatedAt", updatedAt)
+    }
+
+    private data class AdminSubscriber(
+        val userId: Long,
+        val chatId: Long,
+        val lastUsageAt: Long?,
+        val source: String
+    ) {
+        fun toJson(): JSONObject = JSONObject()
+            .put("userId", userId)
+            .put("chatId", chatId)
+            .put("lastUsageAt", lastUsageAt ?: JSONObject.NULL)
+            .put("source", source)
+    }
+
+    private data class TelegramPostLink(
+        val fromChatId: String,
+        val messageId: Int
+    )
 
     fun start() {
         val httpServer = HttpServer.create(InetSocketAddress(config.port), 0)
@@ -129,6 +182,9 @@ class MiniAppServer(
             path == "/miniapp/api/create-invoice" && exchange.requestMethod == "POST" -> handleCreateInvoice(exchange)
             path == "/miniapp/api/settings" && exchange.requestMethod == "POST" -> handleSettings(exchange)
             path == "/miniapp/api/expand-setup" && exchange.requestMethod == "POST" -> handleExpandSetup(exchange)
+            path == "/miniapp/api/admin/subscribers" && exchange.requestMethod == "GET" -> handleAdminSubscribers(exchange)
+            path == "/miniapp/api/admin/broadcast" && exchange.requestMethod == "POST" -> handleAdminBroadcast(exchange)
+            path == "/miniapp/api/admin/broadcast" && exchange.requestMethod == "GET" -> handleAdminBroadcastStatus(exchange)
             path == "/miniapp/health" -> sendJson(exchange, 200, JSONObject().put("ok", true))
             else -> sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Not found"))
         }
@@ -144,7 +200,11 @@ class MiniAppServer(
         val selectedStoryId = userSettingsRepository.getSelectedStory(user.id)
         val activeDialogId = userSettingsRepository.getActiveDialogId(user.id)
         val language = userSettingsRepository.getLanguage(user.id)
-        val audiencePreference = userSettingsRepository.getAudiencePreference(user.id)
+        val storedAudiencePreference = userSettingsRepository.getAudiencePreference(user.id)
+        val audiencePreference = storedAudiencePreference ?: AudiencePreference.FEMALE
+        if (storedAudiencePreference == null) {
+            runCatching { userSettingsRepository.setAudiencePreference(user.id, audiencePreference) }
+        }
         println("MiniAppServer: bootstrap selectedCharacterId=$selectedCharacterId audiencePreference=$audiencePreference selectedStoryId=$selectedStoryId")
         val turns = chatHistoryRepository.getLast(user.id, limit = 20)
         val dialogs = dialogRepository.listDialogs(user.id, limit = 50)
@@ -156,6 +216,7 @@ class MiniAppServer(
             ?: dialogs.firstOrNull { it.storyId == selectedStoryId }?.storyTitle
         println("MiniAppServer: bootstrap resolved selectedCharacter=${selectedCharacter.id} selectedStory=$selectedStory selectedStoryTitle=$selectedStoryTitle")
         val customStoryAccess = customStoryRepository.getAccess(user.id)
+        val hasAdminAccess = adminRepository.hasAccess(user.id)
         val allCustomStories = customStoryRepository.listAllStories(user.id)
         // Load preview messages: prefer recentMessages from summary, fall back to getAllMessages for old dialogs
         val hasDialogMissingPreview = dialogs.any { it.recentMessages.isEmpty() }
@@ -186,7 +247,7 @@ class MiniAppServer(
                 )
                 .put("settings", JSONObject()
                     .put("language", language ?: "ru")
-                    .put("audiencePreference", audiencePreference ?: JSONObject.NULL)
+                    .put("audiencePreference", audiencePreference)
                     .put("selectedCharacter", selectedCharacter.id)
                     .put("selectedStory", selectedStoryId)
                     .put("selectedStoryTitle", selectedStoryTitle ?: JSONObject.NULL)
@@ -207,6 +268,9 @@ class MiniAppServer(
                 .put("storiesByCharacter", storiesByCharacterJson(BotCatalog.characters, allCustomStories))
                 .put("dialogs", JSONArray(dialogsWithPreview.map { it }))
                 .put("customStory", customStoryAccessJson(customStoryAccess))
+                .put("admin", JSONObject()
+                    .put("enabled", hasAdminAccess)
+                )
                 .put("payments", JSONObject()
                     .put("plans", JSONArray(Plan.entries.map { it.toMiniAppJson() }))
                     .put("packs", JSONArray(ImagePack.entries.map { it.toMiniAppJson() }))
@@ -959,6 +1023,217 @@ class MiniAppServer(
         return telegramApi.sendMessage(userId, caption, parseMode = "HTML")
     }
 
+    private fun handleAdminSubscribers(exchange: HttpExchange) = runBlocking {
+        val user = requireAdmin(exchange) ?: return@runBlocking
+        val subscribers = collectAdminSubscribers()
+        sendJson(
+            exchange = exchange,
+            status = 200,
+            body = JSONObject()
+                .put("ok", true)
+                .put("adminUserId", user.id)
+                .put("total", subscribers.size)
+                .put("subscribers", JSONArray(subscribers.map { it.toJson() }))
+        )
+    }
+
+    private fun handleAdminBroadcast(exchange: HttpExchange) = runBlocking {
+        val user = requireAdmin(exchange) ?: return@runBlocking
+        val body = readJson(exchange)
+        val postRef = body.optString("postRef").trim()
+        val target = body.optString("target").trim().lowercase(Locale.ROOT)
+
+        if (postRef.isBlank()) {
+            return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Вставь ссылку на пост или текст сообщения"))
+        }
+
+        if (postRef.startsWith("@PostBot", ignoreCase = true)) {
+            return@runBlocking sendJson(
+                exchange,
+                400,
+                JSONObject()
+                    .put("ok", false)
+                    .put("error", "Формат @PostBot работает только в клиенте Telegram через inline-режим. Для рассылки ботом нужна ссылка на уже опубликованное сообщение или обычный текст.")
+            )
+        }
+
+        val recipients = when (target) {
+            "me" -> listOf(user.id)
+            "all" -> collectAdminSubscribers().map { it.chatId }.distinct()
+            else -> return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Unknown target"))
+        }
+
+        if (recipients.isEmpty()) {
+            return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Получателей нет"))
+        }
+
+        val job = AdminBroadcastJob(
+            id = UUID.randomUUID().toString().replace("-", "").take(12),
+            ownerId = user.id,
+            postRef = postRef,
+            target = target,
+            total = recipients.size
+        )
+        adminBroadcastJobs[job.id] = job
+
+        Thread {
+            runBlocking {
+                deliverAdminBroadcast(job, recipients)
+            }
+        }.apply {
+            name = "admin-broadcast-${job.id}"
+            isDaemon = true
+            start()
+        }
+
+        sendJson(
+            exchange = exchange,
+            status = 200,
+            body = JSONObject()
+                .put("ok", true)
+                .put("job", job.toJson())
+        )
+    }
+
+    private fun handleAdminBroadcastStatus(exchange: HttpExchange) = runBlocking {
+        val user = requireAdmin(exchange) ?: return@runBlocking
+        val jobId = queryParam(exchange, "jobId")
+            ?: return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "jobId is required"))
+        val job = adminBroadcastJobs[jobId]
+            ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Задание не найдено"))
+
+        if (job.ownerId != user.id) {
+            return@runBlocking sendJson(exchange, 403, JSONObject().put("ok", false).put("error", "Нет доступа к этому заданию"))
+        }
+
+        sendJson(
+            exchange = exchange,
+            status = 200,
+            body = JSONObject()
+                .put("ok", true)
+                .put("job", job.toJson())
+        )
+    }
+
+    private suspend fun requireAdmin(exchange: HttpExchange): MiniAppUser? {
+        val user = authenticate(exchange) ?: return null
+        if (!adminRepository.hasAccess(user.id)) {
+            sendJson(exchange, 403, JSONObject().put("ok", false).put("error", "Админ-доступ не включен"))
+            return null
+        }
+        return user
+    }
+
+    private suspend fun collectAdminSubscribers(): List<AdminSubscriber> {
+        val activityUsers = runCatching { userActivityRepository.listAllUsers() }.getOrDefault(emptyList())
+        val referralUserIds = runCatching { referralRepository.listAllUserIds() }.getOrDefault(emptyList())
+        val byChatId = linkedMapOf<Long, AdminSubscriber>()
+
+        activityUsers
+            .sortedByDescending { it.lastUsageAt }
+            .forEach { activity ->
+                byChatId[activity.chatId] = AdminSubscriber(
+                    userId = activity.userId,
+                    chatId = activity.chatId,
+                    lastUsageAt = activity.lastUsageAt,
+                    source = "activity"
+                )
+            }
+
+        referralUserIds.forEach { userId ->
+            byChatId.putIfAbsent(
+                userId,
+                AdminSubscriber(
+                    userId = userId,
+                    chatId = userId,
+                    lastUsageAt = null,
+                    source = "users"
+                )
+            )
+        }
+
+        return byChatId.values.sortedWith(
+            compareByDescending<AdminSubscriber> { it.lastUsageAt ?: 0L }
+                .thenBy { it.chatId }
+        )
+    }
+
+    private suspend fun deliverAdminBroadcast(job: AdminBroadcastJob, recipients: List<Long>) {
+        val postLink = parseTelegramPostLink(job.postRef)
+
+        recipients.forEachIndexed { index, chatId ->
+            job.currentChatId = chatId
+            job.updatedAt = System.currentTimeMillis()
+
+            var result = if (postLink != null) {
+                telegramApi.copyMessage(
+                    chatId = chatId,
+                    fromChatId = postLink.fromChatId,
+                    messageId = postLink.messageId
+                )
+            } else {
+                telegramApi.sendMessage(chatId, job.postRef)
+            }
+
+            if (!result.ok && postLink != null && shouldFallbackToLinkMessage(result)) {
+                result = telegramApi.sendMessage(
+                    chatId = chatId,
+                    text = job.postRef,
+                    disableWebPagePreview = false
+                )
+            }
+
+            if (result.ok) {
+                job.sent += 1
+            } else {
+                job.failed += 1
+                job.lastError = result.description
+            }
+            job.updatedAt = System.currentTimeMillis()
+
+            if (index < recipients.lastIndex) {
+                kotlinx.coroutines.delay(180L)
+            }
+        }
+
+        job.currentChatId = null
+        job.status = "done"
+        job.updatedAt = System.currentTimeMillis()
+    }
+
+    private fun shouldFallbackToLinkMessage(result: TelegramSendResult): Boolean {
+        if (result.ok) return false
+        val description = result.description.lowercase(Locale.ROOT)
+        return "message to copy not found" in description ||
+            "message identifier is not specified" in description ||
+            "chat not found" in description ||
+            "have no rights" in description ||
+            "not enough rights" in description
+    }
+
+    private fun parseTelegramPostLink(value: String): TelegramPostLink? {
+        val trimmed = value.trim()
+        val publicMatch = Regex("""^https?://t\.me/([A-Za-z0-9_]+)/(\d+)(?:\?.*)?$""")
+            .matchEntire(trimmed)
+        if (publicMatch != null) {
+            return TelegramPostLink(
+                fromChatId = "@${publicMatch.groupValues[1]}",
+                messageId = publicMatch.groupValues[2].toInt()
+            )
+        }
+
+        val privateMatch = Regex("""^https?://t\.me/c/(\d+)/(\d+)(?:\?.*)?$""")
+            .matchEntire(trimmed)
+        if (privateMatch != null) {
+            return TelegramPostLink(
+                fromChatId = "-100${privateMatch.groupValues[1]}",
+                messageId = privateMatch.groupValues[2].toInt()
+            )
+        }
+
+        return null
+    }
+
     private fun telegramPhotoUrl(pathOrUrl: String): String? {
         if (!pathOrUrl.startsWith("/miniapp/")) return pathOrUrl
         if (config.publicUrl.contains("localhost") || config.publicUrl.contains("127.0.0.1")) return null
@@ -1375,12 +1650,17 @@ class MiniAppServer(
     }
 
     private class TelegramBotApiClient(private val botToken: String) {
-        fun sendMessage(chatId: Long, text: String, parseMode: String? = null): TelegramSendResult {
+        fun sendMessage(
+            chatId: Long,
+            text: String,
+            parseMode: String? = null,
+            disableWebPagePreview: Boolean = true
+        ): TelegramSendResult {
             return runCatching {
                 val request = JSONObject()
                     .put("chat_id", chatId)
                     .put("text", text)
-                    .put("disable_web_page_preview", true)
+                    .put("disable_web_page_preview", disableWebPagePreview)
                 if (parseMode != null) {
                     request.put("parse_mode", parseMode)
                 }
@@ -1465,6 +1745,15 @@ class MiniAppServer(
                     description = error.message ?: "Telegram photo request failed"
                 )
             }
+        }
+
+        fun copyMessage(chatId: Long, fromChatId: String, messageId: Int): TelegramSendResult {
+            val request = JSONObject()
+                .put("chat_id", chatId)
+                .put("from_chat_id", fromChatId)
+                .put("message_id", messageId)
+
+            return postTelegram("copyMessage", request)
         }
 
         fun sendInvoice(

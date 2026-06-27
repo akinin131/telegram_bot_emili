@@ -218,6 +218,15 @@ class ReferralRepository(
             .take(limit)
     }
 
+    suspend fun listAllUserIds(): List<Long> = withContext(Dispatchers.IO) {
+        val snapshot = usersRef.awaitSingle()
+        if (!snapshot.exists()) return@withContext emptyList<Long>()
+
+        snapshot.children.mapNotNull { child ->
+            child.key?.toLongOrNull()
+        }
+    }
+
     private suspend fun referrerForPendingReferral(invitedUserId: Long): Long? {
         val userSnapshot = usersRef.child(invitedUserId.toString()).awaitSingle()
         if (userSnapshot.child("referralActivated").booleanValue()) return null

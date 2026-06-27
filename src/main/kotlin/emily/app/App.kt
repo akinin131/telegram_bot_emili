@@ -1,6 +1,7 @@
 package emily.app
 
 import emily.bot.EmilyVirtualGirlBot
+import emily.data.AdminRepository
 import emily.data.BalanceRepository
 import emily.data.ChatHistoryRepository
 import emily.data.AnalyticsRepository
@@ -63,6 +64,7 @@ fun main() {
     val translator = MyMemoryTranslator(okHttpClient)
 
     val balanceRepository = BalanceRepository()
+    val adminRepository = AdminRepository()
     val analyticsRepository = AnalyticsRepository()
     val referralRepository = ReferralRepository()
     val retentionService = DataRetentionService()
@@ -85,10 +87,14 @@ fun main() {
     val miniAppPublicUrl = configuredMiniAppUrl ?: "http://localhost:$miniAppPort/miniapp/"
     val miniAppEnabled = Secrets.getOrNull("MINI_APP_ENABLED")?.toBooleanStrictOrNull()
         ?: (configuredMiniAppUrl != null || Secrets.getOrNull("MINI_APP_DEV_USER_ID") != null)
+    val adminPanelCode = Secrets.getOrNull("ADMIN_PANEL_CODE")?.trim()?.takeIf { it.isNotBlank() }
+        ?: "EMILI_ADMIN_PANEL"
+    val adminUserId = Secrets.getOrNull("ADMIN_USER_ID")?.toLongOrNull()
 
     val bot = EmilyVirtualGirlBot(
         config = config,
         repository = balanceRepository,
+        adminRepository = adminRepository,
         analyticsRepository = analyticsRepository,
         referralRepository = referralRepository,
         chatHistoryRepository= chatHistoryRepository,
@@ -106,7 +112,9 @@ fun main() {
         translator = translator,
         subscriptionGroupUrl = "https://t.me/+_rSsi7FUDtYyM2Uy",
         premiumChatModel = PREMIUM_CHAT_MODEL,
-        miniAppUrl = configuredMiniAppUrl
+        miniAppUrl = miniAppPublicUrl,
+        adminPanelCode = adminPanelCode,
+        adminUserId = adminUserId
     )
 
     if (miniAppEnabled) {
@@ -121,6 +129,8 @@ fun main() {
                     devUserId = Secrets.getOrNull("MINI_APP_DEV_USER_ID")?.toLongOrNull()
                 ),
                 balanceRepository = balanceRepository,
+                adminRepository = adminRepository,
+                userActivityRepository = userActivityRepository,
                 chatHistoryRepository = chatHistoryRepository,
                 dialogRepository = dialogRepository,
                 generatedImageRepository = generatedImageRepository,

@@ -67,6 +67,7 @@ import org.telegram.telegrambots.meta.api.objects.chatmember.ChatMember
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
+    private val adminRepository: AdminRepository,
     private val analyticsRepository: AnalyticsRepository,
     private val referralRepository: ReferralRepository,
     private val chatHistoryRepository: ChatHistoryRepository,
@@ -84,7 +85,9 @@ class EmilyVirtualGirlBot(
     private val translator: MyMemoryTranslator?,
     private val subscriptionGroupUrl: String?,
     private val premiumChatModel: String,
-    private val miniAppUrl: String?
+    private val miniAppUrl: String?,
+    private val adminPanelCode: String,
+    private val adminUserId: Long?
 ) : TelegramLongPollingBot() {
     override fun getBotUsername(): String = "you_emily_bot"
     override fun getBotToken(): String = config.telegramToken
@@ -1122,6 +1125,14 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         return normalized == basicPlanPromoCode || commandName(textRaw) == "/promo_basic"
     }
 
+    private fun isAdminPanelUnlockCode(textRaw: String): Boolean {
+        val trimmed = textRaw.trim()
+        if (trimmed.equals(adminPanelCode, ignoreCase = true)) return true
+        if (commandName(trimmed) != "/admin") return false
+        val payload = trimmed.split(Regex("\\s+"), limit = 2).getOrNull(1)?.trim()
+        return payload != null && payload.equals(adminPanelCode, ignoreCase = true)
+    }
+
     private fun shouldBypassSubscriptionGate(textRaw: String): Boolean {
         return isStartCommand(textRaw) ||
                 isCustomStoryPromo(textRaw) ||
@@ -1259,6 +1270,12 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         val chatId = update.message.chatId
         val textRaw = update.message.text.trim()
         val messageId = update.message.messageId
+
+        if (isAdminPanelUnlockCode(textRaw)) {
+            activateAdminPanel(session, chatId)
+            deleteUserCommand(chatId, messageId, textRaw)
+            return
+        }
 
         if (!passSubscriptionGate(session, chatId, textRaw)) {
             return
@@ -1881,6 +1898,37 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             html = false,
             replyMarkup = keyboard
         )
+    }
+
+    private suspend fun activateAdminPanel(session: ChatSession, chatId: Long) {
+        if (adminUserId != null && chatId != adminUserId) {
+            sendEphemeral(
+                session = session,
+                chatId = chatId,
+                text = "Этот код не привязан к твоему аккаунту.",
+                ttlSeconds = 15
+            )
+            return
+        }
+
+        runCatching { adminRepository.grantAccess(chatId) }
+            .onSuccess {
+                sendSystemText(
+                    session = session,
+                    chatId = chatId,
+                    text = "Админ-вкладка включена. Открой Mini App заново или обнови его.",
+                    html = false,
+                    replyMarkup = miniAppKeyboard()
+                )
+            }
+            .onFailure { error ->
+                sendEphemeral(
+                    session = session,
+                    chatId = chatId,
+                    text = "Не удалось включить админ-вкладку: ${error.message ?: "ошибка базы"}",
+                    ttlSeconds = 20
+                )
+            }
     }
 
     private suspend fun redeemCustomStoryPromo(session: ChatSession, chatId: Long) {
@@ -3165,6 +3213,7 @@ Generate tags for the current/latest scene.
             "/ref",
             "/partners",
             "/top",
+            "/admin",
             "/reset",
             "/pic",
             "/scene"
