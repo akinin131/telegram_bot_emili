@@ -6,7 +6,7 @@
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>document.documentElement.setAttribute("data-inline-js", "ok");</script>
-  <link rel="stylesheet" href="/miniapp/app.css?v=20260627-startup-fix-1">
+  <link rel="stylesheet" href="/miniapp/app.css?v=20260627-stories-instant-1">
 </head>
 <body>
   <header class="appbar">
@@ -156,7 +156,21 @@
             </div>
             <button id="adminRefreshSubscribers" class="admin-icon-button" type="button" aria-label="Обновить список">↻</button>
           </div>
-          <textarea id="adminPostInput" class="admin-post-input" rows="5" placeholder="Ссылка на пост Telegram или текст сообщения"></textarea>
+          <textarea id="adminPostInput" class="admin-post-input" rows="5" placeholder="Текст поста или ссылка на уже опубликованный Telegram-пост"></textarea>
+          <input id="adminPhotoInput" class="admin-line-input" type="text" placeholder="Ссылка на фото или Telegram file_id">
+          <div class="admin-gallery-picker">
+            <div class="admin-gallery-controls">
+              <select id="adminGalleryCharacter" class="admin-select" aria-label="Персонаж для выбора фото"></select>
+              <button id="adminLoadGallery" class="admin-action-button secondary compact" type="button">Показать фото</button>
+            </div>
+            <div id="adminGalleryStatus" class="admin-gallery-status">Выбери персонажа и фото из его галереи.</div>
+            <div id="adminGalleryGrid" class="admin-gallery-grid"></div>
+          </div>
+          <label class="admin-toggle-row">
+            <input id="adminMiniAppButtonToggle" type="checkbox" checked>
+            <span>Добавить кнопку Mini App под постом</span>
+          </label>
+          <textarea id="adminButtonsInput" class="admin-buttons-input" rows="3" placeholder="Кнопки: Открыть приложение | https://example.com"></textarea>
           <div class="admin-actions">
             <button id="adminSendMe" class="admin-action-button secondary" type="button">Отправить только в мой чат</button>
             <button id="adminSendAll" class="admin-action-button primary" type="button">Отправить всем</button>
@@ -221,7 +235,7 @@
   </div>
 
   <script
-    src="/miniapp/app.js?v=20260627-startup-fix-1"
+    src="/miniapp/app.js?v=20260627-stories-instant-1"
     onload="document.documentElement.setAttribute('data-app-script', 'loaded')"
     onerror="document.documentElement.setAttribute('data-app-script', 'error')"></script>
 </body>

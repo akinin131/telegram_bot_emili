@@ -264,6 +264,9 @@ class EmilyVirtualGirlBot(
     private val gifPromoCode = "EMILI_GIF10"
     private val gifPromoCredits = 10
     private val basicPlanPromoCode = "EMILI_BASIC_FREE"
+    private val bonusPromoCode = "EMILI_500K"
+    private val bonusPromoTextTokens = 500_000
+    private val bonusPromoImageCredits = 5
     private fun imageSubjectDirective(character: CharacterProfile): String {
         return when (AudiencePreference.normalize(character.audience)) {
             AudiencePreference.MALE -> """
@@ -460,6 +463,32 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
     private suspend fun activeCharacter(chatId: Long): CharacterProfile {
         return ensureCharacterSelected(chatId, requireSelectionForNewUsers = false) ?: characterEmily
+    }
+
+    private suspend fun requireCharacterSelectionForConversation(
+        session: ChatSession,
+        chatId: Long
+    ): CharacterProfile? {
+        val storedId = userSettingsRepository.getSelectedCharacter(chatId)
+        val storedCharacter = characterById(storedId)
+        if (storedCharacter != null) {
+            applyCharacterToMemory(chatId, storedCharacter, activeStory(chatId))
+            return storedCharacter
+        }
+
+        val keyboard = miniAppKeyboard()
+        if (keyboard == null) {
+            sendSystemText(session, chatId, Strings.get("miniapp.unavailable"), html = false)
+        } else {
+            sendSystemText(
+                session = session,
+                chatId = chatId,
+                text = Strings.get("miniapp.character.required"),
+                html = false,
+                replyMarkup = keyboard
+            )
+        }
+        return null
     }
 
     private fun characterSelectionCaption(character: CharacterProfile): String {
@@ -1125,6 +1154,11 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         return normalized == basicPlanPromoCode || commandName(textRaw) == "/promo_basic"
     }
 
+    private fun isBonusPromo(textRaw: String): Boolean {
+        val normalized = textRaw.trim().uppercase(Locale.ROOT)
+        return normalized == bonusPromoCode || commandName(textRaw) == "/promo_500k"
+    }
+
     private fun isAdminPanelUnlockCode(textRaw: String): Boolean {
         val trimmed = textRaw.trim()
         if (trimmed.equals(adminPanelCode, ignoreCase = true)) return true
@@ -1138,6 +1172,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 isCustomStoryPromo(textRaw) ||
                 isGifPromo(textRaw) ||
                 isBasicPlanPromo(textRaw) ||
+                isBonusPromo(textRaw) ||
                 isExactCommand(textRaw, "/character") ||
                 isExactCommand(textRaw, "/story") ||
                 isExactCommand(textRaw, "/app") ||
@@ -1285,7 +1320,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             session.state.awaitingImagePrompt = false
             ensureUserBalance(chatId)
             memory.autoClean(chatId)
-            val character = activeCharacter(chatId)
+            val character = requireCharacterSelectionForConversation(session, chatId) ?: return
 
             session.state.lastUserPromptForImage = textRaw
 
@@ -1307,7 +1342,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             }
 
             textRaw.equals(MenuBtn.PIC, true) -> {
-                activeCharacter(chatId)
+                if (requireCharacterSelectionForConversation(session, chatId) == null) return
                 session.state.awaitingImagePrompt = true
                 sendEphemeral(
                     session,
@@ -1320,7 +1355,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             textRaw.equals(MenuBtn.SCENE, true) -> {
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
-                val character = activeCharacter(chatId)
+                val character = requireCharacterSelectionForConversation(session, chatId) ?: return
                 handleSceneImage(session, chatId, character)
             }
 
@@ -1359,6 +1394,10 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
             isBasicPlanPromo(textRaw) -> {
                 redeemBasicPlanPromo(session, chatId)
+            }
+
+            isBonusPromo(textRaw) -> {
+                redeemBonusPromo(session, chatId)
             }
 
             isStartCommand(textRaw) -> {
@@ -1438,7 +1477,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             }
 
             textRaw.equals("/pic", true) -> {
-                activeCharacter(chatId)
+                if (requireCharacterSelectionForConversation(session, chatId) == null) return
                 session.state.awaitingImagePrompt = true
                 sendEphemeral(
                     session,
@@ -1452,7 +1491,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             textRaw.equals("/scene", true) -> {
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
-                val character = activeCharacter(chatId)
+                val character = requireCharacterSelectionForConversation(session, chatId) ?: return
                 handleSceneImage(session, chatId, character)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
@@ -1472,12 +1511,17 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
+            isBonusPromo(textRaw) -> {
+                redeemBonusPromo(session, chatId)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
             textRaw.startsWith(imageTag, true) ||
                     textRaw.startsWith("покажи мне", true) ||
                     textRaw.startsWith("/pic ", true) -> {
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
-                val character = activeCharacter(chatId)
+                val character = requireCharacterSelectionForConversation(session, chatId) ?: return
 
                 val prompt = textRaw
                     .removePrefix(imageTag)
@@ -1492,7 +1536,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             else -> {
                 ensureUserBalance(chatId)
                 memory.autoClean(chatId)
-                val character = activeCharacter(chatId)
+                val character = requireCharacterSelectionForConversation(session, chatId) ?: return
 
                 session.state.lastUserTextForChat = textRaw
 
@@ -1526,7 +1570,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
             data == "START_DIALOG" -> {
                 executeSafe(AnswerCallbackQuery(update.callbackQuery.id))
-                val character = activeCharacter(chatId)
+                val character = requireCharacterSelectionForConversation(session, chatId) ?: return
                 val fakeUserMessage = character.startDialogSeed
                 handleChat(session, chatId, fakeUserMessage, character, countReferralActivity = false)
                 return
@@ -2032,6 +2076,50 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             chatId = chatId,
             text = "✅ Промокод активирован. Тариф «${plan.title}» включён бесплатно на 30 дней.\nНачислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} фото.",
             ttlSeconds = 30
+        )
+    }
+
+    private suspend fun redeemBonusPromo(session: ChatSession, chatId: Long) {
+        val redeemed = promoRepository.redeem(
+            userId = chatId,
+            promoCode = bonusPromoCode,
+            payload = mapOf(
+                "type" to "tokens_images",
+                "textTokens" to bonusPromoTextTokens,
+                "imageCredits" to bonusPromoImageCredits
+            )
+        )
+
+        if (!redeemed) {
+            sendEphemeral(
+                session = session,
+                chatId = chatId,
+                text = "Промокод уже использован. 500 000 токенов и 5 фото уже были начислены.",
+                ttlSeconds = 18
+            )
+            return
+        }
+
+        val balance = ensureUserBalance(chatId)
+        balance.textTokensLeft += bonusPromoTextTokens
+        balance.imageCreditsLeft += bonusPromoImageCredits
+        repository.put(balance)
+
+        analyticsRepository.logTopUp(
+            userId = chatId,
+            plan = balance.plan,
+            topupTextTokens = bonusPromoTextTokens,
+            topupImageCredits = bonusPromoImageCredits,
+            topupGifCredits = 0,
+            source = "promo:tokens_images:$bonusPromoCode",
+            amountRub = 0
+        )
+
+        sendEphemeral(
+            session = session,
+            chatId = chatId,
+            text = "✅ Промокод активирован. Начислено: 500 000 токенов и 5 фото.",
+            ttlSeconds = 24
         )
     }
 

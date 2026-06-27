@@ -69,6 +69,7 @@ class MiniAppServer(
 ) {
     companion object {
         private const val DIALOG_PREVIEW_MESSAGE_LIMIT = 12
+        private const val TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
     }
 
     private var server: HttpServer? = null
@@ -82,7 +83,7 @@ class MiniAppServer(
     private class AdminBroadcastJob(
         val id: String,
         val ownerId: Long,
-        val postRef: String,
+        val content: AdminBroadcastContent,
         val target: String,
         val total: Int
     ) {
@@ -97,7 +98,7 @@ class MiniAppServer(
         fun toJson(): JSONObject = JSONObject()
             .put("id", id)
             .put("target", target)
-            .put("postRef", postRef)
+            .put("postRef", content.summary())
             .put("total", total)
             .put("sent", sent)
             .put("failed", failed)
@@ -125,6 +126,27 @@ class MiniAppServer(
         val fromChatId: String,
         val messageId: Int
     )
+
+    private data class AdminInlineButton(
+        val text: String,
+        val url: String,
+        val webApp: Boolean = false
+    )
+
+    private data class AdminBroadcastContent(
+        val postRef: String,
+        val text: String,
+        val photoUrl: String?,
+        val buttons: List<AdminInlineButton>,
+        val includeMiniAppButton: Boolean
+    ) {
+        fun summary(): String = when {
+            text.isNotBlank() -> text.take(160)
+            !photoUrl.isNullOrBlank() -> photoUrl.take(160)
+            postRef.isNotBlank() -> postRef
+            else -> "custom broadcast"
+        }
+    }
 
     fun start() {
         val httpServer = HttpServer.create(InetSocketAddress(config.port), 0)
@@ -206,8 +228,7 @@ class MiniAppServer(
             runCatching { userSettingsRepository.setAudiencePreference(user.id, audiencePreference) }
         }
         println("MiniAppServer: bootstrap selectedCharacterId=$selectedCharacterId audiencePreference=$audiencePreference selectedStoryId=$selectedStoryId")
-        val turns = chatHistoryRepository.getLast(user.id, limit = 20)
-        val dialogs = dialogRepository.listDialogs(user.id, limit = 50)
+        val dialogs = dialogRepository.listDialogs(user.id, limit = 12)
         val selectedCharacter = BotCatalog.characterById(selectedCharacterId)
             ?: BotCatalog.defaultCharacterForAudience(audiencePreference)
         val selectedStory = selectedStoryId?.let { resolveStory(user.id, it) }
@@ -215,24 +236,14 @@ class MiniAppServer(
             ?: dialogs.firstOrNull { it.id == activeDialogId && it.storyId == selectedStoryId }?.storyTitle
             ?: dialogs.firstOrNull { it.storyId == selectedStoryId }?.storyTitle
         println("MiniAppServer: bootstrap resolved selectedCharacter=${selectedCharacter.id} selectedStory=$selectedStory selectedStoryTitle=$selectedStoryTitle")
+        val allCustomStories = customStoryRepository.listAllStories(user.id)
         val customStoryAccess = customStoryRepository.getAccess(user.id)
         val hasAdminAccess = adminRepository.hasAccess(user.id)
-        val allCustomStories = customStoryRepository.listAllStories(user.id)
-        // Load preview messages: prefer recentMessages from summary, fall back to getAllMessages for old dialogs
-        val hasDialogMissingPreview = dialogs.any { it.recentMessages.isEmpty() }
-        val allDialogMessages = if (hasDialogMissingPreview) {
-            dialogRepository.getAllMessages(user.id)
-        } else {
-            emptyMap()
-        }
+        val selectedStories = storiesJson(user.id, selectedCharacter.id, allCustomStories)
+        val storiesByCharacter = storiesByCharacterJson(BotCatalog.characters, allCustomStories)
         val dialogsWithPreview = dialogs.map { dialog ->
-            val msgJson = if (dialog.recentMessages.isNotEmpty()) {
-                dialog.recentMessages.map { it.toMiniAppJson() }
-            } else {
-                allDialogMessages[dialog.id]?.map { it.toMiniAppJson() } ?: emptyList()
-            }
-            val story = dialog.storyId?.let { resolveStory(user.id, it) }
-            dialog.toDialogWithPreviewJson(msgJson, story)
+            val msgJson = dialog.recentMessages.map { it.toMiniAppJson() }
+            dialog.toDialogWithPreviewJson(msgJson, story = null)
         }
 
         sendJson(
@@ -264,8 +275,8 @@ class MiniAppServer(
                 )
                 .put("characters", JSONArray(BotCatalog.characters.map { it.toMiniAppJson() }))
                 .put("charactersByAudience", charactersByAudienceJson())
-                .put("stories", storiesJson(user.id, selectedCharacter.id, allCustomStories))
-                .put("storiesByCharacter", storiesByCharacterJson(BotCatalog.characters, allCustomStories))
+                .put("stories", selectedStories)
+                .put("storiesByCharacter", storiesByCharacter)
                 .put("dialogs", JSONArray(dialogsWithPreview.map { it }))
                 .put("customStory", customStoryAccessJson(customStoryAccess))
                 .put("admin", JSONObject()
@@ -277,13 +288,8 @@ class MiniAppServer(
                     .put("gifPacks", JSONArray(GifPack.entries.map { it.toMiniAppJson() }))
                 )
                 .put("progress", JSONObject()
-                    .put("hasHistory", turns.isNotEmpty())
-                    .put("lastTurns", JSONArray(turns.map {
-                        JSONObject()
-                            .put("role", it.role)
-                            .put("text", it.text)
-                            .put("createdAt", it.createdAt)
-                    }))
+                    .put("hasHistory", false)
+                    .put("lastTurns", JSONArray())
                 )
         )
     }
@@ -1041,13 +1047,22 @@ class MiniAppServer(
         val user = requireAdmin(exchange) ?: return@runBlocking
         val body = readJson(exchange)
         val postRef = body.optString("postRef").trim()
+        val text = body.optString("text").trim().ifBlank { postRef }
+        val photoUrl = body.optString("photoUrl").trim().takeIf { it.isNotBlank() }
+        val buttons = parseAdminButtons(body.optJSONArray("buttons"))
+            ?: return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Проверь кнопки: нужен текст и ссылка http/https"))
+        val includeMiniAppButton = body.optBoolean("includeMiniAppButton", true)
         val target = body.optString("target").trim().lowercase(Locale.ROOT)
+        val hasCustomContent = text.isNotBlank() || !photoUrl.isNullOrBlank() || buttons.isNotEmpty()
 
-        if (postRef.isBlank()) {
-            return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Вставь ссылку на пост или текст сообщения"))
+        if (!hasCustomContent) {
+            return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Заполни текст, ссылку на пост или фото"))
+        }
+        if (text.isBlank() && photoUrl.isNullOrBlank()) {
+            return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Для кнопок нужен текст или фото"))
         }
 
-        if (postRef.startsWith("@PostBot", ignoreCase = true)) {
+        if (text.startsWith("@PostBot", ignoreCase = true) && photoUrl.isNullOrBlank() && buttons.isEmpty()) {
             return@runBlocking sendJson(
                 exchange,
                 400,
@@ -1070,7 +1085,13 @@ class MiniAppServer(
         val job = AdminBroadcastJob(
             id = UUID.randomUUID().toString().replace("-", "").take(12),
             ownerId = user.id,
-            postRef = postRef,
+            content = AdminBroadcastContent(
+                postRef = postRef,
+                text = text,
+                photoUrl = photoUrl,
+                buttons = buttons,
+                includeMiniAppButton = includeMiniAppButton
+            ),
             target = target,
             total = recipients.size
         )
@@ -1159,7 +1180,12 @@ class MiniAppServer(
     }
 
     private suspend fun deliverAdminBroadcast(job: AdminBroadcastJob, recipients: List<Long>) {
-        val postLink = parseTelegramPostLink(job.postRef)
+        val content = job.content
+        val postLink = if (content.photoUrl.isNullOrBlank() && content.buttons.isEmpty()) {
+            parseTelegramPostLink(content.postRef)
+        } else {
+            null
+        }
 
         recipients.forEachIndexed { index, chatId ->
             job.currentChatId = chatId
@@ -1172,13 +1198,13 @@ class MiniAppServer(
                     messageId = postLink.messageId
                 )
             } else {
-                telegramApi.sendMessage(chatId, job.postRef)
+                telegramApi.sendBroadcastContent(chatId, content)
             }
 
             if (!result.ok && postLink != null && shouldFallbackToLinkMessage(result)) {
                 result = telegramApi.sendMessage(
                     chatId = chatId,
-                    text = job.postRef,
+                    text = content.postRef,
                     disableWebPagePreview = false
                 )
             }
@@ -1210,6 +1236,81 @@ class MiniAppServer(
             "have no rights" in description ||
             "not enough rights" in description
     }
+
+    private fun TelegramBotApiClient.sendBroadcastContent(
+        chatId: Long,
+        content: AdminBroadcastContent
+    ): TelegramSendResult {
+        val replyMarkup = inlineKeyboardMarkup(adminBroadcastButtons(content))
+        val photoUrl = content.photoUrl
+            ?.takeIf { it.isNotBlank() }
+            ?.let { telegramPhotoUrl(it) ?: it }
+        val text = content.text.trim()
+
+        if (photoUrl != null) {
+            if (text.length <= TELEGRAM_PHOTO_CAPTION_LIMIT) {
+                return sendPhoto(
+                    chatId = chatId,
+                    photo = photoUrl,
+                    caption = text.takeIf { it.isNotBlank() },
+                    replyMarkup = replyMarkup
+                )
+            }
+
+            val photoResult = sendPhoto(chatId = chatId, photo = photoUrl)
+            if (!photoResult.ok) return photoResult
+            return sendMessage(chatId = chatId, text = text, replyMarkup = replyMarkup)
+        }
+
+        return sendMessage(chatId = chatId, text = text, replyMarkup = replyMarkup)
+    }
+
+    private fun adminBroadcastButtons(content: AdminBroadcastContent): List<AdminInlineButton> {
+        val buttons = content.buttons.toMutableList()
+        if (content.includeMiniAppButton) {
+            buttons += AdminInlineButton(
+                text = "Открыть приложение",
+                url = config.publicUrl,
+                webApp = true
+            )
+        }
+        return buttons
+    }
+
+    private fun parseAdminButtons(rawButtons: JSONArray?): List<AdminInlineButton>? {
+        if (rawButtons == null) return emptyList()
+        val buttons = mutableListOf<AdminInlineButton>()
+
+        for (index in 0 until rawButtons.length()) {
+            val item = rawButtons.optJSONObject(index) ?: return null
+            val text = item.optString("text").trim()
+            val url = item.optString("url").trim()
+            if (text.isBlank() || !isHttpUrl(url)) return null
+            buttons += AdminInlineButton(text = text.take(64), url = url)
+        }
+
+        return buttons.take(12)
+    }
+
+    private fun inlineKeyboardMarkup(buttons: List<AdminInlineButton>): JSONObject? {
+        if (buttons.isEmpty()) return null
+        val rows = JSONArray()
+        buttons.forEach { button ->
+            val buttonJson = JSONObject().put("text", button.text)
+            if (button.webApp) {
+                buttonJson.put("web_app", JSONObject().put("url", button.url))
+            } else {
+                buttonJson.put("url", button.url)
+            }
+            rows.put(
+                JSONArray().put(buttonJson)
+            )
+        }
+        return JSONObject().put("inline_keyboard", rows)
+    }
+
+    private fun isHttpUrl(value: String): Boolean =
+        value.startsWith("https://", ignoreCase = true) || value.startsWith("http://", ignoreCase = true)
 
     private fun parseTelegramPostLink(value: String): TelegramPostLink? {
         val trimmed = value.trim()
@@ -1654,7 +1755,8 @@ class MiniAppServer(
             chatId: Long,
             text: String,
             parseMode: String? = null,
-            disableWebPagePreview: Boolean = true
+            disableWebPagePreview: Boolean = true,
+            replyMarkup: JSONObject? = null
         ): TelegramSendResult {
             return runCatching {
                 val request = JSONObject()
@@ -1663,6 +1765,9 @@ class MiniAppServer(
                     .put("disable_web_page_preview", disableWebPagePreview)
                 if (parseMode != null) {
                     request.put("parse_mode", parseMode)
+                }
+                if (replyMarkup != null) {
+                    request.put("reply_markup", replyMarkup)
                 }
                 val body = request.toString().toByteArray(StandardCharsets.UTF_8)
 
@@ -1700,7 +1805,13 @@ class MiniAppServer(
             }
         }
 
-        fun sendPhoto(chatId: Long, photo: String, caption: String? = null, parseMode: String? = null): TelegramSendResult {
+        fun sendPhoto(
+            chatId: Long,
+            photo: String,
+            caption: String? = null,
+            parseMode: String? = null,
+            replyMarkup: JSONObject? = null
+        ): TelegramSendResult {
             return runCatching {
                 val request = JSONObject()
                     .put("chat_id", chatId)
@@ -1710,6 +1821,9 @@ class MiniAppServer(
                 }
                 if (!parseMode.isNullOrBlank()) {
                     request.put("parse_mode", parseMode)
+                }
+                if (replyMarkup != null) {
+                    request.put("reply_markup", replyMarkup)
                 }
                 val body = request.toString().toByteArray(StandardCharsets.UTF_8)
 

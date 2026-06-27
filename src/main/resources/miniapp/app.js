@@ -1,7 +1,7 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 const DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 const DEFAULT_AUDIENCE = "female";
-const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v5";
+const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v8";
 const GALLERY_CACHE_KEY = "emily:validatedGalleries:v2";
 const PENDING_AUDIENCE_KEY = "emily:pendingAudience";
 const DIALOG_PREVIEW_MESSAGE_LIMIT = 12;
@@ -83,6 +83,13 @@ const els = {
   adminSubscribersList: document.getElementById("adminSubscribersList"),
   adminRefreshSubscribers: document.getElementById("adminRefreshSubscribers"),
   adminPostInput: document.getElementById("adminPostInput"),
+  adminPhotoInput: document.getElementById("adminPhotoInput"),
+  adminGalleryCharacter: document.getElementById("adminGalleryCharacter"),
+  adminLoadGallery: document.getElementById("adminLoadGallery"),
+  adminGalleryStatus: document.getElementById("adminGalleryStatus"),
+  adminGalleryGrid: document.getElementById("adminGalleryGrid"),
+  adminMiniAppButtonToggle: document.getElementById("adminMiniAppButtonToggle"),
+  adminButtonsInput: document.getElementById("adminButtonsInput"),
   adminSendMe: document.getElementById("adminSendMe"),
   adminSendAll: document.getElementById("adminSendAll"),
   adminProgress: document.getElementById("adminProgress"),
@@ -130,9 +137,9 @@ function initTelegram() {
   });
 
   const theme = tg.themeParams || {};
-  if (theme.text_color) document.documentElement.style.setProperty("--text", theme.text_color);
-  if (theme.hint_color) document.documentElement.style.setProperty("--muted", theme.hint_color);
-  if (theme.button_color) document.documentElement.style.setProperty("--accent", theme.button_color);
+  if (isReadableOnDark(theme.button_color)) {
+    document.documentElement.style.setProperty("--accent", theme.button_color);
+  }
 
   if (tg.BackButton && typeof tg.BackButton.onClick === "function") {
     safeTelegramCall(() => tg.BackButton.onClick(() => {
@@ -179,6 +186,7 @@ function bindEvents() {
   on(els.prevGalleryImage, "click", () => showGalleryImage(state.galleryIndex - 1));
   on(els.nextGalleryImage, "click", () => showGalleryImage(state.galleryIndex + 1));
   on(els.adminRefreshSubscribers, "click", loadAdminSubscribers);
+  on(els.adminLoadGallery, "click", loadAdminGallerySelection);
   on(els.adminSendMe, "click", () => startAdminBroadcast("me"));
   on(els.adminSendAll, "click", () => startAdminBroadcast("all"));
   on(els.galleryViewerImage, "error", handleGalleryViewerError);
@@ -239,11 +247,11 @@ async function loadBootstrap(nextScreen = null) {
     renderDialogs();
     renderSettings();
     updateAdminVisibility();
+    renderAdminGalleryPicker();
     renderAdminSubscribers();
     refreshStoriesScreenIfPending();
     showScreen(targetScreen);
     setLoading(false);
-    prefetchGalleries(data.characters);
     document.documentElement.setAttribute("data-miniapp-stage", "ready");
   } catch (error) {
     document.documentElement.setAttribute("data-miniapp-stage", "load-error");
@@ -280,10 +288,10 @@ function hydrateCachedBootstrap() {
   renderDialogs();
   renderSettings();
   updateAdminVisibility();
+  renderAdminGalleryPicker();
   renderAdminSubscribers();
   showScreen("characters");
   setLoading(false);
-  prefetchGalleries(cached.characters);
   document.documentElement.setAttribute("data-miniapp-stage", "cached");
   return true;
 }
@@ -528,6 +536,18 @@ function safeTelegramCall(callback) {
   } catch (error) {
     console.warn("[miniapp] Telegram WebApp method skipped", error);
   }
+}
+
+function isReadableOnDark(color) {
+  const match = String(color || "").trim().match(/^#([0-9a-f]{6})$/i);
+  if (!match) return false;
+  const hex = match[1];
+  const channels = [0, 2, 4].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255);
+  const linear = channels.map((channel) => (
+    channel <= 0.03928 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4)
+  ));
+  const luminance = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+  return luminance >= 0.18;
 }
 
 function firstId(items) {
@@ -1051,20 +1071,24 @@ function selectCharacter(characterId) {
   if (state.bootstrap && state.bootstrap.settings) {
     state.bootstrap.settings.selectedCharacter = characterId;
   }
+  const cachedStories = storiesForCharacterFromCache(characterId);
   cacheBootstrap(state.bootstrap);
   renderSelectedCharacter();
   showScreen("stories");
-  renderStoriesPending();
+
+  if (cachedStories) {
+    state.bootstrap.stories = cachedStories;
+    renderStories();
+  } else {
+    renderStoriesPending();
+  }
 
   api("/miniapp/api/select-character", {
     method: "POST",
     body: { characterId },
   }).catch(function () {});
 
-  const cachedStories = storiesForCharacterFromCache(characterId);
   if (cachedStories) {
-    state.bootstrap.stories = cachedStories;
-    renderStories();
     return;
   }
 
@@ -2321,11 +2345,90 @@ function renderAdminSubscribers() {
   });
 }
 
+function renderAdminGalleryPicker() {
+  if (!els.adminGalleryCharacter) return;
+  const characters = state.bootstrap && state.bootstrap.characters || [];
+  const currentValue = els.adminGalleryCharacter.value;
+  els.adminGalleryCharacter.replaceChildren();
+
+  characters.forEach((character) => {
+    const option = document.createElement("option");
+    option.value = character.id;
+    option.textContent = character.name;
+    els.adminGalleryCharacter.append(option);
+  });
+
+  const nextValue = currentValue || state.selectedCharacterId || (characters[0] && characters[0].id);
+  if (nextValue) els.adminGalleryCharacter.value = nextValue;
+}
+
+async function loadAdminGallerySelection() {
+  if (!hasAdminAccess()) return;
+  const characterId = els.adminGalleryCharacter && els.adminGalleryCharacter.value;
+  const character = (state.bootstrap && state.bootstrap.characters || []).find((item) => item.id === characterId);
+  if (!characterId || !character) {
+    showToast("Выбери персонажа");
+    return;
+  }
+
+  if (els.adminGalleryStatus) els.adminGalleryStatus.textContent = "Загружаю фото...";
+  if (els.adminLoadGallery) els.adminLoadGallery.disabled = true;
+
+  try {
+    const entry = await fetchGallery(characterId, character);
+    renderAdminGalleryGrid(entry.images || []);
+    if (els.adminGalleryStatus) {
+      els.adminGalleryStatus.textContent = entry.images && entry.images.length
+        ? `Фото в галерее: ${entry.images.length}`
+        : "В галерее пока нет фото.";
+    }
+  } catch (error) {
+    showToast(error.message || "Не удалось загрузить галерею");
+    if (els.adminGalleryStatus) els.adminGalleryStatus.textContent = "Не удалось загрузить фото.";
+  } finally {
+    if (els.adminLoadGallery) els.adminLoadGallery.disabled = false;
+  }
+}
+
+function renderAdminGalleryGrid(images) {
+  if (!els.adminGalleryGrid) return;
+  els.adminGalleryGrid.replaceChildren();
+
+  images.slice(0, 24).forEach((image) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "admin-gallery-thumb";
+    button.classList.toggle("selected", els.adminPhotoInput && els.adminPhotoInput.value === image.imageUrl);
+    button.addEventListener("click", () => {
+      if (els.adminPhotoInput) els.adminPhotoInput.value = image.imageUrl;
+      renderAdminGalleryGrid(images);
+      showToast("Фото выбрано для рассылки");
+    });
+
+    const img = document.createElement("img");
+    img.src = image.imageUrl;
+    img.alt = "";
+    img.loading = "lazy";
+
+    button.append(img);
+    els.adminGalleryGrid.append(button);
+  });
+}
+
 async function startAdminBroadcast(target) {
   if (!hasAdminAccess()) return;
   const postRef = (els.adminPostInput && els.adminPostInput.value || "").trim();
-  if (!postRef) {
-    showToast("Вставь ссылку на пост или текст сообщения");
+  const photoUrl = (els.adminPhotoInput && els.adminPhotoInput.value || "").trim();
+  const buttons = parseAdminButtonsInput();
+  const includeMiniAppButton = !els.adminMiniAppButtonToggle || els.adminMiniAppButtonToggle.checked;
+
+  if (buttons == null) {
+    showToast("Кнопки: одна строка = Название | ссылка");
+    return;
+  }
+
+  if (!postRef && !photoUrl) {
+    showToast("Добавь текст, ссылку на пост или фото");
     return;
   }
 
@@ -2335,7 +2438,14 @@ async function startAdminBroadcast(target) {
   try {
     const data = await api("/miniapp/api/admin/broadcast", {
       method: "POST",
-      body: { target, postRef },
+      body: {
+        target,
+        postRef,
+        text: postRef,
+        photoUrl,
+        buttons,
+        includeMiniAppButton,
+      },
       timeoutMs: 30_000,
     });
     state.adminJob = data.job;
@@ -2346,6 +2456,27 @@ async function startAdminBroadcast(target) {
     updateAdminProgress(null);
     showToast(error.message || "Не удалось запустить рассылку");
   }
+}
+
+function parseAdminButtonsInput() {
+  const raw = (els.adminButtonsInput && els.adminButtonsInput.value || "").trim();
+  if (!raw) return [];
+
+  const buttons = [];
+  const lines = raw.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const separator = line.includes("|") ? "|" : " - ";
+    const parts = line.split(separator);
+    if (parts.length < 2) return null;
+
+    const text = parts.shift().trim();
+    const url = parts.join(separator).trim();
+    if (!text || !/^https?:\/\//i.test(url)) return null;
+    buttons.push({ text, url });
+  }
+
+  return buttons;
 }
 
 function pollAdminBroadcast(jobId) {
@@ -2397,7 +2528,14 @@ function updateAdminProgress(job) {
 }
 
 function setAdminSending(isSending) {
-  [els.adminSendMe, els.adminSendAll, els.adminRefreshSubscribers].forEach((button) => {
+  [
+    els.adminSendMe,
+    els.adminSendAll,
+    els.adminRefreshSubscribers,
+    els.adminLoadGallery,
+    els.adminGalleryCharacter,
+    els.adminMiniAppButtonToggle,
+  ].forEach((button) => {
     if (button) button.disabled = isSending;
   });
 }
