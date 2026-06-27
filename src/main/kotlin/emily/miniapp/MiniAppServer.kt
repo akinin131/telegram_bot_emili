@@ -40,7 +40,10 @@ import java.security.MessageDigest
 import java.util.concurrent.Executors
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import java.io.ByteArrayOutputStream
+import java.util.zip.GZIPOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -215,20 +218,36 @@ class MiniAppServer(
     private fun handleBootstrap(exchange: HttpExchange) = runBlocking {
         val user = authenticate(exchange) ?: return@runBlocking
         println("MiniAppServer: bootstrap user=${user.id}")
-        referralRepository.ensureUserProfile(user.id)
 
-        val balance = balanceRepository.get(user.id)
-        val selectedCharacterId = userSettingsRepository.getSelectedCharacter(user.id)
-        val selectedStoryId = userSettingsRepository.getSelectedStory(user.id)
-        val activeDialogId = userSettingsRepository.getActiveDialogId(user.id)
-        val language = userSettingsRepository.getLanguage(user.id)
-        val storedAudiencePreference = userSettingsRepository.getAudiencePreference(user.id)
+        val setupDef = async { referralRepository.ensureUserProfile(user.id) }
+        val balanceDef = async { balanceRepository.get(user.id) }
+        val selCharDef = async { userSettingsRepository.getSelectedCharacter(user.id) }
+        val selStoryDef = async { userSettingsRepository.getSelectedStory(user.id) }
+        val activeDialogDef = async { userSettingsRepository.getActiveDialogId(user.id) }
+        val langDef = async { userSettingsRepository.getLanguage(user.id) }
+        val audDef = async { userSettingsRepository.getAudiencePreference(user.id) }
+        val dialogsDef = async { dialogRepository.listDialogs(user.id, limit = 12) }
+        val allCustomDef = async { customStoryRepository.listAllStories(user.id) }
+        val accessDef = async { customStoryRepository.getAccess(user.id) }
+        val adminDef = async { adminRepository.hasAccess(user.id) }
+
+        setupDef.await()
+        val balance = balanceDef.await()
+        val selectedCharacterId = selCharDef.await()
+        val selectedStoryId = selStoryDef.await()
+        val activeDialogId = activeDialogDef.await()
+        val language = langDef.await()
+        val storedAudiencePreference = audDef.await()
+        val dialogs = dialogsDef.await()
+        val allCustomStories = allCustomDef.await()
+        val customStoryAccess = accessDef.await()
+        val hasAdminAccess = adminDef.await()
+
         val audiencePreference = storedAudiencePreference ?: AudiencePreference.FEMALE
         if (storedAudiencePreference == null) {
             runCatching { userSettingsRepository.setAudiencePreference(user.id, audiencePreference) }
         }
         println("MiniAppServer: bootstrap selectedCharacterId=$selectedCharacterId audiencePreference=$audiencePreference selectedStoryId=$selectedStoryId")
-        val dialogs = dialogRepository.listDialogs(user.id, limit = 12)
         val selectedCharacter = BotCatalog.characterById(selectedCharacterId)
             ?: BotCatalog.defaultCharacterForAudience(audiencePreference)
         val selectedStory = selectedStoryId?.let { resolveStory(user.id, it) }
@@ -236,9 +255,7 @@ class MiniAppServer(
             ?: dialogs.firstOrNull { it.id == activeDialogId && it.storyId == selectedStoryId }?.storyTitle
             ?: dialogs.firstOrNull { it.storyId == selectedStoryId }?.storyTitle
         println("MiniAppServer: bootstrap resolved selectedCharacter=${selectedCharacter.id} selectedStory=$selectedStory selectedStoryTitle=$selectedStoryTitle")
-        val allCustomStories = customStoryRepository.listAllStories(user.id)
-        val customStoryAccess = customStoryRepository.getAccess(user.id)
-        val hasAdminAccess = adminRepository.hasAccess(user.id)
+
         val selectedStories = storiesJson(user.id, selectedCharacter.id, allCustomStories)
         val storiesByCharacter = storiesByCharacterJson(BotCatalog.characters, allCustomStories)
         val dialogsWithPreview = dialogs.map { dialog ->
@@ -246,9 +263,8 @@ class MiniAppServer(
             dialog.toDialogWithPreviewJson(msgJson, story = null)
         }
 
-        sendJson(
+        sendJsonGzipped(
             exchange = exchange,
-            status = 200,
             body = JSONObject()
                 .put("ok", true)
                 .put("user", user.toJson())
@@ -1381,8 +1397,12 @@ class MiniAppServer(
             ?: return sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Resource not found"))
         val bytes = stream.use { it.readBytes() }
         exchange.responseHeaders.set("Content-Type", contentType)
-        exchange.responseHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-        exchange.responseHeaders.set("Pragma", "no-cache")
+        if (contentType.contains("javascript") || contentType.contains("css")) {
+            exchange.responseHeaders.set("Cache-Control", "public, max-age=31536000, immutable")
+        } else {
+            exchange.responseHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            exchange.responseHeaders.set("Pragma", "no-cache")
+        }
         exchange.sendResponseHeaders(200, bytes.size.toLong())
         exchange.responseBody.use { it.write(bytes) }
     }
@@ -1490,6 +1510,27 @@ class MiniAppServer(
     private fun redirect(exchange: HttpExchange, location: String) {
         exchange.responseHeaders.set("Location", location)
         exchange.sendResponseHeaders(302, -1)
+    }
+
+    private fun sendJsonGzipped(exchange: HttpExchange, status: Int = 200, body: JSONObject) {
+        addBaseHeaders(exchange)
+        val bytes = body.toString().toByteArray(StandardCharsets.UTF_8)
+        val acceptEncoding = exchange.requestHeaders.getFirst("Accept-Encoding")
+        val supportsGzip = acceptEncoding != null && acceptEncoding.contains("gzip")
+
+        if (supportsGzip && bytes.size > 512) {
+            val bos = ByteArrayOutputStream()
+            GZIPOutputStream(bos).use { it.write(bytes) }
+            val compressed = bos.toByteArray()
+            exchange.responseHeaders.set("Content-Encoding", "gzip")
+            exchange.responseHeaders.set("Content-Type", "application/json; charset=utf-8")
+            exchange.sendResponseHeaders(status, compressed.size.toLong())
+            exchange.responseBody.use { it.write(compressed) }
+        } else {
+            exchange.responseHeaders.set("Content-Type", "application/json; charset=utf-8")
+            exchange.sendResponseHeaders(status, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
     }
 
     private fun sendJson(exchange: HttpExchange, status: Int, body: JSONObject) {
