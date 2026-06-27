@@ -71,7 +71,7 @@ class MiniAppServer(
     private val telegramApi = TelegramBotApiClient(config.botToken)
     private val imageCache = ConcurrentHashMap<String, CachedImage>()
     private val generatedImageCache = ConcurrentHashMap<String, CachedImage>()
-    private val characterImageVersion = "2026061412442-male-refresh"
+    private val characterImageVersion = "20260627-photo-refresh-1"
 
     fun start() {
         val httpServer = HttpServer.create(InetSocketAddress(config.port), 0)
