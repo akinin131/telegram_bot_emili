@@ -129,6 +129,12 @@ class EmilyVirtualGirlBot(
         val prompt: String?
     )
 
+    private data class PhotoDecision(
+        val prompt: String,
+        val bypassTurnGate: Boolean,
+        val source: String
+    )
+
     private data class SessionState(
         @Volatile var awaitingImagePrompt: Boolean = false,
         @Volatile var lastSystemMessageId: Int? = null,
@@ -267,6 +273,9 @@ class EmilyVirtualGirlBot(
     private val bonusPromoCode = "EMILI_500K"
     private val bonusPromoTextTokens = 500_000
     private val bonusPromoImageCredits = 5
+    private val starterPromoCode = "EMILI_100K"
+    private val starterPromoTextTokens = 100_000
+    private val starterPromoImageCredits = 5
     private fun imageSubjectDirective(character: CharacterProfile): String {
         return when (AudiencePreference.normalize(character.audience)) {
             AudiencePreference.MALE -> """
@@ -1159,6 +1168,11 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         return normalized == bonusPromoCode || commandName(textRaw) == "/promo_500k"
     }
 
+    private fun isStarterPromo(textRaw: String): Boolean {
+        val normalized = textRaw.trim().uppercase(Locale.ROOT)
+        return normalized == starterPromoCode || commandName(textRaw) == "/promo_100k"
+    }
+
     private fun isAdminPanelUnlockCode(textRaw: String): Boolean {
         val trimmed = textRaw.trim()
         if (trimmed.equals(adminPanelCode, ignoreCase = true)) return true
@@ -1173,6 +1187,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 isGifPromo(textRaw) ||
                 isBasicPlanPromo(textRaw) ||
                 isBonusPromo(textRaw) ||
+                isStarterPromo(textRaw) ||
                 isExactCommand(textRaw, "/character") ||
                 isExactCommand(textRaw, "/story") ||
                 isExactCommand(textRaw, "/app") ||
@@ -1400,6 +1415,10 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 redeemBonusPromo(session, chatId)
             }
 
+            isStarterPromo(textRaw) -> {
+                redeemStarterPromo(session, chatId)
+            }
+
             isStartCommand(textRaw) -> {
                 extractStartReferrerId(textRaw)?.let { referrerId ->
                     runCatching {
@@ -1513,6 +1532,11 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
             isBonusPromo(textRaw) -> {
                 redeemBonusPromo(session, chatId)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isStarterPromo(textRaw) -> {
+                redeemStarterPromo(session, chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -2080,13 +2104,39 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
     }
 
     private suspend fun redeemBonusPromo(session: ChatSession, chatId: Long) {
+        redeemTokensImagesPromo(
+            session = session,
+            chatId = chatId,
+            promoCode = bonusPromoCode,
+            textTokens = bonusPromoTextTokens,
+            imageCredits = bonusPromoImageCredits
+        )
+    }
+
+    private suspend fun redeemStarterPromo(session: ChatSession, chatId: Long) {
+        redeemTokensImagesPromo(
+            session = session,
+            chatId = chatId,
+            promoCode = starterPromoCode,
+            textTokens = starterPromoTextTokens,
+            imageCredits = starterPromoImageCredits
+        )
+    }
+
+    private suspend fun redeemTokensImagesPromo(
+        session: ChatSession,
+        chatId: Long,
+        promoCode: String,
+        textTokens: Int,
+        imageCredits: Int
+    ) {
         val redeemed = promoRepository.redeem(
             userId = chatId,
-            promoCode = bonusPromoCode,
+            promoCode = promoCode,
             payload = mapOf(
                 "type" to "tokens_images",
-                "textTokens" to bonusPromoTextTokens,
-                "imageCredits" to bonusPromoImageCredits
+                "textTokens" to textTokens,
+                "imageCredits" to imageCredits
             )
         )
 
@@ -2094,34 +2144,37 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             sendEphemeral(
                 session = session,
                 chatId = chatId,
-                text = "Промокод уже использован. 500 000 токенов и 5 фото уже были начислены.",
+                text = "Промокод уже использован. ${formatNumber(textTokens)} токенов и $imageCredits фото уже были начислены.",
                 ttlSeconds = 18
             )
             return
         }
 
         val balance = ensureUserBalance(chatId)
-        balance.textTokensLeft += bonusPromoTextTokens
-        balance.imageCreditsLeft += bonusPromoImageCredits
+        balance.textTokensLeft += textTokens
+        balance.imageCreditsLeft += imageCredits
         repository.put(balance)
 
         analyticsRepository.logTopUp(
             userId = chatId,
             plan = balance.plan,
-            topupTextTokens = bonusPromoTextTokens,
-            topupImageCredits = bonusPromoImageCredits,
+            topupTextTokens = textTokens,
+            topupImageCredits = imageCredits,
             topupGifCredits = 0,
-            source = "promo:tokens_images:$bonusPromoCode",
+            source = "promo:tokens_images:$promoCode",
             amountRub = 0
         )
 
         sendEphemeral(
             session = session,
             chatId = chatId,
-            text = "✅ Промокод активирован. Начислено: 500 000 токенов и 5 фото.",
+            text = "✅ Промокод активирован. Начислено: ${formatNumber(textTokens)} токенов и $imageCredits фото.",
             ttlSeconds = 24
         )
     }
+
+    private fun formatNumber(value: Int): String =
+        "%,d".format(Locale.US, value).replace(',', ' ')
 
     private fun miniAppKeyboard(): InlineKeyboardMarkup? {
         val url = miniAppUrl?.takeIf { it.isNotBlank() } ?: return null
@@ -2443,8 +2496,24 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         chatHistoryRepository.append(chatId, "assistant", formattedReply)
         dialogRepository.appendMessage(chatId, dialogId, "assistant", formattedReply)
 
-        val sentWithPhoto = autoImageRequest.prompt?.let { prompt ->
-            maybeSendAutoImageWithCaption(session, chatId, character, prompt, formattedReply)
+        val photoDecision = decideAutoPhoto(
+            session = session,
+            userText = text,
+            assistantText = formattedReply,
+            character = character,
+            story = story,
+            markerPrompt = autoImageRequest.prompt
+        )
+        val sentWithPhoto = photoDecision?.let { decision ->
+            maybeSendAutoImageWithCaption(
+                session = session,
+                chatId = chatId,
+                character = character,
+                rawPrompt = decision.prompt,
+                captionText = formattedReply,
+                bypassTurnGate = decision.bypassTurnGate,
+                source = decision.source
+            )
         } == true
 
         if (!sentWithPhoto) {
@@ -2516,16 +2585,110 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         return AutoImageRequest(text = cleanText, prompt = prompt)
     }
 
+    private suspend fun decideAutoPhoto(
+        session: ChatSession,
+        userText: String,
+        assistantText: String,
+        character: CharacterProfile,
+        story: StoryScenario?,
+        markerPrompt: String?
+    ): PhotoDecision? {
+        markerPrompt?.takeIf { it.isNotBlank() }?.let { prompt ->
+            return PhotoDecision(prompt = prompt, bypassTurnGate = false, source = "auto:marker")
+        }
+
+        if (!shouldAskPhotoDecision(session, userText, assistantText)) return null
+
+        val decision = runCatching {
+            askPhotoDecisionModel(userText, assistantText, character, story)
+        }.getOrNull() ?: return null
+
+        return decision
+    }
+
+    private fun shouldAskPhotoDecision(
+        session: ChatSession,
+        userText: String,
+        assistantText: String
+    ): Boolean {
+        val now = System.currentTimeMillis()
+        if (session.state.lastAutoImageAt > 0L && now - session.state.lastAutoImageAt < autoImageCooldownMs) return false
+
+        return userText.isNotBlank() && assistantText.isNotBlank()
+    }
+
+    private suspend fun askPhotoDecisionModel(
+        userText: String,
+        assistantText: String,
+        character: CharacterProfile,
+        story: StoryScenario?
+    ): PhotoDecision? {
+        val history = listOf(
+            "system" to photoDecisionSystem(character),
+            "user" to """
+Character: ${character.name}
+Story: ${story?.title ?: "free chat"}
+User message:
+$userText
+
+Assistant visible reply:
+$assistantText
+""".trimIndent()
+        )
+
+        val result = chatService.generateReply(history, modelOverride = premiumChatModel)
+        val json = extractJsonObject(result.text) ?: return null
+        val shouldSend = json.optBoolean("shouldSendPhoto", false)
+        if (!shouldSend) return null
+
+        val confidence = json.optDouble("confidence", 0.0)
+        val reason = json.optString("reason", "context").lowercase(Locale.ROOT)
+        val threshold = if (reason in setOf("outfit", "intimacy", "visual_moment")) 0.68 else 0.82
+        if (confidence < threshold) return null
+
+        val prompt = json.optString("prompt").trim().takeIf { it.isNotBlank() } ?: return null
+        return PhotoDecision(
+            prompt = prompt,
+            bypassTurnGate = reason in setOf("outfit", "intimacy"),
+            source = "auto:decision:$reason"
+        )
+    }
+
+    private fun photoDecisionSystem(character: CharacterProfile): String = """
+You decide whether the assistant reply should be sent with an AI-generated image.
+Return only compact JSON with keys: shouldSendPhoto, confidence, reason, prompt.
+
+Send a photo when:
+- the user clearly wants to see the character
+- the reply shows or teases an outfit, look, pose, mirror, room, object, or visual reveal
+- the scene reaches a tasteful adult intimate or romantic visual moment
+- enough conversation has passed and a photo would make the reply feel more alive
+
+Do not send a photo for ordinary small talk, abstract emotions, arguments, payments, technical help, or if the visual moment is weak.
+Images must be adult, consensual, tasteful, non-graphic, and preserve the character identity.
+Prompt must be English visual tags or a short English visual prompt, no explanations.
+Character identity: ${character.imagePersona}
+""".trimIndent()
+
+    private fun extractJsonObject(text: String): JSONObject? {
+        val start = text.indexOf('{')
+        val end = text.lastIndexOf('}')
+        if (start < 0 || end <= start) return null
+        return runCatching { JSONObject(text.substring(start, end + 1)) }.getOrNull()
+    }
+
     private suspend fun maybeSendAutoImageWithCaption(
         session: ChatSession,
         chatId: Long,
         character: CharacterProfile,
         rawPrompt: String,
-        captionText: String
+        captionText: String,
+        bypassTurnGate: Boolean = false,
+        source: String = "auto_prompt"
     ): Boolean {
         val now = System.currentTimeMillis()
         if (session.state.lastAutoImageAt > 0L && now - session.state.lastAutoImageAt < autoImageCooldownMs) return false
-        if (session.state.assistantTurnsSinceAutoImage < autoImageMinAssistantTurns) return false
+        if (!bypassTurnGate && session.state.assistantTurnsSinceAutoImage < autoImageMinAssistantTurns) return false
 
         val captionHtml = renderAssistantReplyHtml(captionText)
         if (captionHtml.length > 950) return false
@@ -2559,7 +2722,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             replyMarkup = null,
             html = true
         )
-        saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = "auto_prompt")
+        saveGeneratedImage(chatId, character, sentPhoto, finalPrompt, modelName, source = source)
             ?.let { attachAnimateButton(chatId, sentPhoto.messageId, it) }
 
         val textBefore = balance.textTokensLeft
@@ -2572,7 +2735,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         session.state.lastAutoImageAt = now
         session.state.assistantTurnsSinceAutoImage = 0
 
-        repository.logUsage(chatId, 0, mapOf("type" to "image", "model" to modelName, "credits_used" to 1, "source" to "auto_prompt"))
+        repository.logUsage(chatId, 0, mapOf("type" to "image", "model" to modelName, "credits_used" to 1, "source" to source))
         analyticsRepository.logSpend(
             userId = chatId,
             plan = balance.plan,
@@ -2585,7 +2748,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             textLeftAfter = balance.textTokensLeft,
             imageLeftAfter = balance.imageCreditsLeft,
             gifLeftAfter = balance.gifCreditsLeft,
-            source = "image:auto:$modelName"
+            source = "image:$source:$modelName"
         )
 
         maybeActivateReferralFromGeneration(session, chatId, "auto_image")

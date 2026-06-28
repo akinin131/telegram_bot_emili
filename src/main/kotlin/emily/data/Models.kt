@@ -119,7 +119,7 @@ enum class GifPack(
     val title: String
         get() = Strings.get(titleKey)
 }
-const val FREE_TEXT_TOKENS = 50_000
+const val FREE_TEXT_TOKENS = 100_000
 const val FREE_IMAGE_CREDITS = 3
 const val FREE_GIF_CREDITS = 0
 
