@@ -2593,14 +2593,10 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         story: StoryScenario?,
         markerPrompt: String?
     ): PhotoDecision? {
-        markerPrompt?.takeIf { it.isNotBlank() }?.let { prompt ->
-            return PhotoDecision(prompt = prompt, bypassTurnGate = false, source = "auto:marker")
-        }
-
         if (!shouldAskPhotoDecision(session, userText, assistantText)) return null
 
         val decision = runCatching {
-            askPhotoDecisionModel(userText, assistantText, character, story)
+            askPhotoDecisionModel(userText, assistantText, character, story, markerPrompt)
         }.getOrNull() ?: return null
 
         return decision
@@ -2621,13 +2617,17 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         userText: String,
         assistantText: String,
         character: CharacterProfile,
-        story: StoryScenario?
+        story: StoryScenario?,
+        markerPrompt: String?
     ): PhotoDecision? {
         val history = listOf(
             "system" to photoDecisionSystem(character),
             "user" to """
 Character: ${character.name}
 Story: ${story?.title ?: "free chat"}
+Candidate PHOTO_PROMPT from role model:
+${markerPrompt?.takeIf { it.isNotBlank() } ?: "none"}
+
 User message:
 $userText
 
@@ -2640,6 +2640,9 @@ $assistantText
         val json = extractJsonObject(result.text) ?: return null
         val shouldSend = json.optBoolean("shouldSendPhoto", false)
         if (!shouldSend) return null
+        val committedVisualMoment = json.optBoolean("committedVisualMoment", false)
+        val contradictsVisibleText = json.optBoolean("contradictsVisibleText", true)
+        if (!committedVisualMoment || contradictsVisibleText) return null
 
         val confidence = json.optDouble("confidence", 0.0)
         val reason = json.optString("reason", "context").lowercase(Locale.ROOT)
@@ -2656,14 +2659,18 @@ $assistantText
 
     private fun photoDecisionSystem(character: CharacterProfile): String = """
 You decide whether the assistant reply should be sent with an AI-generated image.
-Return only compact JSON with keys: shouldSendPhoto, confidence, reason, prompt.
+Return only compact JSON with keys: shouldSendPhoto, confidence, reason, committedVisualMoment, contradictsVisibleText, prompt.
 
 Send a photo when:
 - the user clearly wants to see the character
-- the reply shows or teases an outfit, look, pose, mirror, room, object, or visual reveal
+- the visible reply actually shows/sends a selfie or current image now
+- the visible reply says the character already put on or is currently showing an outfit, look, pose, mirror, room, object, or visual reveal
 - the scene reaches a tasteful adult intimate or romantic visual moment
-- enough conversation has passed and a photo would make the reply feel more alive
+- enough conversation has passed and the visible reply contains a present visual moment that would make sense as a photo
 
+Never send a photo if the visible reply says or implies: not yet, I will not show it yet, maybe later, first tell me, should I put it on now, asks permission before showing, only discusses a possible outfit, or promises a future photo.
+The candidate PHOTO_PROMPT is only a proposal. Reject it if it contradicts the visible reply.
+Set committedVisualMoment=true only when the visible reply has already committed to showing/sending the visual now. Set contradictsVisibleText=true if a photo would reveal something the assistant says is not shown yet.
 Do not send a photo for ordinary small talk, abstract emotions, arguments, payments, technical help, or if the visual moment is weak.
 Images must be adult, consensual, tasteful, non-graphic, and preserve the character identity.
 Prompt must be English visual tags or a short English visual prompt, no explanations.
