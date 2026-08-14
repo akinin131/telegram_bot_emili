@@ -8,6 +8,10 @@ import emily.domain.CharacterProfile
 import emily.domain.StoryScenario
 import emily.resources.Strings
 import emily.service.ChatService
+import emily.service.COMPACTION_BOOTSTRAP_TURNS
+import emily.service.COMPACTION_PINNED_TURNS
+import emily.service.COMPACTION_RECENT_TURNS
+import emily.service.ConversationCompactor
 import emily.service.ConversationMemory
 import emily.service.GifVideoService
 import emily.service.ImageService
@@ -102,6 +106,7 @@ class EmilyVirtualGirlBot(
     private val inactivityNudgeCooldownMs = 24L * 60 * 60 * 1000
     private val autoImageCooldownMs = 60 * 1000
     private val autoImageMinAssistantTurns = 8
+    private val conversationCompactor = ConversationCompactor()
 
     private data class ChatSession(
         val scope: CoroutineScope,
@@ -698,6 +703,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
     private suspend fun restoreDialogConversation(
         chatId: Long,
+        dialogId: String,
         character: CharacterProfile,
         story: StoryScenario?,
         messages: List<DialogMessage>
@@ -706,9 +712,23 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         memory.reset(chatId)
         applyCharacterToMemory(chatId, character, story)
 
-        messages.forEach { message ->
+        val compaction = dialogRepository.getCompaction(chatId, dialogId)
+        val recentMessages = if (compaction != null) {
+            messages.takeLast(COMPACTION_RECENT_TURNS)
+        } else {
+            messages
+        }
+        memory.restoreCompaction(
+            chatId = chatId,
+            summary = compaction?.summary,
+            pinnedTurns = compaction?.pinnedTurns
+                ?.map { it.role to it.text }
+                .orEmpty(),
+            recentTurns = recentMessages.map { it.role to it.text }
+        )
+
+        recentMessages.forEach { message ->
             if (message.role == "user" || message.role == "assistant") {
-                memory.append(chatId, message.role, message.text)
                 chatHistoryRepository.append(chatId, message.role, message.text)
             }
         }
@@ -745,8 +765,8 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         }
         userSettingsRepository.setActiveDialogId(chatId, dialog.id)
 
-        val messages = dialogRepository.getMessages(chatId, dialog.id, limit = 80)
-        restoreDialogConversation(chatId, character, story, messages)
+        val messages = dialogRepository.getMessages(chatId, dialog.id, limit = COMPACTION_BOOTSTRAP_TURNS)
+        restoreDialogConversation(chatId, dialog.id, character, story, messages)
 
         val storyTitle = dialog.storyTitle ?: "свободный чат"
         sendSystemText(
@@ -2435,6 +2455,90 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         return dialogId
     }
 
+    private suspend fun restoreActiveDialogMemory(
+        chatId: Long,
+        dialogId: String,
+        character: CharacterProfile,
+        story: StoryScenario?
+    ) {
+        val compaction = runCatching { dialogRepository.getCompaction(chatId, dialogId) }.getOrNull()
+        val messageLimit = if (compaction != null) COMPACTION_RECENT_TURNS else COMPACTION_BOOTSTRAP_TURNS
+        val archivedMessages = runCatching {
+            dialogRepository.getMessages(chatId, dialogId, limit = messageLimit)
+        }.getOrElse { emptyList() }
+
+        memory.reset(chatId)
+        applyCharacterToMemory(chatId, character, story)
+
+        if (archivedMessages.isNotEmpty() || compaction != null) {
+            memory.restoreCompaction(
+                chatId = chatId,
+                summary = compaction?.summary,
+                pinnedTurns = compaction?.pinnedTurns
+                    ?.map { it.role to it.text }
+                    .orEmpty(),
+                recentTurns = archivedMessages.map { it.role to it.text }
+            )
+            return
+        }
+
+        val legacyTurns = runCatching {
+            chatHistoryRepository.getLast(chatId, limit = COMPACTION_RECENT_TURNS)
+        }.getOrElse { emptyList() }
+        legacyTurns.forEach { turn ->
+            if (turn.role == "user" || turn.role == "assistant") {
+                memory.append(chatId, turn.role, turn.text)
+            }
+        }
+    }
+
+    private suspend fun maybeCompactConversation(
+        chatId: Long,
+        dialogId: String,
+        model: String
+    ) {
+        val turns = memory.recentTurns(chatId)
+        if (!conversationCompactor.shouldCompact(turns)) return
+
+        val pinnedTurns = memory.pinnedTurns(chatId).ifEmpty {
+            dialogRepository.getFirstMessages(chatId, dialogId, COMPACTION_PINNED_TURNS)
+                .filter { it.role == "user" || it.role == "assistant" }
+                .map { it.role to it.text }
+        }
+        val result = conversationCompactor.compact(
+            existingSummary = memory.summary(chatId),
+            existingPinnedTurns = pinnedTurns,
+            turns = turns
+        ) { existingSummary, turnsToCompact ->
+            val generated = chatService.generateCompactionSummary(
+                existingSummary = existingSummary,
+                turns = turnsToCompact,
+                modelOverride = model
+            ).text
+            require(
+                generated.isNotBlank() &&
+                    generated != Strings.get("chat.connection.issue") &&
+                    generated != Strings.get("chat.response.placeholder")
+            ) { "Compaction model returned an empty or fallback response" }
+            generated
+        } ?: return
+
+        dialogRepository.saveCompaction(
+            userId = chatId,
+            dialogId = dialogId,
+            summary = result.summary,
+            pinnedTurns = result.pinnedTurns.mapIndexed { index, (role, text) ->
+                DialogMessage(role = role, text = text, createdAt = index.toLong())
+            }
+        )
+        memory.applyCompaction(
+            chatId = chatId,
+            summary = result.summary,
+            pinnedTurns = result.pinnedTurns,
+            remainingRecentTurns = result.remainingRecentTurns
+        )
+    }
+
     private suspend fun handleChat(
         session: ChatSession,
         chatId: Long,
@@ -2444,21 +2548,10 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
     ) {
         session.state.chatResponseInProgress = true
         try {
-        val isNewDialogue = memory.history(chatId).isEmpty()
+        val isNewDialogue = memory.recentTurns(chatId).isEmpty() &&
+            memory.summary(chatId) == null &&
+            memory.pinnedTurns(chatId).isEmpty()
         val story = activeStory(chatId)
-
-        if (isNewDialogue) {
-            memory.initIfNeeded(chatId)
-            applyCharacterToMemory(chatId, character, story)
-            val lastTurns = chatHistoryRepository.getLast(chatId, limit = 50)
-            if (lastTurns.isNotEmpty()) {
-                lastTurns.forEach { turn ->
-                    if (turn.role == "user" || turn.role == "assistant") {
-                        memory.append(chatId, turn.role, turn.text)
-                    }
-                }
-            }
-        }
 
         val balance = ensureUserBalance(chatId)
         if (balance.textTokensLeft <= 0) {
@@ -2470,12 +2563,21 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         applyCharacterToMemory(chatId, character, story)
 
         val dialogId = ensureActiveDialog(chatId, character, story)
+        if (isNewDialogue) {
+            restoreActiveDialogMemory(chatId, dialogId, character, story)
+        }
+
         memory.append(chatId, "user", text)
         chatHistoryRepository.append(chatId, "user", text)
         dialogRepository.appendMessage(chatId, dialogId, "user", text)
 
-        val history = memory.history(chatId)
         val selectedChatModel = chatModelFor(story)
+        runCatching {
+            maybeCompactConversation(chatId, dialogId, selectedChatModel)
+        }.onFailure { error ->
+            println("Conversation compaction failed for chat=$chatId dialog=$dialogId: ${error.message}")
+        }
+        val history = memory.history(chatId)
 
         val genResult = retryOnceAfterDelayIfNetwork {
             withTyping(session, chatId) { chatService.generateReply(history, modelOverride = selectedChatModel) }

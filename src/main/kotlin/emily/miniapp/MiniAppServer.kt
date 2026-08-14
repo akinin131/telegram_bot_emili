@@ -27,6 +27,8 @@ import emily.domain.CharacterProfile
 import emily.domain.StoryScenario
 import emily.resources.Strings
 import emily.service.ChatService
+import emily.service.COMPACTION_BOOTSTRAP_TURNS
+import emily.service.COMPACTION_RECENT_TURNS
 import emily.service.ConversationMemory
 import java.net.InetSocketAddress
 import java.net.HttpURLConnection
@@ -844,8 +846,8 @@ class MiniAppServer(
         userSettingsRepository.setSelectedCharacter(user.id, character.id)
         userSettingsRepository.setActiveDialogId(user.id, dialog.id)
 
-        val messages = dialogRepository.getMessages(user.id, dialog.id, limit = 80)
-        restoreConversation(user.id, character, story, messages)
+        val messages = dialogRepository.getMessages(user.id, dialog.id, limit = COMPACTION_BOOTSTRAP_TURNS)
+        restoreConversation(user.id, dialog.id, character, story, messages)
         val recentMessages = messages.takeLast(DIALOG_PREVIEW_MESSAGE_LIMIT)
         val telegramResult = notifyDialogRestored(user.id, dialog, recentMessages)
 
@@ -921,6 +923,7 @@ class MiniAppServer(
 
     private suspend fun restoreConversation(
         userId: Long,
+        dialogId: String,
         character: CharacterProfile,
         story: StoryScenario?,
         messages: List<DialogMessage>
@@ -928,9 +931,23 @@ class MiniAppServer(
         chatHistoryRepository.clear(userId)
         resetMemory(userId, character, story)
 
-        messages.forEach { message ->
+        val compaction = dialogRepository.getCompaction(userId, dialogId)
+        val recentMessages = if (compaction != null) {
+            messages.takeLast(COMPACTION_RECENT_TURNS)
+        } else {
+            messages
+        }
+        memory.restoreCompaction(
+            chatId = userId,
+            summary = compaction?.summary,
+            pinnedTurns = compaction?.pinnedTurns
+                ?.map { it.role to it.text }
+                .orEmpty(),
+            recentTurns = recentMessages.map { it.role to it.text }
+        )
+
+        recentMessages.forEach { message ->
             if (message.role == "user" || message.role == "assistant") {
-                memory.append(userId, message.role, message.text)
                 chatHistoryRepository.append(userId, message.role, message.text)
             }
         }

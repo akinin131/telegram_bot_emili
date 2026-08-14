@@ -28,11 +28,18 @@ data class DialogMessage(
     val createdAt: Long
 )
 
+data class DialogCompactionState(
+    val summary: String,
+    val pinnedTurns: List<DialogMessage>,
+    val updatedAt: Long
+)
+
 class DialogRepository(
     private val database: FirebaseDatabase = FirebaseDatabase.getInstance()
 ) {
     private val dialogsRef by lazy { database.getReference("dialogSessions") }
     private val messagesRef by lazy { database.getReference("dialogMessages") }
+    private val compactionsRef by lazy { database.getReference("dialogCompactions") }
 
     suspend fun createDialog(
         userId: Long,
@@ -113,6 +120,54 @@ class DialogRepository(
             .sortedBy { it.createdAt }
     }
 
+    suspend fun getFirstMessages(userId: Long, dialogId: String, limit: Int): List<DialogMessage> =
+        withContext(Dispatchers.IO) {
+            val snapshot = messagesRef
+                .child(userId.toString())
+                .child(dialogId)
+                .orderByChild("createdAt")
+                .limitToFirst(limit)
+                .awaitSingle()
+
+            snapshot.children
+                .mapNotNull { it.toDialogMessage() }
+                .sortedBy { it.createdAt }
+        }
+
+    suspend fun getCompaction(userId: Long, dialogId: String): DialogCompactionState? =
+        withContext(Dispatchers.IO) {
+            val snapshot = compactionsRef
+                .child(userId.toString())
+                .child(dialogId)
+                .awaitSingle()
+            val summary = snapshot.child("summary").getValue(String::class.java)
+                ?.takeIf { it.isNotBlank() }
+                ?: return@withContext null
+            val pinnedTurns = snapshot.child("pinnedTurns").children
+                .mapNotNull { it.toDialogMessage() }
+            val updatedAt = snapshot.child("updatedAt").getValue(Long::class.java) ?: 0L
+            DialogCompactionState(summary, pinnedTurns, updatedAt)
+        }
+
+    suspend fun saveCompaction(
+        userId: Long,
+        dialogId: String,
+        summary: String,
+        pinnedTurns: List<DialogMessage>
+    ): Any? = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val payload = mapOf<String, Any>(
+            "summary" to summary,
+            "pinnedTurns" to pinnedTurns.map { it.toRecentMap() },
+            "updatedAt" to now
+        )
+        compactionsRef.child(userId.toString()).child(dialogId).setValueAsync(payload)
+    }
+
+    suspend fun clearCompaction(userId: Long, dialogId: String): Any? = withContext(Dispatchers.IO) {
+        compactionsRef.child(userId.toString()).child(dialogId).setValueAsync(null)
+    }
+
     suspend fun getAllMessages(userId: Long, perDialogLimit: Int = RECENT_PREVIEW_LIMIT): Map<String, List<DialogMessage>> =
         withContext(Dispatchers.IO) {
             val snapshot = messagesRef.child(userId.toString()).awaitSingle()
@@ -161,6 +216,7 @@ class DialogRepository(
         if (normalizedDialogId.isBlank()) return@withContext null
         dialogsRef.child(userId.toString()).child(normalizedDialogId).setValueAsync(null)
         messagesRef.child(userId.toString()).child(normalizedDialogId).setValueAsync(null)
+        compactionsRef.child(userId.toString()).child(normalizedDialogId).setValueAsync(null)
     }
 
     suspend fun deleteDialogsByContext(userId: Long, characterId: String, storyId: String?) = withContext(Dispatchers.IO) {
