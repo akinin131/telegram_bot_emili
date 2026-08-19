@@ -1,7 +1,7 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 const DEFAULT_BOT_URL = "https://t.me/you_emily_bot";
 const DEFAULT_AUDIENCE = "female";
-const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v8";
+const BOOTSTRAP_CACHE_KEY = "emily:miniappBootstrap:v9";
 const GALLERY_CACHE_KEY = "emily:validatedGalleries:v2";
 const PENDING_AUDIENCE_KEY = "emily:pendingAudience";
 const DIALOG_PREVIEW_MESSAGE_LIMIT = 12;
@@ -52,6 +52,7 @@ const els = {
   tokenBalanceText: document.getElementById("tokenBalanceText"),
   tokenPlanText: document.getElementById("tokenPlanText"),
   currentStoryHint: document.getElementById("currentStoryHint"),
+  subscriptionCard: document.getElementById("subscriptionCard"),
   paymentOptions: document.getElementById("paymentOptions"),
   preferenceScreen: document.getElementById("preferenceScreen"),
   audienceSettings: document.getElementById("audienceSettings"),
@@ -1914,7 +1915,7 @@ async function createInvoice(type, code) {
       method: "POST",
       body: { type, code },
     });
-    if (openInvoice(data.invoiceLink, () => loadBootstrap("settings"))) {
+    if (openInvoice(data.invoiceLink, () => window.setTimeout(() => loadBootstrap("settings"), 1200))) {
       return;
     }
     await sendInvoiceToChat(type, code, "Счёт отправлен в чат Telegram.");
@@ -2023,6 +2024,7 @@ function renderSettings() {
   if (!state.bootstrap) return;
 
   renderPaymentOptions();
+  renderSubscription();
   renderAudienceSettings();
   ensureSelectedStoryTitle();
 
@@ -2051,6 +2053,66 @@ function renderSettings() {
   }
 }
 
+function renderSubscription() {
+  if (!els.subscriptionCard) return;
+  const subscription = state.bootstrap && state.bootstrap.subscription;
+  const isCurrent = subscription && Number(subscription.currentPeriodEnd) > Date.now();
+  if (!isCurrent) {
+    els.subscriptionCard.hidden = true;
+    els.subscriptionCard.replaceChildren();
+    return;
+  }
+
+  const canceled = subscription.status === "cancel_at_period_end" || subscription.cancelAtPeriodEnd;
+  const head = document.createElement("div");
+  head.className = "settings-card-head";
+  const icon = document.createElement("span");
+  icon.className = "settings-icon";
+  icon.textContent = "⭐";
+  const kicker = document.createElement("span");
+  kicker.className = "settings-kicker";
+  kicker.textContent = "Подписка Telegram Stars";
+  head.append(icon, kicker);
+
+  const title = document.createElement("div");
+  title.className = "settings-value subscription-title";
+  title.textContent = planTitle(subscription.planCode);
+
+  const note = document.createElement("p");
+  note.className = "settings-note";
+  const periodEnd = new Date(Number(subscription.currentPeriodEnd));
+  const date = periodEnd.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  note.textContent = canceled
+    ? `Автопродление отключено. Доступ сохранится до ${date}.`
+    : `Продлевается каждый месяц. Следующее списание — ${date}.`;
+
+  els.subscriptionCard.replaceChildren(head, title, note);
+  if (!canceled) {
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.className = "subscription-cancel-button";
+    cancelButton.textContent = "Отменить автопродление";
+    cancelButton.addEventListener("click", cancelSubscription);
+    els.subscriptionCard.append(cancelButton);
+  }
+  els.subscriptionCard.hidden = false;
+}
+
+async function cancelSubscription() {
+  if (!window.confirm("Отключить ежемесячное автопродление? Доступ сохранится до конца оплаченного периода.")) return;
+  setLoading(true);
+  try {
+    const data = await api("/miniapp/api/subscription/cancel", { method: "POST", body: {} });
+    state.bootstrap.subscription = data.subscription;
+    renderSettings();
+    showToast("Автопродление отключено.");
+  } catch (error) {
+    showToast(error.message || "Не удалось отменить подписку");
+  } finally {
+    setLoading(false);
+  }
+}
+
 function renderAudienceSettings() {
   if (!els.audienceSettings) return;
   const selected = resolveAudiencePreference();
@@ -2075,24 +2137,27 @@ function renderPaymentOptions() {
   const plans = payments.plans || [];
   const packs = payments.packs || [];
   const gifPacks = payments.gifPacks || [];
+  const subscription = state.bootstrap && state.bootstrap.subscription;
+  const hasCurrentSubscription = Boolean(subscription && Number(subscription.currentPeriodEnd) > Date.now());
   els.paymentOptions.replaceChildren();
   const tabs = [
     {
       key: "plans",
-      label: "Токены",
-      title: "Пакеты для общения",
-      note: "Основной запас токенов и фото.",
+      label: "Подписка",
+      title: "Ежемесячная подписка",
+      note: "Автоматическое продление каждые 30 дней через Telegram Stars.",
       layout: "plans",
       items: plans.map((plan) => ({
         type: "plan",
         code: plan.code,
         title: plan.title,
-        caption: "Пакет общения",
+        caption: hasCurrentSubscription ? "Подписка уже активна" : "Ежемесячная подписка",
         badges: [
           `${formatCompactNumber(plan.textTokens)} токенов`,
           `${formatNumber(plan.imageCredits)} фото`,
         ],
-        price: `${plan.priceRub} ₽`,
+        price: `${plan.priceStars} ⭐ / мес.`,
+        disabled: hasCurrentSubscription,
         featured: plan.code === "pro",
         badgeLabel: plan.code === "pro" ? "Выбор" : "",
       })),
@@ -2109,7 +2174,7 @@ function renderPaymentOptions() {
         title: pack.title,
         caption: "Разовый пакет",
         badges: [`${formatNumber(pack.imageCredits)} фото`],
-        price: `${pack.priceRub} ₽`,
+        price: `${pack.priceStars} ⭐`,
         featured: false,
         badgeLabel: "",
       })),
@@ -2126,7 +2191,7 @@ function renderPaymentOptions() {
         title: pack.title,
         caption: "Разовый пакет",
         badges: [`${formatNumber(pack.gifCredits)} GIF`],
-        price: `${pack.priceRub} ₽`,
+        price: `${pack.priceStars} ⭐`,
         featured: false,
         badgeLabel: "",
       })),
@@ -2187,6 +2252,7 @@ function paymentButton(option) {
   button.type = "button";
   button.className = "payment-option";
   if (option.featured) button.classList.add("featured");
+  button.disabled = Boolean(option.disabled);
   button.addEventListener("click", () => createInvoice(option.type, option.code));
 
   const copy = document.createElement("span");

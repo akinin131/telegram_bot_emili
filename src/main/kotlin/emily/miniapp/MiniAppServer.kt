@@ -18,6 +18,9 @@ import emily.data.GifPack
 import emily.data.ImagePack
 import emily.data.Plan
 import emily.data.ReferralRepository
+import emily.data.RecurringSubscription
+import emily.data.RecurringSubscriptionStatus
+import emily.data.SubscriptionRepository
 import emily.data.UserActivity
 import emily.data.UserActivityRepository
 import emily.data.UserSettingsRepository
@@ -26,6 +29,8 @@ import emily.domain.BotCatalog
 import emily.domain.CharacterProfile
 import emily.domain.StoryScenario
 import emily.resources.Strings
+import emily.payment.TelegramStarsClient
+import emily.payment.TelegramStarsResult
 import emily.service.ChatService
 import emily.service.COMPACTION_BOOTSTRAP_TURNS
 import emily.service.COMPACTION_RECENT_TURNS
@@ -53,7 +58,6 @@ data class MiniAppConfig(
     val port: Int,
     val publicUrl: String,
     val botToken: String,
-    val providerToken: String,
     val botUsername: String,
     val devUserId: Long? = null
 )
@@ -61,6 +65,7 @@ data class MiniAppConfig(
 class MiniAppServer(
     private val config: MiniAppConfig,
     private val balanceRepository: BalanceRepository,
+    private val subscriptionRepository: SubscriptionRepository,
     private val adminRepository: AdminRepository,
     private val userActivityRepository: UserActivityRepository,
     private val chatHistoryRepository: ChatHistoryRepository,
@@ -80,6 +85,7 @@ class MiniAppServer(
     private var server: HttpServer? = null
     private val verifier = TelegramInitDataVerifier(config.botToken)
     private val telegramApi = TelegramBotApiClient(config.botToken)
+    private val telegramStarsApi = TelegramStarsClient(config.botToken)
     private val imageCache = ConcurrentHashMap<String, CachedImage>()
     private val generatedImageCache = ConcurrentHashMap<String, CachedImage>()
     private val adminBroadcastJobs = ConcurrentHashMap<String, AdminBroadcastJob>()
@@ -207,6 +213,7 @@ class MiniAppServer(
             path == "/miniapp/api/skip-story" && exchange.requestMethod == "POST" -> handleSkipStory(exchange)
             path == "/miniapp/api/restore-dialog" && exchange.requestMethod == "POST" -> handleRestoreDialog(exchange)
             path == "/miniapp/api/create-invoice" && exchange.requestMethod == "POST" -> handleCreateInvoice(exchange)
+            path == "/miniapp/api/subscription/cancel" && exchange.requestMethod == "POST" -> handleCancelSubscription(exchange)
             path == "/miniapp/api/settings" && exchange.requestMethod == "POST" -> handleSettings(exchange)
             path == "/miniapp/api/expand-setup" && exchange.requestMethod == "POST" -> handleExpandSetup(exchange)
             path == "/miniapp/api/admin/subscribers" && exchange.requestMethod == "GET" -> handleAdminSubscribers(exchange)
@@ -232,6 +239,7 @@ class MiniAppServer(
         val allCustomDef = async { customStoryRepository.listAllStories(user.id) }
         val accessDef = async { customStoryRepository.getAccess(user.id) }
         val adminDef = async { adminRepository.hasAccess(user.id) }
+        val subscriptionDef = async { subscriptionRepository.get(user.id) }
 
         setupDef.await()
         val balance = balanceDef.await()
@@ -244,6 +252,7 @@ class MiniAppServer(
         val allCustomStories = allCustomDef.await()
         val customStoryAccess = accessDef.await()
         val hasAdminAccess = adminDef.await()
+        val subscription = subscriptionDef.await()
 
         val audiencePreference = storedAudiencePreference ?: AudiencePreference.FEMALE
         if (storedAudiencePreference == null) {
@@ -305,6 +314,7 @@ class MiniAppServer(
                     .put("packs", JSONArray(ImagePack.entries.map { it.toMiniAppJson() }))
                     .put("gifPacks", JSONArray(GifPack.entries.map { it.toMiniAppJson() }))
                 )
+                .put("subscription", subscription?.toMiniAppJson() ?: JSONObject.NULL)
                 .put("progress", JSONObject()
                     .put("hasHistory", false)
                     .put("lastTurns", JSONArray())
@@ -359,7 +369,18 @@ class MiniAppServer(
             "plan" -> {
                 val plan = Plan.byCode(code)
                     ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Plan not found"))
-                if (sendToChat) telegramApi.sendInvoice(
+                val current = subscriptionRepository.get(user.id)
+                if (current?.isCurrent() == true) {
+                    return@runBlocking sendJson(
+                        exchange,
+                        409,
+                        JSONObject().put("ok", false).put(
+                            "error",
+                            "Подписка уже активна. Отменить автопродление можно в настройках."
+                        )
+                    )
+                }
+                if (sendToChat) telegramStarsApi.sendInvoice(
                     chatId = user.id,
                     title = Strings.get("invoice.plan.title", plan.title),
                     description = Strings.get(
@@ -369,16 +390,11 @@ class MiniAppServer(
                         plan.monthlyGifCredits
                     ),
                     payload = "plan:${plan.code}:${UUID.randomUUID()}",
-                    providerToken = config.providerToken,
                     priceLabel = Strings.get("invoice.plan.price.label", plan.title),
-                    priceRub = plan.priceRub,
-                    providerData = makeProviderData(
-                        desc = Strings.get("invoice.plan.provider.desc", plan.title),
-                        rub = plan.priceRub
-                    ),
+                    priceStars = plan.priceStars,
                     photoUrl = plan.photoUrl,
-                    startParameter = "plan-${plan.code}"
-                ) else telegramApi.createInvoiceLink(
+                    subscription = true
+                ) else telegramStarsApi.createInvoiceLink(
                     title = Strings.get("invoice.plan.title", plan.title),
                     description = Strings.get(
                         "invoice.plan.description",
@@ -387,107 +403,64 @@ class MiniAppServer(
                         plan.monthlyGifCredits
                     ),
                     payload = "plan:${plan.code}:${UUID.randomUUID()}",
-                    providerToken = config.providerToken,
                     priceLabel = Strings.get("invoice.plan.price.label", plan.title),
-                    priceRub = plan.priceRub,
-                    providerData = makeProviderData(
-                        desc = Strings.get("invoice.plan.provider.desc", plan.title),
-                        rub = plan.priceRub
-                    ),
+                    priceStars = plan.priceStars,
                     photoUrl = plan.photoUrl,
-                    startParameter = "plan-${plan.code}"
+                    subscription = true
                 )
             }
             "pack" -> {
                 val pack = ImagePack.byCode(code)
                     ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Pack not found"))
-                if (sendToChat) telegramApi.sendInvoice(
+                if (sendToChat) telegramStarsApi.sendInvoice(
                     chatId = user.id,
                     title = pack.title,
                     description = Strings.get("invoice.pack.description", pack.title),
                     payload = "pack:${pack.code}:${UUID.randomUUID()}",
-                    providerToken = config.providerToken,
                     priceLabel = pack.title,
-                    priceRub = pack.priceRub,
-                    providerData = makeProviderData(
-                        desc = Strings.get("invoice.pack.provider.desc", pack.title),
-                        rub = pack.priceRub
-                    ),
-                    photoUrl = pack.photoUrl,
-                    startParameter = "pack-${pack.code}"
-                ) else telegramApi.createInvoiceLink(
+                    priceStars = pack.priceStars,
+                    photoUrl = pack.photoUrl
+                ) else telegramStarsApi.createInvoiceLink(
                     title = pack.title,
                     description = Strings.get("invoice.pack.description", pack.title),
                     payload = "pack:${pack.code}:${UUID.randomUUID()}",
-                    providerToken = config.providerToken,
                     priceLabel = pack.title,
-                    priceRub = pack.priceRub,
-                    providerData = makeProviderData(
-                        desc = Strings.get("invoice.pack.provider.desc", pack.title),
-                        rub = pack.priceRub
-                    ),
-                    photoUrl = pack.photoUrl,
-                    startParameter = "pack-${pack.code}"
+                    priceStars = pack.priceStars,
+                    photoUrl = pack.photoUrl
                 )
             }
             "gif_pack" -> {
                 val pack = GifPack.byCode(code)
                     ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "GIF pack not found"))
-                if (sendToChat) telegramApi.sendInvoice(
+                if (sendToChat) telegramStarsApi.sendInvoice(
                     chatId = user.id,
                     title = pack.title,
                     description = Strings.get("invoice.gifpack.description", pack.gifs),
                     payload = "gif_pack:${pack.code}:${UUID.randomUUID()}",
-                    providerToken = config.providerToken,
                     priceLabel = pack.title,
-                    priceRub = pack.priceRub,
-                    providerData = makeProviderData(
-                        desc = Strings.get("invoice.gifpack.provider.desc", pack.title),
-                        rub = pack.priceRub
-                    ),
-                    photoUrl = null,
-                    startParameter = "gif-pack-${pack.code}"
-                ) else telegramApi.createInvoiceLink(
+                    priceStars = pack.priceStars
+                ) else telegramStarsApi.createInvoiceLink(
                     title = pack.title,
                     description = Strings.get("invoice.gifpack.description", pack.gifs),
                     payload = "gif_pack:${pack.code}:${UUID.randomUUID()}",
-                    providerToken = config.providerToken,
                     priceLabel = pack.title,
-                    priceRub = pack.priceRub,
-                    providerData = makeProviderData(
-                        desc = Strings.get("invoice.gifpack.provider.desc", pack.title),
-                        rub = pack.priceRub
-                    ),
-                    startParameter = "gif-pack-${pack.code}"
+                    priceStars = pack.priceStars
                 )
             }
             "custom_story" -> {
-                if (sendToChat) telegramApi.sendInvoice(
+                if (sendToChat) telegramStarsApi.sendInvoice(
                     chatId = user.id,
                     title = CustomStoryPack.title,
                     description = CustomStoryPack.description,
                     payload = "custom_story:${CustomStoryPack.code}:${UUID.randomUUID()}",
-                    providerToken = config.providerToken,
                     priceLabel = CustomStoryPack.title,
-                    priceRub = CustomStoryPack.priceRub,
-                    providerData = makeProviderData(
-                        desc = CustomStoryPack.description,
-                        rub = CustomStoryPack.priceRub
-                    ),
-                    photoUrl = null,
-                    startParameter = CustomStoryPack.code
-                ) else telegramApi.createInvoiceLink(
+                    priceStars = CustomStoryPack.priceStars
+                ) else telegramStarsApi.createInvoiceLink(
                     title = CustomStoryPack.title,
                     description = CustomStoryPack.description,
                     payload = "custom_story:${CustomStoryPack.code}:${UUID.randomUUID()}",
-                    providerToken = config.providerToken,
                     priceLabel = CustomStoryPack.title,
-                    priceRub = CustomStoryPack.priceRub,
-                    providerData = makeProviderData(
-                        desc = CustomStoryPack.description,
-                        rub = CustomStoryPack.priceRub
-                    ),
-                    startParameter = CustomStoryPack.code
+                    priceStars = CustomStoryPack.priceStars
                 )
             }
             else -> return@runBlocking sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "Unknown invoice type"))
@@ -504,6 +477,58 @@ class MiniAppServer(
                 .put("ok", true)
                 .put("telegram", telegramResult.toJson())
                 .put("invoiceLink", telegramResult.invoiceLink ?: JSONObject.NULL)
+        )
+    }
+
+    private fun handleCancelSubscription(exchange: HttpExchange) = runBlocking {
+        val user = authenticate(exchange) ?: return@runBlocking
+        val subscription = subscriptionRepository.get(user.id)
+            ?: return@runBlocking sendJson(
+                exchange,
+                404,
+                JSONObject().put("ok", false).put("error", "Активная подписка не найдена.")
+            )
+
+        if (!subscription.isCurrent()) {
+            val expired = subscription.copy(
+                status = RecurringSubscriptionStatus.CANCELED,
+                updatedAt = System.currentTimeMillis()
+            )
+            subscriptionRepository.put(expired)
+            return@runBlocking sendJson(
+                exchange,
+                200,
+                JSONObject().put("ok", true).put("subscription", expired.toMiniAppJson())
+            )
+        }
+
+        if (subscription.status == RecurringSubscriptionStatus.CANCEL_AT_PERIOD_END) {
+            return@runBlocking sendJson(
+                exchange,
+                200,
+                JSONObject().put("ok", true).put("subscription", subscription.toMiniAppJson())
+            )
+        }
+
+        val result = telegramStarsApi.cancelSubscription(
+            userId = user.id,
+            telegramPaymentChargeId = subscription.telegramPaymentChargeId
+        )
+        if (!result.ok) {
+            return@runBlocking sendTelegramFailure(exchange, result)
+        }
+
+        val now = System.currentTimeMillis()
+        val canceled = subscription.copy(
+            status = RecurringSubscriptionStatus.CANCEL_AT_PERIOD_END,
+            canceledAt = now,
+            updatedAt = now
+        )
+        subscriptionRepository.put(canceled)
+        sendJson(
+            exchange,
+            200,
+            JSONObject().put("ok", true).put("subscription", canceled.toMiniAppJson())
         )
     }
 
@@ -1558,7 +1583,7 @@ class MiniAppServer(
         exchange.responseBody.use { it.write(bytes) }
     }
 
-    private fun sendTelegramFailure(exchange: HttpExchange, result: TelegramSendResult) {
+    private fun sendTelegramFailure(exchange: HttpExchange, result: TelegramStarsResult) {
         sendJson(
             exchange = exchange,
             status = 502,
@@ -1608,7 +1633,7 @@ class MiniAppServer(
     private fun Plan.toMiniAppJson(): JSONObject = JSONObject()
         .put("code", code)
         .put("title", title)
-        .put("priceRub", priceRub)
+        .put("priceStars", priceStars)
         .put("textTokens", monthlyTextTokens)
         .put("imageCredits", monthlyImageCredits)
         .put("gifCredits", monthlyGifCredits)
@@ -1616,14 +1641,20 @@ class MiniAppServer(
     private fun ImagePack.toMiniAppJson(): JSONObject = JSONObject()
         .put("code", code)
         .put("title", title)
-        .put("priceRub", priceRub)
+        .put("priceStars", priceStars)
         .put("imageCredits", images)
 
     private fun GifPack.toMiniAppJson(): JSONObject = JSONObject()
         .put("code", code)
         .put("title", title)
-        .put("priceRub", priceRub)
+        .put("priceStars", priceStars)
         .put("gifCredits", gifs)
+
+    private fun RecurringSubscription.toMiniAppJson(): JSONObject = JSONObject()
+        .put("planCode", planCode)
+        .put("status", effectiveStatus().name.lowercase())
+        .put("currentPeriodEnd", currentPeriodEnd)
+        .put("cancelAtPeriodEnd", status == RecurringSubscriptionStatus.CANCEL_AT_PERIOD_END)
 
     private fun GeneratedImageItem.toMiniAppJson(userId: Long): JSONObject = JSONObject()
         .put("id", id)
@@ -1713,18 +1744,6 @@ class MiniAppServer(
             .trim()
             .take(maxLength)
     }
-
-    private fun makeProviderData(desc: String, rub: Int, includeVat: Boolean = true): String {
-        val item = JSONObject()
-            .put("description", desc.take(128))
-            .put("quantity", "1")
-            .put("amount", JSONObject().put("value", rubToStr(rub)).put("currency", "RUB"))
-            .apply { if (includeVat) put("vat_code", 1) }
-        val receipt = JSONObject().put("items", JSONArray().put(item))
-        return JSONObject().put("receipt", receipt).toString()
-    }
-
-    private fun rubToStr(rub: Int) = String.format(Locale.US, "%.2f", rub.toDouble())
 
     private data class CachedImage(
         val contentType: String,
@@ -1926,80 +1945,6 @@ class MiniAppServer(
                 .put("message_id", messageId)
 
             return postTelegram("copyMessage", request)
-        }
-
-        fun sendInvoice(
-            chatId: Long,
-            title: String,
-            description: String,
-            payload: String,
-            providerToken: String,
-            priceLabel: String,
-            priceRub: Int,
-            providerData: String,
-            photoUrl: String?,
-            startParameter: String
-        ): TelegramSendResult {
-            val request = JSONObject()
-                .put("chat_id", chatId)
-                .put("title", title)
-                .put("description", description)
-                .put("payload", payload)
-                .put("provider_token", providerToken)
-                .put("currency", "RUB")
-                .put("start_parameter", startParameter)
-                .put("prices", JSONArray().put(JSONObject()
-                    .put("label", priceLabel)
-                    .put("amount", priceRub * 100)
-                ))
-                .put("need_email", true)
-                .put("send_email_to_provider", true)
-                .put("is_flexible", false)
-                .put("provider_data", providerData)
-            if (!photoUrl.isNullOrBlank()) {
-                request
-                    .put("photo_url", photoUrl)
-                    .put("photo_width", 960)
-                    .put("photo_height", 1280)
-            }
-
-            return postTelegram("sendInvoice", request)
-        }
-
-        fun createInvoiceLink(
-            title: String,
-            description: String,
-            payload: String,
-            providerToken: String,
-            priceLabel: String,
-            priceRub: Int,
-            providerData: String,
-            startParameter: String,
-            photoUrl: String? = null
-        ): TelegramSendResult {
-            val request = JSONObject()
-                .put("title", title)
-                .put("description", description)
-                .put("payload", payload)
-                .put("provider_token", providerToken)
-                .put("currency", "RUB")
-                .put("start_parameter", startParameter)
-                .put("prices", JSONArray().put(JSONObject()
-                    .put("label", priceLabel)
-                    .put("amount", priceRub * 100)
-                ))
-                .put("need_email", true)
-                .put("send_email_to_provider", true)
-                .put("is_flexible", false)
-                .put("provider_data", providerData)
-            if (!photoUrl.isNullOrBlank()) {
-                request
-                    .put("photo_url", photoUrl)
-                    .put("photo_width", 960)
-                    .put("photo_height", 1280)
-            }
-
-            return postTelegram("createInvoiceLink", request)
         }
 
         fun downloadFile(fileId: String): CachedImage {

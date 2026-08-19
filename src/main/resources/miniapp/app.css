@@ -1898,6 +1898,37 @@ p {
   border-color: rgba(214, 156, 255, 0.18);
 }
 
+.subscription-card {
+  grid-column: 1 / -1;
+  padding: 16px;
+  background:
+    radial-gradient(circle at 92% 0%, rgba(255, 210, 92, 0.18), transparent 34%),
+    linear-gradient(145deg, rgba(255, 193, 66, 0.08), rgba(124, 92, 255, 0.06)),
+    rgba(17, 17, 23, 0.96);
+  border-color: rgba(255, 210, 92, 0.18);
+}
+
+.subscription-card .settings-icon {
+  background: rgba(255, 193, 66, 0.16);
+  border-color: rgba(255, 210, 92, 0.24);
+}
+
+.subscription-title {
+  margin-bottom: 6px;
+}
+
+.subscription-cancel-button {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 14px;
+  color: #ff9bad;
+  background: rgba(255, 95, 122, 0.08);
+  border: 1px solid rgba(255, 95, 122, 0.22);
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 750;
+}
+
 .admin-panel {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(260px, 0.9fr);
@@ -2289,6 +2320,12 @@ p {
   border-color: rgba(255, 255, 255, 0.15);
   background: rgba(255, 255, 255, 0.055);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
+}
+
+.payment-option:disabled {
+  cursor: default;
+  opacity: 0.5;
+  transform: none;
 }
 
 .payment-option.featured {

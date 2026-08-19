@@ -11,6 +11,7 @@ import emily.data.DialogRepository
 import emily.data.GeneratedImageRepository
 import emily.data.PromoRepository
 import emily.data.ReferralRepository
+import emily.data.SubscriptionRepository
 import emily.data.UserActivityRepository
 import emily.data.UserSettingsRepository
 import emily.service.ChatService
@@ -50,7 +51,6 @@ fun main() {
 
     val config = BotConfig(
         telegramToken = Secrets.get("TELEGRAM_BOT_TOKEN"),
-        providerToken = Secrets.get("PROVIDER_TOKEN"),
         veniceToken = Secrets.get("VENICE_TOKEN")
     )
 
@@ -64,6 +64,7 @@ fun main() {
     val translator = MyMemoryTranslator(okHttpClient)
 
     val balanceRepository = BalanceRepository()
+    val subscriptionRepository = SubscriptionRepository()
     val adminRepository = AdminRepository()
     val analyticsRepository = AnalyticsRepository()
     val referralRepository = ReferralRepository()
@@ -94,6 +95,7 @@ fun main() {
     val bot = EmilyVirtualGirlBot(
         config = config,
         repository = balanceRepository,
+        subscriptionRepository = subscriptionRepository,
         adminRepository = adminRepository,
         analyticsRepository = analyticsRepository,
         referralRepository = referralRepository,
@@ -124,11 +126,11 @@ fun main() {
                     port = miniAppPort,
                     publicUrl = miniAppPublicUrl,
                     botToken = config.telegramToken,
-                    providerToken = config.providerToken,
                     botUsername = bot.getBotUsername(),
                     devUserId = Secrets.getOrNull("MINI_APP_DEV_USER_ID")?.toLongOrNull()
                 ),
                 balanceRepository = balanceRepository,
+                subscriptionRepository = subscriptionRepository,
                 adminRepository = adminRepository,
                 userActivityRepository = userActivityRepository,
                 chatHistoryRepository = chatHistoryRepository,

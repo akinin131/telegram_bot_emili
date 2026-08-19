@@ -7,6 +7,9 @@ import emily.domain.BotCatalog
 import emily.domain.CharacterProfile
 import emily.domain.StoryScenario
 import emily.resources.Strings
+import emily.payment.TELEGRAM_MONTH_SECONDS
+import emily.payment.TELEGRAM_STARS_CURRENCY
+import emily.payment.TelegramStarsClient
 import emily.service.ChatService
 import emily.service.COMPACTION_BOOTSTRAP_TURNS
 import emily.service.COMPACTION_PINNED_TURNS
@@ -39,7 +42,6 @@ import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery
 import org.telegram.telegrambots.meta.api.methods.GetFile
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember
-import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice
 import org.telegram.telegrambots.meta.api.methods.menubutton.SetChatMenuButton
 import org.telegram.telegrambots.meta.api.methods.send.SendAnimation
 import org.telegram.telegrambots.meta.api.methods.send.SendChatAction
@@ -55,12 +57,10 @@ import org.telegram.telegrambots.meta.api.objects.Update
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault
 import org.telegram.telegrambots.meta.api.objects.menubutton.MenuButtonWebApp
-import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.api.objects.webapp.WebAppInfo
-import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException
 import kotlin.text.buildString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -71,6 +71,7 @@ import org.telegram.telegrambots.meta.api.objects.chatmember.ChatMember
 class EmilyVirtualGirlBot(
     private val config: BotConfig,
     private val repository: BalanceRepository,
+    private val subscriptionRepository: SubscriptionRepository,
     private val adminRepository: AdminRepository,
     private val analyticsRepository: AnalyticsRepository,
     private val referralRepository: ReferralRepository,
@@ -107,6 +108,7 @@ class EmilyVirtualGirlBot(
     private val autoImageCooldownMs = 60 * 1000
     private val autoImageMinAssistantTurns = 8
     private val conversationCompactor = ConversationCompactor()
+    private val telegramStarsClient = TelegramStarsClient(config.telegramToken)
 
     private data class ChatSession(
         val scope: CoroutineScope,
@@ -1092,9 +1094,14 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         withContext(Strings.localeContext("ru")) {
             when {
                 update.hasPreCheckoutQuery() -> {
+                    val query = update.preCheckoutQuery
+                    val valid = isValidStarsCheckout(query.invoicePayload, query.currency, query.totalAmount)
                     val answer = AnswerPreCheckoutQuery().apply {
-                        preCheckoutQueryId = update.preCheckoutQuery.id
-                        ok = true
+                        preCheckoutQueryId = query.id
+                        ok = valid
+                        if (!valid) {
+                            errorMessage = "Счёт устарел. Открой Mini App и выбери покупку ещё раз."
+                        }
                     }
                     executeSafe(answer)
                 }
@@ -1118,6 +1125,20 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 else -> Unit
             }
         }
+    }
+
+    private fun isValidStarsCheckout(payload: String?, currency: String?, totalAmount: Int): Boolean {
+        if (currency != TELEGRAM_STARS_CURRENCY || payload.isNullOrBlank()) return false
+        val parts = payload.split(":")
+        val code = parts.getOrNull(1)
+        val expected = when {
+            payload.startsWith("plan:") -> Plan.byCode(code)?.priceStars
+            payload.startsWith("pack:") -> ImagePack.byCode(code)?.priceStars
+            payload.startsWith("gif_pack:") -> GifPack.byCode(code)?.priceStars
+            payload.startsWith("custom_story:") -> CustomStoryPack.priceStars
+            else -> null
+        }
+        return expected == totalAmount
     }
 
     private fun startInactivityLoop() {
@@ -1927,33 +1948,33 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         Plan.entries.forEach { plan ->
             rows += listOf(
                 InlineKeyboardButton().apply {
-                    text = Strings.get("buy.menu.plan.button", plan.title, displayPrice(plan.priceRub))
+                    text = Strings.get("buy.menu.plan.button", plan.title, displayStars(plan.priceStars))
                     callbackData = "buy:plan:${plan.code}"
                 }
             )
         }
         rows += listOf(
             InlineKeyboardButton().apply {
-                text = Strings.get("buy.menu.pack.p10")
+                text = Strings.get("buy.menu.pack.p10", displayStars(ImagePack.P10.priceStars))
                 callbackData = "buy:pack:${ImagePack.P10.code}"
             }
         )
         rows += listOf(
             InlineKeyboardButton().apply {
-                text = Strings.get("buy.menu.pack.p20")
+                text = Strings.get("buy.menu.pack.p20", displayStars(ImagePack.P20.priceStars))
                 callbackData = "buy:pack:${ImagePack.P20.code}"
             }
         )
         rows += listOf(
             InlineKeyboardButton().apply {
-                text = Strings.get("buy.menu.pack.p100")
+                text = Strings.get("buy.menu.pack.p100", displayStars(ImagePack.P100.priceStars))
                 callbackData = "buy:pack:${ImagePack.P100.code}"
             }
         )
         GifPack.entries.forEach { pack ->
             rows += listOf(
                 InlineKeyboardButton().apply {
-                    text = Strings.get("buy.menu.gifpack.button", pack.title, displayPrice(pack.priceRub))
+                    text = Strings.get("buy.menu.gifpack.button", pack.title, displayStars(pack.priceStars))
                     callbackData = "buy:gif_pack:${pack.code}"
                 }
             )
@@ -2297,8 +2318,8 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
     private fun urlEncode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
 
-    private fun displayPrice(priceRub: Int): String {
-        return "$priceRub₽"
+    private fun displayStars(priceStars: Int): String {
+        return "$priceStars ⭐"
     }
 
     private suspend fun maybeActivateReferralFromChat(session: ChatSession, chatId: Long): ReferralActivationBonus? {
@@ -3282,102 +3303,82 @@ Generate tags for the current/latest scene.
 
     private suspend fun createPlanInvoice(session: ChatSession, chatId: Long, planCode: String) {
         val plan = Plan.byCode(planCode) ?: return
+        val existing = subscriptionRepository.get(chatId)
+        if (existing?.isCurrent() == true) {
+            val message = if (existing.status == RecurringSubscriptionStatus.CANCEL_AT_PERIOD_END) {
+                "Текущая подписка уже оплачена до ${Instant.ofEpochMilli(existing.currentPeriodEnd)}. После этого можно оформить новую."
+            } else {
+                "Подписка уже активна. Управлять автопродлением можно в Mini App."
+            }
+            sendEphemeral(session, chatId, message, ttlSeconds = 20)
+            return
+        }
         val invoicePayload = "plan:${plan.code}:${UUID.randomUUID()}"
-        val providerDataJson = makeProviderData(
-            desc = Strings.get("invoice.plan.provider.desc", plan.title),
-            rub = plan.priceRub,
-            includeVat = true
-        )
-        val invoice = SendInvoice().apply {
-            this.chatId = chatId.toString()
-            title = Strings.get("invoice.plan.title", plan.title)
-            description = Strings.get(
+        val result = withContext(Dispatchers.IO) {
+            telegramStarsClient.sendInvoice(
+                chatId = chatId,
+                title = Strings.get("invoice.plan.title", plan.title),
+                description = Strings.get(
                 "invoice.plan.description",
                 plan.monthlyTextTokens,
                 plan.monthlyImageCredits,
                 plan.monthlyGifCredits
+                ),
+                payload = invoicePayload,
+                priceLabel = Strings.get("invoice.plan.price.label", plan.title),
+                priceStars = plan.priceStars,
+                photoUrl = plan.photoUrl,
+                subscription = true
             )
-            payload = invoicePayload
-            providerToken = config.providerToken
-            currency = "RUB"
-            startParameter = "plan-${plan.code}"
-            prices = listOf(LabeledPrice(Strings.get("invoice.plan.price.label", plan.title), plan.priceRub * 100))
-            needEmail = true
-            sendEmailToProvider = true
-            isFlexible = false
-            providerData = providerDataJson
-            photoUrl = plan.photoUrl
-            photoWidth = 960
-            photoHeight = 1280
         }
-        safeExecuteInvoice(session, chatId, invoice)
+        handleInvoiceResult(session, chatId, result)
     }
 
     private suspend fun createPackInvoice(session: ChatSession, chatId: Long, packCode: String) {
         val pack = ImagePack.byCode(packCode) ?: return
         val invoicePayload = "pack:${pack.code}:${UUID.randomUUID()}"
-        val providerDataJson = makeProviderData(
-            desc = Strings.get("invoice.pack.provider.desc", pack.title),
-            rub = pack.priceRub,
-            includeVat = true
-        )
-        val invoice = SendInvoice().apply {
-            this.chatId = chatId.toString()
-            title = pack.title
-            description = Strings.get("invoice.pack.description", pack.title)
-            payload = invoicePayload
-            providerToken = config.providerToken
-            currency = "RUB"
-            startParameter = "pack-${pack.code}"
-            prices = listOf(LabeledPrice(pack.title, pack.priceRub * 100))
-            needEmail = true
-            sendEmailToProvider = true
-            isFlexible = false
-            providerData = providerDataJson
-            photoUrl = pack.photoUrl
-            photoWidth = 960
-            photoHeight = 1280
+        val result = withContext(Dispatchers.IO) {
+            telegramStarsClient.sendInvoice(
+                chatId = chatId,
+                title = pack.title,
+                description = Strings.get("invoice.pack.description", pack.title),
+                payload = invoicePayload,
+                priceLabel = pack.title,
+                priceStars = pack.priceStars,
+                photoUrl = pack.photoUrl
+            )
         }
-        safeExecuteInvoice(session, chatId, invoice)
+        handleInvoiceResult(session, chatId, result)
     }
 
     private suspend fun createGifPackInvoice(session: ChatSession, chatId: Long, packCode: String) {
         val pack = GifPack.byCode(packCode) ?: return
         val invoicePayload = "gif_pack:${pack.code}:${UUID.randomUUID()}"
-        val providerDataJson = makeProviderData(
-            desc = Strings.get("invoice.gifpack.provider.desc", pack.title),
-            rub = pack.priceRub,
-            includeVat = true
-        )
-        val invoice = SendInvoice().apply {
-            this.chatId = chatId.toString()
-            title = pack.title
-            description = Strings.get("invoice.gifpack.description", pack.gifs)
-            payload = invoicePayload
-            providerToken = config.providerToken
-            currency = "RUB"
-            startParameter = "gif-pack-${pack.code}"
-            prices = listOf(LabeledPrice(pack.title, pack.priceRub * 100))
-            needEmail = true
-            sendEmailToProvider = true
-            isFlexible = false
-            providerData = providerDataJson
+        val result = withContext(Dispatchers.IO) {
+            telegramStarsClient.sendInvoice(
+                chatId = chatId,
+                title = pack.title,
+                description = Strings.get("invoice.gifpack.description", pack.gifs),
+                payload = invoicePayload,
+                priceLabel = pack.title,
+                priceStars = pack.priceStars
+            )
         }
-        safeExecuteInvoice(session, chatId, invoice)
+        handleInvoiceResult(session, chatId, result)
     }
 
-    private suspend fun safeExecuteInvoice(session: ChatSession, chatId: Long, invoice: SendInvoice) {
-        try {
-            val message = executeSafe(invoice)
-            session.state.protectedMessageIds.add(message.messageId)
-        } catch (ex: TelegramApiRequestException) {
-            val details = Strings.get("invoice.error.details", ex.message, ex.apiResponse, ex.parameters)
-            sendEphemeral(session, chatId, "❌ $details", ttlSeconds = 20)
-        } catch (ex: Exception) {
+    private suspend fun handleInvoiceResult(
+        session: ChatSession,
+        chatId: Long,
+        result: emily.payment.TelegramStarsResult
+    ) {
+        if (result.ok) {
+            result.messageId?.let { session.state.protectedMessageIds.add(it) }
+        } else {
             sendEphemeral(
                 session,
                 chatId,
-                Strings.get("invoice.error.unexpected", ex.message ?: ex.toString()),
+                Strings.get("invoice.error.unexpected", result.description),
                 ttlSeconds = 20
             )
         }
@@ -3387,31 +3388,64 @@ Generate tags for the current/latest scene.
         val chatId = message.chatId
         val payment = message.successfulPayment ?: return
         val payload = payment.invoicePayload ?: return
-        val totalRub = (payment.totalAmount / 100.0).toInt()
+        val totalStars = payment.totalAmount
+        val chargeId = payment.telegramPaymentChargeId?.takeIf { it.isNotBlank() } ?: return
+        if (payment.currency != TELEGRAM_STARS_CURRENCY) return
+        if (repository.hasProcessedPayment(chatId, chargeId)) return
         val balance = ensureUserBalance(chatId)
 
         when {
             payload.startsWith("plan:") -> {
                 val code = payload.split(":").getOrNull(1)
                 val plan = Plan.byCode(code) ?: return
-                val monthMs = 30L * 24 * 60 * 60 * 1000
+                if (totalStars != plan.priceStars) return
+                val monthMs = TELEGRAM_MONTH_SECONDS * 1000L
                 val now = System.currentTimeMillis()
-                val base = maxOf(balance.planExpiresAt ?: 0L, now)
+                val existing = subscriptionRepository.get(chatId)
+                val renewal = existing?.takeIf { it.invoicePayload == payload }
+                if (renewal == null && existing?.isCurrent(now) == true) {
+                    withContext(Dispatchers.IO) {
+                        telegramStarsClient.cancelSubscription(chatId, existing.telegramPaymentChargeId)
+                    }
+                }
+                val base = if (renewal != null) {
+                    maxOf(renewal.currentPeriodEnd, now)
+                } else {
+                    maxOf(balance.planExpiresAt ?: 0L, now)
+                }
                 balance.plan = plan.code
                 balance.planExpiresAt = base + monthMs
                 balance.textTokensLeft += plan.monthlyTextTokens
                 balance.imageCreditsLeft += plan.monthlyImageCredits
                 balance.gifCreditsLeft += plan.monthlyGifCredits
                 repository.put(balance)
-                repository.addPayment(chatId, payload, totalRub)
+                repository.addTelegramStarsPayment(chatId, payload, totalStars, chargeId)
+                subscriptionRepository.put(
+                    RecurringSubscription(
+                        userId = chatId,
+                        planCode = plan.code,
+                        status = RecurringSubscriptionStatus.ACTIVE,
+                        invoicePayload = payload,
+                        telegramPaymentChargeId = if (renewal != null) {
+                            renewal.telegramPaymentChargeId
+                        } else {
+                            chargeId
+                        },
+                        lastTelegramPaymentChargeId = chargeId,
+                        currentPeriodEnd = balance.planExpiresAt!!,
+                        canceledAt = null,
+                        createdAt = renewal?.createdAt ?: now,
+                        updatedAt = now
+                    )
+                )
                 analyticsRepository.logTopUp(
                     userId = chatId,
                     plan = balance.plan,
                     topupTextTokens = plan.monthlyTextTokens,
                     topupImageCredits = plan.monthlyImageCredits,
                     topupGifCredits = plan.monthlyGifCredits,
-                    source = "payment:plan:${plan.code}",
-                    amountRub = totalRub
+                    source = "payment:telegram_stars:subscription:${plan.code}",
+                    amountStars = totalStars
                 )
                 runCatching {
                     applyReferralPaymentBonus(
@@ -3440,17 +3474,18 @@ Generate tags for the current/latest scene.
             payload.startsWith("pack:") -> {
                 val code = payload.split(":").getOrNull(1)
                 val pack = ImagePack.byCode(code) ?: return
+                if (totalStars != pack.priceStars) return
                 balance.imageCreditsLeft += pack.images
                 repository.put(balance)
-                repository.addPayment(chatId, payload, totalRub)
+                repository.addTelegramStarsPayment(chatId, payload, totalStars, chargeId)
                 analyticsRepository.logTopUp(
                     userId = chatId,
                     plan = balance.plan,
                     topupTextTokens = 0,
                     topupImageCredits = pack.images,
                     topupGifCredits = 0,
-                    source = "payment:pack:${pack.code}",
-                    amountRub = totalRub
+                    source = "payment:telegram_stars:pack:${pack.code}",
+                    amountStars = totalStars
                 )
                 runCatching {
                     applyReferralPaymentBonus(
@@ -3472,17 +3507,18 @@ Generate tags for the current/latest scene.
             payload.startsWith("gif_pack:") -> {
                 val code = payload.split(":").getOrNull(1)
                 val pack = GifPack.byCode(code) ?: return
+                if (totalStars != pack.priceStars) return
                 balance.gifCreditsLeft += pack.gifs
                 repository.put(balance)
-                repository.addPayment(chatId, payload, totalRub)
+                repository.addTelegramStarsPayment(chatId, payload, totalStars, chargeId)
                 analyticsRepository.logTopUp(
                     userId = chatId,
                     plan = balance.plan,
                     topupTextTokens = 0,
                     topupImageCredits = 0,
                     topupGifCredits = pack.gifs,
-                    source = "payment:gif_pack:${pack.code}",
-                    amountRub = totalRub
+                    source = "payment:telegram_stars:gif_pack:${pack.code}",
+                    amountStars = totalStars
                 )
                 sendEphemeral(
                     session,
@@ -3493,16 +3529,17 @@ Generate tags for the current/latest scene.
             }
 
             payload.startsWith("custom_story:") -> {
+                if (totalStars != CustomStoryPack.priceStars) return
                 customStoryRepository.grantPack(chatId, CustomStoryPack.storySlots)
-                repository.addPayment(chatId, payload, totalRub)
+                repository.addTelegramStarsPayment(chatId, payload, totalStars, chargeId)
                 analyticsRepository.logTopUp(
                     userId = chatId,
                     plan = balance.plan,
                     topupTextTokens = 0,
                     topupImageCredits = 0,
                     topupGifCredits = 0,
-                    source = "payment:${CustomStoryPack.code}",
-                    amountRub = totalRub
+                    source = "payment:telegram_stars:${CustomStoryPack.code}",
+                    amountStars = totalStars
                 )
                 sendEphemeral(
                     session,
@@ -3587,18 +3624,6 @@ Generate tags for the current/latest scene.
         } catch (_: Exception) {
         }
     }
-
-    private fun makeProviderData(desc: String, rub: Int, includeVat: Boolean = true): String {
-        val item = JSONObject()
-            .put("description", desc.take(128))
-            .put("quantity", "1")
-            .put("amount", JSONObject().put("value", rubToStr(rub)).put("currency", "RUB"))
-            .apply { if (includeVat) put("vat_code", 1) }
-        val receipt = JSONObject().put("items", JSONArray().put(item))
-        return JSONObject().put("receipt", receipt).toString()
-    }
-
-    private fun rubToStr(rub: Int) = String.format(Locale.US, "%.2f", rub.toDouble())
 
     private suspend fun <T> withChatAction(
         session: ChatSession,
@@ -3700,9 +3725,6 @@ Generate tags for the current/latest scene.
         withContext(Dispatchers.IO) { execute(method) }
 
     private suspend fun executeSafe(method: DeleteMessage): Boolean =
-        withContext(Dispatchers.IO) { execute(method) }
-
-    private suspend fun executeSafe(method: SendInvoice): Message =
         withContext(Dispatchers.IO) { execute(method) }
 
     private suspend fun executeSafe(method: AnswerPreCheckoutQuery): Boolean =

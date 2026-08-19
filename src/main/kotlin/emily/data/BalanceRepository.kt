@@ -62,14 +62,24 @@ class BalanceRepository(
         return balance
     }
 
-    suspend fun addPayment(userId: Long, payload: String, amountRub: Int): Any? = withContext(Dispatchers.IO) {
-        val id = UUID.randomUUID().toString()
+    suspend fun hasProcessedPayment(userId: Long, externalPaymentId: String): Boolean = withContext(Dispatchers.IO) {
+        paymentsRef.child(userId.toString()).child(paymentKey(externalPaymentId)).awaitSingle().exists()
+    }
+
+    suspend fun addTelegramStarsPayment(
+        userId: Long,
+        payload: String,
+        amountStars: Int,
+        externalPaymentId: String
+    ): Any? = withContext(Dispatchers.IO) {
         val payloadMap = mapOf(
             "payload" to payload,
-            "amountRub" to amountRub,
+            "amountStars" to amountStars,
+            "currency" to "XTR",
+            "externalPaymentId" to externalPaymentId,
             "ts" to System.currentTimeMillis()
         )
-        paymentsRef.child(userId.toString()).child(id).setValueAsync(payloadMap)
+        paymentsRef.child(userId.toString()).child(paymentKey(externalPaymentId)).setValueAsync(payloadMap)
     }
 
     suspend fun logUsage(userId: Long, tokens: Int, meta: Map<String, Any?> = emptyMap()): Any? = withContext(Dispatchers.IO) {
@@ -87,6 +97,9 @@ class BalanceRepository(
         put(fresh)
         return fresh
     }
+
+    private fun paymentKey(externalPaymentId: String): String =
+        externalPaymentId.replace(Regex("[.#$\\[\\]/]"), "_")
 
     private fun DataSnapshot.toBalance(userId: Long): UserBalance = UserBalance(
         userId = userId,

@@ -56,7 +56,8 @@ class AnalyticsRepository(
         topupImageCredits: Int,
         topupGifCredits: Int,
         source: String,
-        amountRub: Int? = null
+        amountRub: Int? = null,
+        amountStars: Int? = null
     ): Any? = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val day = LocalDate.now().toString()
@@ -69,6 +70,7 @@ class AnalyticsRepository(
             node["updatedAt"] = now
             node["lastTopupSource"] = source
             node["lastTopupRub"] = amountRub
+            node["lastTopupStars"] = amountStars
             node["topupEvents"] = number(node["topupEvents"]) + 1L
             node["topupTextTokens"] = number(node["topupTextTokens"]) + topupTextTokens.toLong()
             node["topupImageCredits"] = number(node["topupImageCredits"]) + topupImageCredits.toLong()

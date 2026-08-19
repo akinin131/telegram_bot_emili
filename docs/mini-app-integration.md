@@ -94,6 +94,8 @@ userSettings/{userId}
 - `POST /miniapp/api/select-story` — сохраняет персонажа и историю, сбрасывает старый чат, готовит режим истории.
 - `POST /miniapp/api/skip-story` — сохраняет персонажа, очищает выбранную историю, сбрасывает старый чат.
 - `POST /miniapp/api/restore-dialog` — восстанавливает ранее сохраненный диалог.
+- `POST /miniapp/api/create-invoice` — создает счет в Telegram Stars; тарифы используют ежемесячное автопродление.
+- `POST /miniapp/api/subscription/cancel` — отключает автопродление Stars-подписки, сохраняя доступ до конца периода.
 - `POST /miniapp/api/settings` — сохраняет пользовательские настройки, сейчас поддерживает `language`.
 - `GET /miniapp/health` — простая проверка доступности сервера.
 
