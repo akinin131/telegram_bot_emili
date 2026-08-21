@@ -20,7 +20,8 @@ object TelegramStarsPricing {
 enum class Plan(
     val code: String,
     private val titleKey: String,
-    val targetRevenueRub: Int,
+    val priceStars: Int,
+    val unlimitedText: Boolean,
     val monthlyTextTokens: Int,
     val monthlyImageCredits: Int,
     val monthlyGifCredits: Int,
@@ -29,31 +30,12 @@ enum class Plan(
     BASIC(
         code = "basic",
         titleKey = "plan.title.basic",
-        targetRevenueRub = 399,
-        monthlyTextTokens = 2_400_000,
-        monthlyImageCredits = 25,
+        priceStars = 320,
+        unlimitedText = true,
+        monthlyTextTokens = 0,
+        monthlyImageCredits = 100,
         monthlyGifCredits = 0,
         photoUrl = "https://drive.google.com/uc?export=download&id=1TCRXGBCDeju4zjER_lUvsn5yZPcv-V7s"
-    ),
-
-    PRO(
-        code = "pro",
-        titleKey = "plan.title.pro",
-        targetRevenueRub = 999,
-        monthlyTextTokens = 6_000_000,
-        monthlyImageCredits = 80,
-        monthlyGifCredits = 0,
-        photoUrl = "https://drive.google.com/uc?export=download&id=1a3kI5IXbX95QMSpRb72vj0RRIKaXs9T6"
-    ),
-
-    ULTRA(
-        code = "ultra",
-        titleKey = "plan.title.ultra",
-        targetRevenueRub = 1890,
-        monthlyTextTokens = 12_000_000,
-        monthlyImageCredits = 180,
-        monthlyGifCredits = 0,
-        photoUrl = "https://drive.google.com/uc?export=download&id=1IYIATc4zTZvKuXLfc5G08ALBZNG8fE32"
     );
 
     companion object {
@@ -63,8 +45,14 @@ enum class Plan(
     val title: String
         get() = Strings.get(titleKey)
 
-    val priceStars: Int
-        get() = TelegramStarsPricing.forTargetRub(targetRevenueRub)
+}
+
+object SubscriptionPricing {
+    const val SUB5_PROMO_CODE = "EMILI_SUB_5"
+    const val SUB5_PROMO_PRICE_STARS = 5
+
+    fun effectivePriceStars(plan: Plan, hasSub5Promo: Boolean): Int =
+        if (hasSub5Promo) SUB5_PROMO_PRICE_STARS else plan.priceStars
 }
 
 enum class ImagePack(
@@ -169,3 +157,7 @@ data class UserBalance(
     var createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis()
 )
+
+fun UserBalance.hasUnlimitedText(now: Long = System.currentTimeMillis()): Boolean =
+    !plan.isNullOrBlank() && planExpiresAt?.let { it > now } == true &&
+        (Plan.byCode(plan)?.unlimitedText != false)

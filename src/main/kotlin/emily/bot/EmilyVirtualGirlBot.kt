@@ -283,6 +283,8 @@ class EmilyVirtualGirlBot(
     private val starterPromoCode = "EMILI_100K"
     private val starterPromoTextTokens = 100_000
     private val starterPromoImageCredits = 5
+    private val sub5StarsPromoCode = SubscriptionPricing.SUB5_PROMO_CODE
+    private val sub5StarsPrice = SubscriptionPricing.SUB5_PROMO_PRICE_STARS
     private fun imageSubjectDirective(character: CharacterProfile): String {
         return when (AudiencePreference.normalize(character.audience)) {
             AudiencePreference.MALE -> """
@@ -1095,7 +1097,8 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             when {
                 update.hasPreCheckoutQuery() -> {
                     val query = update.preCheckoutQuery
-                    val valid = isValidStarsCheckout(query.invoicePayload, query.currency, query.totalAmount)
+                    val userId = query.from?.id ?: query.id.toLongOrNull() ?: 0L
+                    val valid = isValidStarsCheckout(userId, query.invoicePayload, query.currency, query.totalAmount)
                     val answer = AnswerPreCheckoutQuery().apply {
                         preCheckoutQueryId = query.id
                         ok = valid
@@ -1127,12 +1130,18 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         }
     }
 
-    private fun isValidStarsCheckout(payload: String?, currency: String?, totalAmount: Int): Boolean {
+    private suspend fun isValidStarsCheckout(userId: Long, payload: String?, currency: String?, totalAmount: Int): Boolean {
         if (currency != TELEGRAM_STARS_CURRENCY || payload.isNullOrBlank()) return false
         val parts = payload.split(":")
         val code = parts.getOrNull(1)
         val expected = when {
-            payload.startsWith("plan:") -> Plan.byCode(code)?.priceStars
+            payload.startsWith("plan:") -> {
+                val plan = Plan.byCode(code)
+                if (plan != null) {
+                    val hasPromo = hasSub5StarsPromo(userId)
+                    SubscriptionPricing.effectivePriceStars(plan, hasPromo)
+                } else null
+            }
             payload.startsWith("pack:") -> ImagePack.byCode(code)?.priceStars
             payload.startsWith("gif_pack:") -> GifPack.byCode(code)?.priceStars
             payload.startsWith("custom_story:") -> CustomStoryPack.priceStars
@@ -1214,6 +1223,11 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         return normalized == starterPromoCode || commandName(textRaw) == "/promo_100k"
     }
 
+    private fun isSub5StarsPromo(textRaw: String): Boolean {
+        val normalized = textRaw.trim().uppercase(Locale.ROOT)
+        return normalized == sub5StarsPromoCode || commandName(textRaw) == "/promo_sub5"
+    }
+
     private fun isAdminPanelUnlockCode(textRaw: String): Boolean {
         val trimmed = textRaw.trim()
         if (trimmed.equals(adminPanelCode, ignoreCase = true)) return true
@@ -1229,6 +1243,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 isBasicPlanPromo(textRaw) ||
                 isBonusPromo(textRaw) ||
                 isStarterPromo(textRaw) ||
+                isSub5StarsPromo(textRaw) ||
                 isExactCommand(textRaw, "/character") ||
                 isExactCommand(textRaw, "/story") ||
                 isExactCommand(textRaw, "/app") ||
@@ -1460,6 +1475,10 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
                 redeemStarterPromo(session, chatId)
             }
 
+            isSub5StarsPromo(textRaw) -> {
+                redeemSub5StarsPromo(session, chatId)
+            }
+
             isStartCommand(textRaw) -> {
                 extractStartReferrerId(textRaw)?.let { referrerId ->
                     runCatching {
@@ -1578,6 +1597,11 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
             isStarterPromo(textRaw) -> {
                 redeemStarterPromo(session, chatId)
+                deleteUserCommand(chatId, messageId, textRaw)
+            }
+
+            isSub5StarsPromo(textRaw) -> {
+                redeemSub5StarsPromo(session, chatId)
                 deleteUserCommand(chatId, messageId, textRaw)
             }
 
@@ -1924,18 +1948,18 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
 
     private suspend fun sendBalance(session: ChatSession, chatId: Long, balance: UserBalance) {
-        val planTitle = when (balance.plan) {
-            Plan.BASIC.code -> Plan.BASIC.title
-            Plan.PRO.code -> Plan.PRO.title
-            Plan.ULTRA.code -> Plan.ULTRA.title
-            else -> Strings.get("balance.plan.none")
-        }
+        val planTitle = Plan.byCode(balance.plan)?.title ?: Strings.get("balance.plan.none")
         val until = balance.planExpiresAt?.let { Instant.ofEpochMilli(it).toString() } ?: "—"
+        val textAccess = if (balance.hasUnlimitedText()) {
+            "Безлимит (сохранено ${balance.textTokensLeft} токенов)"
+        } else {
+            balance.textTokensLeft.toString()
+        }
         val text = Strings.get(
             "balance.text",
             planTitle,
             until,
-            balance.textTokensLeft,
+            textAccess,
             balance.imageCreditsLeft,
             balance.gifCreditsLeft
         )
@@ -2121,7 +2145,6 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         val base = maxOf(balance.planExpiresAt ?: 0L, now)
         balance.plan = plan.code
         balance.planExpiresAt = base + monthMs
-        balance.textTokensLeft += plan.monthlyTextTokens
         balance.imageCreditsLeft += plan.monthlyImageCredits
         balance.gifCreditsLeft += plan.monthlyGifCredits
         repository.put(balance)
@@ -2139,7 +2162,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         sendEphemeral(
             session = session,
             chatId = chatId,
-            text = "✅ Промокод активирован. Тариф «${plan.title}» включён бесплатно на 30 дней.\nНачислено: ${plan.monthlyTextTokens} токенов и ${plan.monthlyImageCredits} фото.",
+            text = "✅ Промокод активирован. Подписка «${plan.title}» включена бесплатно на 30 дней.\nБезлимитный текст и ${plan.monthlyImageCredits} фото.",
             ttlSeconds = 30
         )
     }
@@ -2163,6 +2186,36 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             imageCredits = starterPromoImageCredits
         )
     }
+
+    private suspend fun redeemSub5StarsPromo(session: ChatSession, chatId: Long) {
+        val redeemed = promoRepository.redeem(
+            userId = chatId,
+            promoCode = sub5StarsPromoCode,
+            payload = mapOf(
+                "type" to "sub_5_stars",
+                "priceStars" to sub5StarsPrice
+            )
+        )
+
+        if (!redeemed) {
+            sendEphemeral(
+                session = session,
+                chatId = chatId,
+                text = "Промокод уже использован. Подписка за $sub5StarsPrice ⭐ уже доступна в Mini App и меню /buy.",
+                ttlSeconds = 18
+            )
+            return
+        }
+
+        sendEphemeral(
+            session = session,
+            chatId = chatId,
+            text = "✅ Промокод активирован! Подписка теперь стоит $sub5StarsPrice ⭐ вместо ${Plan.BASIC.priceStars} ⭐.\nОткрой Mini App или меню /buy, чтобы оформить её.",
+            ttlSeconds = 30
+        )
+    }
+
+    private suspend fun hasSub5StarsPromo(chatId: Long): Boolean = promoRepository.hasRedemption(chatId, sub5StarsPromoCode)
 
     private suspend fun redeemTokensImagesPromo(
         session: ChatSession,
@@ -2575,7 +2628,8 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         val story = activeStory(chatId)
 
         val balance = ensureUserBalance(chatId)
-        if (balance.textTokensLeft <= 0) {
+        val unlimitedText = balance.hasUnlimitedText()
+        if (!unlimitedText && balance.textTokensLeft <= 0) {
             sendEphemeral(session, chatId, Strings.get("text.tokens.not.enough"), ttlSeconds = 15)
             return
         }
@@ -2643,7 +2697,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             sendAssistantText(session, chatId, formattedReply)
         }
 
-        if (result.tokensUsed > 0) {
+        if (result.tokensUsed > 0 && !unlimitedText) {
             val textBefore = balance.textTokensLeft
             val imageBefore = balance.imageCreditsLeft
             balance.textTokensLeft -= result.tokensUsed
@@ -3313,6 +3367,8 @@ Generate tags for the current/latest scene.
             sendEphemeral(session, chatId, message, ttlSeconds = 20)
             return
         }
+        val hasPromo = hasSub5StarsPromo(chatId)
+        val priceStars = SubscriptionPricing.effectivePriceStars(plan, hasPromo)
         val invoicePayload = "plan:${plan.code}:${UUID.randomUUID()}"
         val result = withContext(Dispatchers.IO) {
             telegramStarsClient.sendInvoice(
@@ -3326,10 +3382,13 @@ Generate tags for the current/latest scene.
                 ),
                 payload = invoicePayload,
                 priceLabel = Strings.get("invoice.plan.price.label", plan.title),
-                priceStars = plan.priceStars,
+                priceStars = priceStars,
                 photoUrl = plan.photoUrl,
                 subscription = true
             )
+        }
+        if (result.ok && hasPromo) {
+            sendEphemeral(session, chatId, "🎁 Промокод применён: подписка за $sub5StarsPrice ⭐ вместо ${plan.priceStars} ⭐", ttlSeconds = 15)
         }
         handleInvoiceResult(session, chatId, result)
     }
@@ -3398,7 +3457,9 @@ Generate tags for the current/latest scene.
             payload.startsWith("plan:") -> {
                 val code = payload.split(":").getOrNull(1)
                 val plan = Plan.byCode(code) ?: return
-                if (totalStars != plan.priceStars) return
+                val hasPromo = hasSub5StarsPromo(chatId)
+                val expectedPrice = SubscriptionPricing.effectivePriceStars(plan, hasPromo)
+                if (totalStars != expectedPrice) return
                 val monthMs = TELEGRAM_MONTH_SECONDS * 1000L
                 val now = System.currentTimeMillis()
                 val existing = subscriptionRepository.get(chatId)
@@ -3415,7 +3476,6 @@ Generate tags for the current/latest scene.
                 }
                 balance.plan = plan.code
                 balance.planExpiresAt = base + monthMs
-                balance.textTokensLeft += plan.monthlyTextTokens
                 balance.imageCreditsLeft += plan.monthlyImageCredits
                 balance.gifCreditsLeft += plan.monthlyGifCredits
                 repository.put(balance)
@@ -3463,9 +3523,7 @@ Generate tags for the current/latest scene.
                         "payment.plan.activated",
                         plan.title,
                         Instant.ofEpochMilli(balance.planExpiresAt!!),
-                        plan.monthlyTextTokens,
-                        plan.monthlyImageCredits,
-                        plan.monthlyGifCredits
+                        plan.monthlyImageCredits
                     ),
                     ttlSeconds = 20
                 )
@@ -3592,6 +3650,17 @@ Generate tags for the current/latest scene.
             balance.plan = null
             balance.planExpiresAt = null
             changed = true
+            val subscription = subscriptionRepository.get(userId)
+            if (subscription?.currentPeriodEnd?.let { it <= now } == true &&
+                subscription.status != RecurringSubscriptionStatus.CANCELED
+            ) {
+                subscriptionRepository.put(
+                    subscription.copy(
+                        status = RecurringSubscriptionStatus.CANCELED,
+                        updatedAt = now
+                    )
+                )
+            }
         }
         if (changed) {
             repository.put(balance)

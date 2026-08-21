@@ -17,10 +17,12 @@ import emily.data.GeneratedImageRepository
 import emily.data.GifPack
 import emily.data.ImagePack
 import emily.data.Plan
+import emily.data.PromoRepository
 import emily.data.ReferralRepository
 import emily.data.RecurringSubscription
 import emily.data.RecurringSubscriptionStatus
 import emily.data.SubscriptionRepository
+import emily.data.SubscriptionPricing
 import emily.data.UserActivity
 import emily.data.UserActivityRepository
 import emily.data.UserSettingsRepository
@@ -59,6 +61,7 @@ data class MiniAppConfig(
     val publicUrl: String,
     val botToken: String,
     val botUsername: String,
+    val tributeStarsUrl: String? = null,
     val devUserId: Long? = null
 )
 
@@ -74,6 +77,7 @@ class MiniAppServer(
     private val customStoryRepository: CustomStoryRepository,
     private val userSettingsRepository: UserSettingsRepository,
     private val referralRepository: ReferralRepository,
+    private val promoRepository: PromoRepository,
     private val memory: ConversationMemory,
     private val chatService: ChatService
 ) {
@@ -240,6 +244,7 @@ class MiniAppServer(
         val accessDef = async { customStoryRepository.getAccess(user.id) }
         val adminDef = async { adminRepository.hasAccess(user.id) }
         val subscriptionDef = async { subscriptionRepository.get(user.id) }
+        val sub5PromoDef = async { promoRepository.hasRedemption(user.id, SubscriptionPricing.SUB5_PROMO_CODE) }
 
         setupDef.await()
         val balance = balanceDef.await()
@@ -252,7 +257,23 @@ class MiniAppServer(
         val allCustomStories = allCustomDef.await()
         val customStoryAccess = accessDef.await()
         val hasAdminAccess = adminDef.await()
-        val subscription = subscriptionDef.await()
+        var subscription = subscriptionDef.await()
+        val hasSub5Promo = sub5PromoDef.await()
+        val now = System.currentTimeMillis()
+        if (balance.planExpiresAt?.let { it <= now } == true) {
+            balance.plan = null
+            balance.planExpiresAt = null
+            balanceRepository.put(balance)
+        }
+        if (subscription?.currentPeriodEnd?.let { it <= now } == true &&
+            subscription?.status != RecurringSubscriptionStatus.CANCELED
+        ) {
+            subscription = subscription?.copy(
+                status = RecurringSubscriptionStatus.CANCELED,
+                updatedAt = now
+            )
+            subscription?.let { subscriptionRepository.put(it) }
+        }
 
         val audiencePreference = storedAudiencePreference ?: AudiencePreference.FEMALE
         if (storedAudiencePreference == null) {
@@ -310,7 +331,15 @@ class MiniAppServer(
                     .put("enabled", hasAdminAccess)
                 )
                 .put("payments", JSONObject()
-                    .put("plans", JSONArray(Plan.entries.map { it.toMiniAppJson() }))
+                    .put("tributeStarsUrl", config.tributeStarsUrl ?: "https://stars.tribute.tg/")
+                    .put("starsTopUpUrl", "tg://stars_topup?balance=${SubscriptionPricing.effectivePriceStars(Plan.BASIC, hasSub5Promo)}&purpose=subs")
+                    .put("promo", JSONObject()
+                        .put("code", if (hasSub5Promo) SubscriptionPricing.SUB5_PROMO_CODE else JSONObject.NULL)
+                        .put("applied", hasSub5Promo)
+                    )
+                    .put("plans", JSONArray(Plan.entries.map {
+                        it.toMiniAppJson(SubscriptionPricing.effectivePriceStars(it, hasSub5Promo))
+                    }))
                     .put("packs", JSONArray(ImagePack.entries.map { it.toMiniAppJson() }))
                     .put("gifPacks", JSONArray(GifPack.entries.map { it.toMiniAppJson() }))
                 )
@@ -369,6 +398,8 @@ class MiniAppServer(
             "plan" -> {
                 val plan = Plan.byCode(code)
                     ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Plan not found"))
+                val hasSub5Promo = promoRepository.hasRedemption(user.id, SubscriptionPricing.SUB5_PROMO_CODE)
+                val priceStars = SubscriptionPricing.effectivePriceStars(plan, hasSub5Promo)
                 val current = subscriptionRepository.get(user.id)
                 if (current?.isCurrent() == true) {
                     return@runBlocking sendJson(
@@ -391,7 +422,7 @@ class MiniAppServer(
                     ),
                     payload = "plan:${plan.code}:${UUID.randomUUID()}",
                     priceLabel = Strings.get("invoice.plan.price.label", plan.title),
-                    priceStars = plan.priceStars,
+                    priceStars = priceStars,
                     photoUrl = plan.photoUrl,
                     subscription = true
                 ) else telegramStarsApi.createInvoiceLink(
@@ -404,7 +435,7 @@ class MiniAppServer(
                     ),
                     payload = "plan:${plan.code}:${UUID.randomUUID()}",
                     priceLabel = Strings.get("invoice.plan.price.label", plan.title),
-                    priceStars = plan.priceStars,
+                    priceStars = priceStars,
                     photoUrl = plan.photoUrl,
                     subscription = true
                 )
@@ -1630,10 +1661,12 @@ class MiniAppServer(
         .put("description", shortDescription)
         .put("setup", setup)
 
-    private fun Plan.toMiniAppJson(): JSONObject = JSONObject()
+    private fun Plan.toMiniAppJson(effectivePriceStars: Int = priceStars): JSONObject = JSONObject()
         .put("code", code)
         .put("title", title)
-        .put("priceStars", priceStars)
+        .put("priceStars", effectivePriceStars)
+        .put("regularPriceStars", priceStars)
+        .put("unlimitedText", unlimitedText)
         .put("textTokens", monthlyTextTokens)
         .put("imageCredits", monthlyImageCredits)
         .put("gifCredits", monthlyGifCredits)

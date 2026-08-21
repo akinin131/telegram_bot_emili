@@ -80,6 +80,7 @@ var els = {
     tokenBalanceText: document.getElementById("tokenBalanceText"),
     tokenPlanText: document.getElementById("tokenPlanText"),
     currentStoryHint: document.getElementById("currentStoryHint"),
+    tributeStarsButton: document.getElementById("tributeStarsButton"),
     paymentOptions: document.getElementById("paymentOptions"),
     preferenceScreen: document.getElementById("preferenceScreen"),
     audienceSettings: document.getElementById("audienceSettings"),
@@ -188,6 +189,7 @@ function bindEvents() {
     on(els.backToCharacters, "click", function () { return showScreen("characters"); });
     on(els.backFromGallery, "click", function () { return showScreen("characters"); });
     on(els.backFromSettings, "click", function () { return showScreen(state.lastNonSettingsScreen); });
+    on(els.tributeStarsButton, "click", openStarsTopup);
     on(els.skipStoryButton, "click", skipStory);
     on(els.closeGalleryViewer, "click", closeGalleryViewer);
     on(els.prevGalleryImage, "click", function () { return showGalleryImage(state.galleryIndex - 1); });
@@ -2029,7 +2031,10 @@ function renderSettings() {
         : "Выбери персонажа, потом историю или свободный чат.";
     var balance = state.bootstrap.balance;
     if (balance) {
-        els.tokenBalanceText.textContent = "".concat(formatCompactNumber(balance.textTokensLeft), " \u0442\u043E\u043A\u0435\u043D\u043E\u0432");
+        var hasUnlimitedText = Boolean(balance.plan && Number(balance.planExpiresAt) > Date.now());
+        els.tokenBalanceText.textContent = hasUnlimitedText
+            ? "Безлимитный текст"
+            : "".concat(formatCompactNumber(balance.textTokensLeft), " \u0442\u043E\u043A\u0435\u043D\u043E\u0432");
         els.tokenPlanText.textContent = "".concat(formatNumber(balance.imageCreditsLeft), " \u0444\u043E\u0442\u043E \u00B7 ").concat(formatNumber(balance.gifCreditsLeft || 0), " GIF \u043E\u0441\u0442\u0430\u043B\u043E\u0441\u044C");
     }
     else {
@@ -2060,26 +2065,29 @@ function renderPaymentOptions() {
     var plans = payments.plans || [];
     var packs = payments.packs || [];
     var gifPacks = payments.gifPacks || [];
+    var subscription = state.bootstrap && state.bootstrap.subscription;
+    var hasCurrentSubscription = Boolean(subscription && Number(subscription.currentPeriodEnd) > Date.now());
     els.paymentOptions.replaceChildren();
     var tabs = [
         {
             key: "plans",
-            label: "Токены",
-            title: "Пакеты для общения",
-            note: "Основной запас токенов и фото.",
+            label: "Подписка",
+            title: "Ежемесячная подписка",
+            note: "Автоматическое продление каждые 30 дней через Telegram Stars.",
             layout: "plans",
             items: plans.map(function (plan) { return ({
                 type: "plan",
                 code: plan.code,
                 title: plan.title,
-                caption: "Пакет общения",
+                caption: hasCurrentSubscription ? "Подписка уже активна" : "Ежемесячная подписка",
                 badges: [
-                    "".concat(formatCompactNumber(plan.textTokens), " \u0442\u043E\u043A\u0435\u043D\u043E\u0432"),
+                    plan.unlimitedText ? "Безлимитный текст" : "".concat(formatCompactNumber(plan.textTokens), " \u0442\u043E\u043A\u0435\u043D\u043E\u0432"),
                     "".concat(formatNumber(plan.imageCredits), " \u0444\u043E\u0442\u043E"),
                 ],
                 price: "".concat(plan.priceStars, " \u2B50 / мес."),
-                featured: plan.code === "pro",
-                badgeLabel: plan.code === "pro" ? "Выбор" : "",
+                disabled: hasCurrentSubscription,
+                featured: true,
+                badgeLabel: plan.priceStars < plan.regularPriceStars ? "Промокод" : "",
             }); }),
         },
         {
@@ -2163,6 +2171,7 @@ function paymentButton(option) {
     button.className = "payment-option";
     if (option.featured)
         button.classList.add("featured");
+    button.disabled = Boolean(option.disabled);
     button.addEventListener("click", function () { return createInvoice(option.type, option.code); });
     var copy = document.createElement("span");
     copy.className = "payment-copy";
@@ -2248,6 +2257,17 @@ function openBotChat() {
         return;
     }
     window.location.href = botUrl;
+}
+function openStarsTopup(event) {
+    if (event)
+        event.preventDefault();
+    var payments = state.bootstrap && state.bootstrap.payments || {};
+    var topUpUrl = payments.tributeStarsUrl || "https://stars.tribute.tg/";
+    if (tg && typeof tg.openLink === "function") {
+        tg.openLink(topUpUrl);
+        return;
+    }
+    window.location.href = topUpUrl;
 }
 function setLoading(isLoading) {
     if (els.loadingScreen) {

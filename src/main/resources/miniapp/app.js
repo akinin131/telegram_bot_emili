@@ -53,6 +53,7 @@ const els = {
   tokenPlanText: document.getElementById("tokenPlanText"),
   currentStoryHint: document.getElementById("currentStoryHint"),
   subscriptionCard: document.getElementById("subscriptionCard"),
+  tributeStarsButton: document.getElementById("tributeStarsButton"),
   paymentOptions: document.getElementById("paymentOptions"),
   preferenceScreen: document.getElementById("preferenceScreen"),
   audienceSettings: document.getElementById("audienceSettings"),
@@ -182,6 +183,7 @@ function bindEvents() {
   on(els.backToCharacters, "click", () => showScreen("characters"));
   on(els.backFromGallery, "click", () => showScreen("characters"));
   on(els.backFromSettings, "click", () => showScreen(state.lastNonSettingsScreen));
+  on(els.tributeStarsButton, "click", openStarsTopup);
   on(els.skipStoryButton, "click", skipStory);
   on(els.closeGalleryViewer, "click", closeGalleryViewer);
   on(els.prevGalleryImage, "click", () => showGalleryImage(state.galleryIndex - 1));
@@ -2045,7 +2047,12 @@ function renderSettings() {
 
   const balance = state.bootstrap.balance;
   if (balance) {
-    els.tokenBalanceText.textContent = `${formatCompactNumber(balance.textTokensLeft)} токенов`;
+    const hasUnlimitedText = Boolean(
+      balance.plan && Number(balance.planExpiresAt) > Date.now()
+    );
+    els.tokenBalanceText.textContent = hasUnlimitedText
+      ? "Безлимитный текст"
+      : `${formatCompactNumber(balance.textTokensLeft)} токенов`;
     els.tokenPlanText.textContent = `${formatNumber(balance.imageCreditsLeft)} фото · ${formatNumber(balance.gifCreditsLeft || 0)} GIF осталось`;
   } else {
     els.tokenBalanceText.textContent = "Нет данных";
@@ -2153,13 +2160,13 @@ function renderPaymentOptions() {
         title: plan.title,
         caption: hasCurrentSubscription ? "Подписка уже активна" : "Ежемесячная подписка",
         badges: [
-          `${formatCompactNumber(plan.textTokens)} токенов`,
+          plan.unlimitedText ? "Безлимитный текст" : `${formatCompactNumber(plan.textTokens)} токенов`,
           `${formatNumber(plan.imageCredits)} фото`,
         ],
         price: `${plan.priceStars} ⭐ / мес.`,
         disabled: hasCurrentSubscription,
-        featured: plan.code === "pro",
-        badgeLabel: plan.code === "pro" ? "Выбор" : "",
+        featured: true,
+        badgeLabel: plan.priceStars < plan.regularPriceStars ? "Промокод" : "",
       })),
     },
     {
@@ -2360,6 +2367,18 @@ function openBotChat() {
   }
 
   window.location.href = botUrl;
+}
+
+function openStarsTopup(event) {
+  if (event) event.preventDefault();
+  const payments = state.bootstrap && state.bootstrap.payments || {};
+  const topUpUrl = payments.tributeStarsUrl || "https://stars.tribute.tg/";
+
+  if (tg && typeof tg.openLink === "function") {
+    tg.openLink(topUpUrl);
+    return;
+  }
+  window.location.href = topUpUrl;
 }
 
 async function loadAdminSubscribers() {

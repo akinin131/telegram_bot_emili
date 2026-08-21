@@ -86,6 +86,9 @@ fun main() {
     val miniAppPort = Secrets.getOrNull("MINI_APP_PORT")?.toIntOrNull() ?: DEFAULT_MINI_APP_PORT
     val configuredMiniAppUrl = Secrets.getOrNull("MINI_APP_URL")?.trim()?.takeIf { it.isNotBlank() }
     val miniAppPublicUrl = configuredMiniAppUrl ?: "http://localhost:$miniAppPort/miniapp/"
+    val tributeStarsUrl = Secrets.getOrNull("TRIBUTE_STARS_URL")
+        ?.trim()
+        ?.takeIf { it.startsWith("https://t.me/tribute") || it.startsWith("https://web.tribute.tg/") }
     val miniAppEnabled = Secrets.getOrNull("MINI_APP_ENABLED")?.toBooleanStrictOrNull()
         ?: (configuredMiniAppUrl != null || Secrets.getOrNull("MINI_APP_DEV_USER_ID") != null)
     val adminPanelCode = Secrets.getOrNull("ADMIN_PANEL_CODE")?.trim()?.takeIf { it.isNotBlank() }
@@ -127,6 +130,7 @@ fun main() {
                     publicUrl = miniAppPublicUrl,
                     botToken = config.telegramToken,
                     botUsername = bot.getBotUsername(),
+                    tributeStarsUrl = tributeStarsUrl,
                     devUserId = Secrets.getOrNull("MINI_APP_DEV_USER_ID")?.toLongOrNull()
                 ),
                 balanceRepository = balanceRepository,
@@ -139,6 +143,7 @@ fun main() {
                 customStoryRepository = customStoryRepository,
                 userSettingsRepository = userSettingsRepository,
                 referralRepository = referralRepository,
+                promoRepository = promoRepository,
                 memory = memory,
                 chatService = chatService
             ).start()

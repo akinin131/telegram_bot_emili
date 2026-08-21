@@ -25,4 +25,9 @@ class PromoRepository(
         )
         true
     }
+
+    suspend fun hasRedemption(userId: Long, promoCode: String): Boolean = withContext(Dispatchers.IO) {
+        val normalizedCode = promoCode.trim().uppercase()
+        promoRef.child(normalizedCode).child(userId.toString()).awaitSingle().exists()
+    }
 }
