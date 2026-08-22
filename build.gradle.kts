@@ -26,8 +26,13 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
+val miniAppUiTest by tasks.registering(Exec::class) {
+    commandLine("node", "--test", "src/test/js/miniapp-active-dialog.test.mjs")
+}
+
 tasks.test {
     useJUnitPlatform()
+    dependsOn(miniAppUiTest)
 }
 
 kotlin {

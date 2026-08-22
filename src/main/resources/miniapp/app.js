@@ -1066,16 +1066,13 @@ function selectCharacter(characterId) {
     return;
   }
 
-  console.log("[audit] selectCharacter characterId=%s previousSelected=%s",
+  console.log("[audit] previewCharacter characterId=%s selectedCharacter=%s",
     characterId, state.selectedCharacterId);
 
-  state.selectedCharacterId = characterId;
+  // Opening a character only previews their stories. The character becomes
+  // selected when the user explicitly chooses a story.
   state.previewCharacterId = characterId;
-  if (state.bootstrap && state.bootstrap.settings) {
-    state.bootstrap.settings.selectedCharacter = characterId;
-  }
   const cachedStories = storiesForCharacterFromCache(characterId);
-  cacheBootstrap(state.bootstrap);
   renderSelectedCharacter();
   showScreen("stories");
 
@@ -1085,11 +1082,6 @@ function selectCharacter(characterId) {
   } else {
     renderStoriesPending();
   }
-
-  api("/miniapp/api/select-character", {
-    method: "POST",
-    body: { characterId },
-  }).catch(function () {});
 
   if (cachedStories) {
     return;
@@ -1975,8 +1967,13 @@ function findKnownStory(characterId, storyId) {
   if (characterId) {
     sources.push(storiesForCharacterFromCache(characterId));
   }
-  sources.push(state.bootstrap && state.bootstrap.stories);
-  Object.values(state.storiesByCharacter || {}).forEach((stories) => sources.push(stories));
+
+  // bootstrap.stories belongs to the character whose story screen is open.
+  // Never use another character's visible stories to resolve the active game.
+  const visibleCharacterId = state.previewCharacterId || state.selectedCharacterId;
+  if (!characterId || characterId === visibleCharacterId) {
+    sources.push(state.bootstrap && state.bootstrap.stories);
+  }
 
   for (const stories of sources) {
     if (!Array.isArray(stories)) continue;
@@ -2014,7 +2011,7 @@ function ensureSelectedStoryTitle() {
   const characterId = settings.selectedCharacter || state.selectedCharacterId;
   const story = characterId ? findKnownStory(characterId, settings.selectedStory) : null;
   const fallbackTitle = characterId ? findKnownStoryTitle(characterId, settings.selectedStory) : null;
-  const resolvedTitle = story ? story.title : fallbackTitle;
+  const resolvedTitle = fallbackTitle || (story && story.title);
 
   if (!resolvedTitle) return false;
 
@@ -2028,22 +2025,31 @@ function renderSettings() {
   renderPaymentOptions();
   renderSubscription();
   renderAudienceSettings();
-  ensureSelectedStoryTitle();
 
-  const character = selectedCharacter();
-  const storyId = state.bootstrap.settings && state.bootstrap.settings.selectedStory;
-  const story = character ? findKnownStory(character.id, storyId) : null;
-  const fallbackStoryTitle = character ? findKnownStoryTitle(character.id, storyId) : null;
-  const storyTitle = story ? story.title : fallbackStoryTitle;
+  // Settings describe the game that is actually active, never a character
+  // whose card is merely being previewed.
+  const settings = state.bootstrap.settings || {};
+  const activeDialog = settings.activeDialogId
+    ? findDialogById(settings.activeDialogId)
+    : null;
+  const activeCharacter = activeDialog
+    ? (state.bootstrap.characters || []).find((item) => item.id === activeDialog.characterId)
+    : null;
+  const activeStory = activeDialog && activeDialog.storyId
+    ? findKnownStory(activeDialog.characterId, activeDialog.storyId)
+    : null;
+  const activeStoryTitle = activeDialog
+    ? activeDialog.storyTitle || (activeStory && activeStory.title)
+    : null;
 
-  els.currentSelection.textContent = character
-    ? character.name
-    : "Персонаж не выбран";
-  els.currentStoryHint.textContent = character
-    ? storyId
-      ? storyTitle || "История выбрана"
+  els.currentSelection.textContent = activeDialog
+    ? activeDialog.characterName || (activeCharacter && activeCharacter.name) || "Активный персонаж"
+    : "Нет активного диалога";
+  els.currentStoryHint.textContent = activeDialog
+    ? activeDialog.storyId
+      ? activeStoryTitle || "История выбрана"
       : "Свободный чат · без сюжета"
-    : "Выбери персонажа, потом историю или свободный чат.";
+    : "Выбери историю, чтобы начать игровой диалог.";
 
   const balance = state.bootstrap.balance;
   if (balance) {

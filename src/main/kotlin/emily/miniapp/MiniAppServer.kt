@@ -253,7 +253,16 @@ class MiniAppServer(
         val activeDialogId = activeDialogDef.await()
         val language = langDef.await()
         val storedAudiencePreference = audDef.await()
-        val dialogs = dialogsDef.await()
+        val recentDialogs = dialogsDef.await()
+        val activeDialog = activeDialogId?.let { dialogId ->
+            recentDialogs.firstOrNull { it.id == dialogId }
+                ?: dialogRepository.getDialog(user.id, dialogId)
+        }
+        val dialogs = if (activeDialog != null && recentDialogs.none { it.id == activeDialog.id }) {
+            listOf(activeDialog) + recentDialogs
+        } else {
+            recentDialogs
+        }
         val allCustomStories = allCustomDef.await()
         val customStoryAccess = accessDef.await()
         val hasAdminAccess = adminDef.await()
@@ -589,16 +598,12 @@ class MiniAppServer(
         val character = BotCatalog.characterById(characterId)
             ?: return@runBlocking sendJson(exchange, 404, JSONObject().put("ok", false).put("error", "Character not found"))
 
-        println("MiniAppServer: selectCharacter saving character=${character.id}")
-        userSettingsRepository.setSelectedCharacter(user.id, character.id)
-
         sendJson(
             exchange = exchange,
             status = 200,
             body = JSONObject()
                 .put("ok", true)
-                .put("selectedCharacter", character.id)
-                .put("selectedStory", JSONObject.NULL)
+                .put("characterId", character.id)
                 .put("stories", storiesJson(user.id, character.id))
         )
     }
