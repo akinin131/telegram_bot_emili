@@ -11,6 +11,7 @@ import emily.payment.TELEGRAM_MONTH_SECONDS
 import emily.payment.TELEGRAM_STARS_CURRENCY
 import emily.payment.TelegramStarsClient
 import emily.service.ChatService
+import emily.service.AutoPhotoDecisionParser
 import emily.service.COMPACTION_BOOTSTRAP_TURNS
 import emily.service.COMPACTION_PINNED_TURNS
 import emily.service.COMPACTION_RECENT_TURNS
@@ -130,17 +131,6 @@ class EmilyVirtualGirlBot(
         data class Image(val originalPrompt: String) : PendingRetry()
         data object Scene : PendingRetry()
     }
-
-    private data class AutoImageRequest(
-        val text: String,
-        val prompt: String?
-    )
-
-    private data class PhotoDecision(
-        val prompt: String,
-        val bypassTurnGate: Boolean,
-        val source: String
-    )
 
     private data class SessionState(
         @Volatile var awaitingImagePrompt: Boolean = false,
@@ -2665,7 +2655,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         }
 
         val result = genResult.getOrThrow()
-        val autoImageRequest = extractAutoImageRequest(result.text)
+        val autoImageRequest = AutoPhotoDecisionParser.parse(result.text)
         val formattedReply = formatAssistantReply(autoImageRequest.text)
         session.state.assistantTurnsSinceAutoImage += 1
 
@@ -2673,14 +2663,7 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         chatHistoryRepository.append(chatId, "assistant", formattedReply)
         dialogRepository.appendMessage(chatId, dialogId, "assistant", formattedReply)
 
-        val photoDecision = decideAutoPhoto(
-            session = session,
-            userText = text,
-            assistantText = formattedReply,
-            character = character,
-            story = story,
-            markerPrompt = autoImageRequest.prompt
-        )
+        val photoDecision = autoImageRequest.photoDecision
         val sentWithPhoto = photoDecision?.let { decision ->
             maybeSendAutoImageWithCaption(
                 session = session,
@@ -2749,116 +2732,6 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
 
     private fun chatModelFor(story: StoryScenario?): String {
         return if (story == null) premiumChatModel else chatService.model
-    }
-
-    private fun extractAutoImageRequest(text: String): AutoImageRequest {
-        val marker = Regex(
-            pattern = """\s*\[\[PHOTO_PROMPT:\s*(.*?)\s*]]\s*$""",
-            options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        )
-        val match = marker.find(text) ?: return AutoImageRequest(text = text, prompt = null)
-        val prompt = match.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
-        val cleanText = text.removeRange(match.range).trim()
-        return AutoImageRequest(text = cleanText, prompt = prompt)
-    }
-
-    private suspend fun decideAutoPhoto(
-        session: ChatSession,
-        userText: String,
-        assistantText: String,
-        character: CharacterProfile,
-        story: StoryScenario?,
-        markerPrompt: String?
-    ): PhotoDecision? {
-        if (!shouldAskPhotoDecision(session, userText, assistantText)) return null
-
-        val decision = runCatching {
-            askPhotoDecisionModel(userText, assistantText, character, story, markerPrompt)
-        }.getOrNull() ?: return null
-
-        return decision
-    }
-
-    private fun shouldAskPhotoDecision(
-        session: ChatSession,
-        userText: String,
-        assistantText: String
-    ): Boolean {
-        val now = System.currentTimeMillis()
-        if (session.state.lastAutoImageAt > 0L && now - session.state.lastAutoImageAt < autoImageCooldownMs) return false
-
-        return userText.isNotBlank() && assistantText.isNotBlank()
-    }
-
-    private suspend fun askPhotoDecisionModel(
-        userText: String,
-        assistantText: String,
-        character: CharacterProfile,
-        story: StoryScenario?,
-        markerPrompt: String?
-    ): PhotoDecision? {
-        val history = listOf(
-            "system" to photoDecisionSystem(character),
-            "user" to """
-Character: ${character.name}
-Story: ${story?.title ?: "free chat"}
-Candidate PHOTO_PROMPT from role model:
-${markerPrompt?.takeIf { it.isNotBlank() } ?: "none"}
-
-User message:
-$userText
-
-Assistant visible reply:
-$assistantText
-""".trimIndent()
-        )
-
-        val result = chatService.generateReply(history, modelOverride = premiumChatModel)
-        val json = extractJsonObject(result.text) ?: return null
-        val shouldSend = json.optBoolean("shouldSendPhoto", false)
-        if (!shouldSend) return null
-        val committedVisualMoment = json.optBoolean("committedVisualMoment", false)
-        val contradictsVisibleText = json.optBoolean("contradictsVisibleText", true)
-        if (!committedVisualMoment || contradictsVisibleText) return null
-
-        val confidence = json.optDouble("confidence", 0.0)
-        val reason = json.optString("reason", "context").lowercase(Locale.ROOT)
-        val threshold = if (reason in setOf("outfit", "intimacy", "visual_moment")) 0.68 else 0.82
-        if (confidence < threshold) return null
-
-        val prompt = json.optString("prompt").trim().takeIf { it.isNotBlank() } ?: return null
-        return PhotoDecision(
-            prompt = prompt,
-            bypassTurnGate = reason in setOf("outfit", "intimacy"),
-            source = "auto:decision:$reason"
-        )
-    }
-
-    private fun photoDecisionSystem(character: CharacterProfile): String = """
-You decide whether the assistant reply should be sent with an AI-generated image.
-Return only compact JSON with keys: shouldSendPhoto, confidence, reason, committedVisualMoment, contradictsVisibleText, prompt.
-
-Send a photo when:
-- the user clearly wants to see the character
-- the visible reply actually shows/sends a selfie or current image now
-- the visible reply says the character already put on or is currently showing an outfit, look, pose, mirror, room, object, or visual reveal
-- the scene reaches a tasteful adult intimate or romantic visual moment
-- enough conversation has passed and the visible reply contains a present visual moment that would make sense as a photo
-
-Never send a photo if the visible reply says or implies: not yet, I will not show it yet, maybe later, first tell me, should I put it on now, asks permission before showing, only discusses a possible outfit, or promises a future photo.
-The candidate PHOTO_PROMPT is only a proposal. Reject it if it contradicts the visible reply.
-Set committedVisualMoment=true only when the visible reply has already committed to showing/sending the visual now. Set contradictsVisibleText=true if a photo would reveal something the assistant says is not shown yet.
-Do not send a photo for ordinary small talk, abstract emotions, arguments, payments, technical help, or if the visual moment is weak.
-Images must be adult, consensual, tasteful, non-graphic, and preserve the character identity.
-Prompt must be English visual tags or a short English visual prompt, no explanations.
-Character identity: ${character.imagePersona}
-""".trimIndent()
-
-    private fun extractJsonObject(text: String): JSONObject? {
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
-        if (start < 0 || end <= start) return null
-        return runCatching { JSONObject(text.substring(start, end + 1)) }.getOrNull()
     }
 
     private suspend fun maybeSendAutoImageWithCaption(
