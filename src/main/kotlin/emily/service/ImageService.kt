@@ -27,6 +27,7 @@ class ImageService(
             .put("height", 1280)
             .put("steps", 30)
             .put("format", "png")
+            // Venice Safe Mode blurs the full adult image rather than a local area.
             .put("safe_mode", false)
             .toString()
 

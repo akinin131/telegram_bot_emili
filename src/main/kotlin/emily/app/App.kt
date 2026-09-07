@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 
 private const val ROLEPLAY_CHAT_MODEL = "deepseek-v4-flash"
 private const val PREMIUM_CHAT_MODEL = "deepseek-v4-flash"
+private const val DEFAULT_IMAGE_PROMPT_MODEL = "venice-uncensored-1-2"
 private const val IMAGE_MODEL_ANIME = "wai-Illustrious"
 private const val IMAGE_MODEL_REALISTIC = "lustify-v7"
 private const val GIF_MODEL = "wan-2.5-preview-image-to-video"
@@ -92,6 +93,10 @@ fun main() {
         ROLEPLAY_CHAT_MODEL,
         maxCompletionTokens = maxChatCompletionTokens
     )
+    val imagePromptModel = Secrets.getOrNull("IMAGE_PROMPT_CHAT_MODEL")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: DEFAULT_IMAGE_PROMPT_MODEL
 
     val animeImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_ANIME)
     val realisticImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_REALISTIC)
@@ -132,6 +137,7 @@ fun main() {
         translator = translator,
         subscriptionGroupUrl = "https://t.me/+_rSsi7FUDtYyM2Uy",
         premiumChatModel = PREMIUM_CHAT_MODEL,
+        imagePromptModel = imagePromptModel,
         miniAppUrl = miniAppPublicUrl,
         adminPanelCode = adminPanelCode,
         adminUserId = adminUserId

@@ -82,13 +82,15 @@ $transcript
     suspend fun generateReply(
         history: List<Pair<String, String>>,
         modelOverride: String? = null,
-        promptCacheKey: String? = null
+        promptCacheKey: String? = null,
+        includeVeniceSystemPrompt: Boolean = true
     ): ChatResult = withContext(Dispatchers.IO) {
         val requestModel = modelOverride ?: model
         val bodyStr = requestBody(
             history = history,
             requestModel = requestModel,
-            promptCacheKey = promptCacheKey
+            promptCacheKey = promptCacheKey,
+            includeVeniceSystemPrompt = includeVeniceSystemPrompt
         ).toString()
 
         val request = Request.Builder()
@@ -182,7 +184,8 @@ $transcript
     private fun requestBody(
         history: List<Pair<String, String>>,
         requestModel: String,
-        promptCacheKey: String?
+        promptCacheKey: String?,
+        includeVeniceSystemPrompt: Boolean
     ): JSONObject {
         val messages = JSONArray().apply {
             history.forEach { (role, content) ->
@@ -204,6 +207,7 @@ $transcript
                 JSONObject()
                     .put("disable_thinking", true)
                     .put("strip_thinking_response", true)
+                    .put("include_venice_system_prompt", includeVeniceSystemPrompt)
             )
     }
 

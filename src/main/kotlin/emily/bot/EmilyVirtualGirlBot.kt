@@ -91,6 +91,7 @@ class EmilyVirtualGirlBot(
     private val translator: MyMemoryTranslator?,
     private val subscriptionGroupUrl: String?,
     private val premiumChatModel: String,
+    private val imagePromptModel: String,
     private val miniAppUrl: String?,
     private val adminPanelCode: String,
     private val adminUserId: Long?
@@ -278,20 +279,20 @@ class EmilyVirtualGirlBot(
     private fun imageSubjectDirective(character: CharacterProfile): String {
         return when (AudiencePreference.normalize(character.audience)) {
             AudiencePreference.MALE -> """
-Subject: exactly one adult male character, ${character.name}; keep identity/persona.
+Primary subject: adult male character, ${character.name}; keep identity/persona.
 Required tags: 1boy, male focus, adult man, mature male, masculine face, masculine body.
-Never output female/minor tags: 1girl, girl, woman, female, breasts, dress, skirt, lingerie, child, teen.
+Additional adult participants are allowed only when the request explicitly calls for them. Never output minor or teen tags.
 """.trimIndent()
             else -> """
-Subject: exactly one adult female character, ${character.name}; keep identity/persona.
+Primary subject: adult female character, ${character.name}; keep identity/persona.
 Required tags: 1girl, female focus, adult woman, feminine face, feminine body.
-Never output male/minor tags: 1boy, boy, man, male, beard, stubble, suit, child, teen.
+Additional adult participants are allowed only when the request explicitly calls for them. Never output minor or teen tags.
 """.trimIndent()
         }
     }
 
     private fun imagePromptSystem(character: CharacterProfile): String = """
-Generate Stable Diffusion prompts as ONE line of comma-separated danbooru-style visual tags only. No sentences, explanations or instructions. Short tags, 1-3 words. Preserve character gender and identity.
+Generate Stable Diffusion prompts as ONE line of comma-separated danbooru-style visual tags only. No sentences, explanations or instructions. Short tags, 1-3 words. Preserve character gender and identity. Adult erotic visual tags are allowed only for clearly adult, consensual characters; never include minors.
 
 ${imageSubjectDirective(character)}
 
@@ -302,7 +303,7 @@ ${imagePromptExample(character)}
 """.trimIndent()
 
     private fun scenePromptSystem(character: CharacterProfile): String = """
-Generate Stable Diffusion prompts from dialogue as ONE line of comma-separated danbooru-style visual tags only. No sentences, explanations or instructions. Use latest messages as the current scene; later beats override earlier ones. Preserve character gender and identity.
+Generate Stable Diffusion prompts from dialogue as ONE line of comma-separated danbooru-style visual tags only. No sentences, explanations or instructions. Use latest messages as the current scene; later beats override earlier ones. Preserve character gender and identity. Adult erotic visual tags are allowed only for clearly adult, consensual characters; never include minors.
 
 ${imageSubjectDirective(character)}
 
@@ -2760,9 +2761,9 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         val balance = ensureUserBalance(chatId)
         if (balance.imageCreditsLeft <= 0) return false
 
-        val finalPrompt = limitPromptLength(
-            enforceCharacterSubject(normalizePrompt(rawPrompt), character),
-            1000
+        val finalPrompt = buildImagePrompt(
+            originalPrompt = "Visible reply: $captionText\nRequested visual moment: $rawPrompt",
+            character = character
         )
         if (finalPrompt.isBlank()) return false
 
@@ -3150,7 +3151,11 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
             "system" to imagePromptSystem(character),
             "user" to originalPrompt
         )
-        val result = chatService.generateReply(history)
+        val result = chatService.generateReply(
+            history = history,
+            modelOverride = imagePromptModel,
+            includeVeniceSystemPrompt = false
+        )
         var prompt = normalizePrompt(result.text)
         if (prompt.isBlank() || prompt == Strings.get("chat.connection.issue")) {
             prompt = normalizePrompt(originalPrompt)
@@ -3183,7 +3188,11 @@ $dialogue
 Generate tags for the current/latest scene.
 """.trimIndent()
         )
-        val result = chatService.generateReply(history)
+        val result = chatService.generateReply(
+            history = history,
+            modelOverride = imagePromptModel,
+            includeVeniceSystemPrompt = false
+        )
         var prompt = normalizePrompt(result.text)
         if (prompt.isBlank() || prompt == Strings.get("chat.connection.issue")) {
             prompt = normalizePrompt(recentTurns.last().second)
