@@ -19,7 +19,8 @@ import java.util.logging.Logger
 class ChatService(
     private val client: OkHttpClient,
     private val apiToken: String,
-    val model: String
+    val model: String,
+    private val maxCompletionTokens: Int = 400
 ) {
     companion object {
         private const val VENICE_INPUT_RATE_PER_MILLION = 0.17
@@ -80,18 +81,15 @@ $transcript
 
     suspend fun generateReply(
         history: List<Pair<String, String>>,
-        modelOverride: String? = null
+        modelOverride: String? = null,
+        promptCacheKey: String? = null
     ): ChatResult = withContext(Dispatchers.IO) {
         val requestModel = modelOverride ?: model
-        val messages = JSONArray().apply {
-            history.forEach { (role, content) ->
-                put(JSONObject().put("role", role).put("content", content))
-            }
-        }
-        val bodyStr = JSONObject()
-            .put("model", requestModel)
-            .put("messages", messages)
-            .toString()
+        val bodyStr = requestBody(
+            history = history,
+            requestModel = requestModel,
+            promptCacheKey = promptCacheKey
+        ).toString()
 
         val request = Request.Builder()
             .url("https://api.venice.ai/api/v1/chat/completions")
@@ -179,6 +177,34 @@ $transcript
 
             return@withContext ChatResult(content, billedTokens, totalTokens, usageJson)
         }
+    }
+
+    private fun requestBody(
+        history: List<Pair<String, String>>,
+        requestModel: String,
+        promptCacheKey: String?
+    ): JSONObject {
+        val messages = JSONArray().apply {
+            history.forEach { (role, content) ->
+                put(JSONObject().put("role", role).put("content", content))
+            }
+        }
+        return JSONObject()
+            .put("model", requestModel)
+            .put("messages", messages)
+            .put("max_completion_tokens", maxCompletionTokens)
+            .apply {
+                promptCacheKey?.takeIf { it.isNotBlank() }?.let { cacheKey ->
+                    put("prompt_cache_key", cacheKey)
+                    put("prompt_cache_retention", "24h")
+                }
+            }
+            .put(
+                "venice_parameters",
+                JSONObject()
+                    .put("disable_thinking", true)
+                    .put("strip_thinking_response", true)
+            )
     }
 
     private fun veniceEquivalentTokens(usage: JSONObject): Int {

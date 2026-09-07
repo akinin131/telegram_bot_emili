@@ -55,7 +55,13 @@ fun main() {
     )
 
     val okHttpClient = OkHttpClient.Builder()
-        .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY })
+        .addInterceptor(
+            HttpLoggingInterceptor().apply {
+                redactHeader("Authorization")
+                // BODY logs duplicate the complete conversation and expose sensitive chat data.
+                level = HttpLoggingInterceptor.Level.BASIC
+            }
+        )
         .connectTimeout(java.time.Duration.ofSeconds(20))
         .readTimeout(java.time.Duration.ofSeconds(120))
         .writeTimeout(java.time.Duration.ofSeconds(30))
@@ -76,7 +82,16 @@ fun main() {
     val promoRepository = PromoRepository()
     val userActivityRepository = UserActivityRepository()
     val userSettingsRepository = UserSettingsRepository()
-    val chatService = ChatService(okHttpClient, config.veniceToken, ROLEPLAY_CHAT_MODEL)
+    val maxChatCompletionTokens = Secrets.getOrNull("CHAT_MAX_COMPLETION_TOKENS")
+        ?.toIntOrNull()
+        ?.coerceIn(64, 1_024)
+        ?: 400
+    val chatService = ChatService(
+        okHttpClient,
+        config.veniceToken,
+        ROLEPLAY_CHAT_MODEL,
+        maxCompletionTokens = maxChatCompletionTokens
+    )
 
     val animeImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_ANIME)
     val realisticImageService = ImageService(okHttpClient, config.veniceToken, IMAGE_MODEL_REALISTIC)

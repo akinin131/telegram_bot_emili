@@ -2644,8 +2644,15 @@ Order: rating, quality/style, subject, appearance, clothing/nudity, accessories,
         }
         val history = memory.history(chatId)
 
+        val promptCacheKey = "emily-dialog:$dialogId:$selectedChatModel"
         val genResult = retryOnceAfterDelayIfNetwork {
-            withTyping(session, chatId) { chatService.generateReply(history, modelOverride = selectedChatModel) }
+            withTyping(session, chatId) {
+                chatService.generateReply(
+                    history = history,
+                    modelOverride = selectedChatModel,
+                    promptCacheKey = promptCacheKey
+                )
+            }
         }
 
         if (genResult.isFailure) {
