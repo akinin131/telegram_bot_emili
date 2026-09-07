@@ -1,0 +1,91 @@
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by net.rubygrapefruit.platform.internal.NativeLibraryLoader in an unnamed module (file:/Users/ilya/.gradle/wrapper/dists/gradle-8.2-bin/bbg7u40eoinfdyxsxr3z4i7ta/gradle-8.2/lib/native-platform-0.22-milestone-24.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :clean
+> Task :processResources
+
+> Task :compileKotlin
+w: file:///Users/ilya/telegram_bot_emili/src/main/kotlin/emily/bot/EmilyVirtualGirlBot.kt:88:5 'constructor TelegramLongPollingBot()' is deprecated. Deprecated in Java
+w: file:///Users/ilya/telegram_bot_emili/src/main/kotlin/emily/bot/EmilyVirtualGirlBot.kt:1090:52 Parameter 'userId' is never used
+w: file:///Users/ilya/telegram_bot_emili/src/main/kotlin/emily/bot/EmilyVirtualGirlBot.kt:1172:27 Parameter 'e' is never used, could be renamed to _
+w: file:///Users/ilya/telegram_bot_emili/src/main/kotlin/emily/bot/EmilyVirtualGirlBot.kt:1654:21 'when' is exhaustive so 'else' is redundant here
+w: file:///Users/ilya/telegram_bot_emili/src/main/kotlin/emily/miniapp/MiniAppServer.kt:560:13 Variable 'existing' is never used
+w: file:///Users/ilya/telegram_bot_emili/src/main/kotlin/emily/miniapp/MiniAppServer.kt:599:13 Variable 'existing' is never used
+w: file:///Users/ilya/telegram_bot_emili/src/main/kotlin/emily/miniapp/MiniAppServer.kt:799:13 Variable 'user' is never used
+
+> Task :compileJava NO-SOURCE
+> Task :classes
+
+> Task :run
+MiniAppServer: started on port 8080, publicUrl=http://localhost:8080/miniapp/
+[firebase-database-worker] WARN com.google.firebase.database.connection.PersistentConnection - [pc_0] Using an unspecified index. Consider adding '".indexOn": "lastUsageAt"' at userActivity to your security and Firebase Database rules for better performance
+Exception in thread "main" Error removing old webhook
+	at org.telegram.telegrambots.util.WebhookUtils.clearWebhook(WebhookUtils.java:113)
+	at org.telegram.telegrambots.bots.TelegramLongPollingBot.clearWebhook(TelegramLongPollingBot.java:41)
+	at org.telegram.telegrambots.meta.TelegramBotsApi.registerBot(TelegramBotsApi.java:65)
+	at emily.app.AppKt.main(App.kt:148)
+	at emily.app.AppKt.main(App.kt)
+Caused by: org.telegram.telegrambots.meta.exceptions.TelegramApiException: Unable to execute deleteWebhook method
+	at org.telegram.telegrambots.bots.DefaultAbsSender.sendApiMethod(DefaultAbsSender.java:1117)
+	at org.telegram.telegrambots.meta.bots.AbsSender.execute(AbsSender.java:64)
+	at org.telegram.telegrambots.util.WebhookUtils.clearWebhook(WebhookUtils.java:108)
+	... 4 more
+Caused by: org.apache.http.conn.HttpHostConnectException: Connect to api.telegram.org:443 [api.telegram.org/149.154.166.110, api.telegram.org/2001:67c:4e8:f004:0:0:0:9] failed: No route to host (connect failed)
+	at org.apache.http.impl.conn.DefaultHttpClientConnectionOperator.connect(DefaultHttpClientConnectionOperator.java:156)
+	at org.apache.http.impl.conn.PoolingHttpClientConnectionManager.connect(PoolingHttpClientConnectionManager.java:376)
+	at org.apache.http.impl.execchain.MainClientExec.establishRoute(MainClientExec.java:393)
+	at org.apache.http.impl.execchain.MainClientExec.execute(MainClientExec.java:236)
+	at org.apache.http.impl.execchain.ProtocolExec.execute(ProtocolExec.java:186)
+	at org.apache.http.impl.execchain.RetryExec.execute(RetryExec.java:89)
+	at org.apache.http.impl.execchain.RedirectExec.execute(RedirectExec.java:110)
+	at org.apache.http.impl.client.InternalHttpClient.doExecute(InternalHttpClient.java:185)
+	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:83)
+	at org.telegram.telegrambots.bots.DefaultAbsSender.sendHttpPostRequest(DefaultAbsSender.java:1149)
+	at org.telegram.telegrambots.bots.DefaultAbsSender.sendMethodRequest(DefaultAbsSender.java:1145)
+	at org.telegram.telegrambots.bots.DefaultAbsSender.sendApiMethod(DefaultAbsSender.java:1114)
+	... 6 more
+Caused by: java.net.ConnectException: No route to host (connect failed)
+	at java.net.PlainSocketImpl.socketConnect(Native Method)
+	at java.net.AbstractPlainSocketImpl.doConnect(AbstractPlainSocketImpl.java:350)
+	at java.net.AbstractPlainSocketImpl.connectToAddress(AbstractPlainSocketImpl.java:206)
+	at java.net.AbstractPlainSocketImpl.connect(AbstractPlainSocketImpl.java:188)
+	at java.net.SocksSocketImpl.connect(SocksSocketImpl.java:392)
+	at java.net.Socket.connect(Socket.java:607)
+	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.connectSocket(SSLConnectionSocketFactory.java:368)
+	at org.apache.http.impl.conn.DefaultHttpClientConnectionOperator.connect(DefaultHttpClientConnectionOperator.java:142)
+	... 17 more
+[firebase-database-worker] WARN com.google.firebase.database.connection.PersistentConnection - [pc_0] Using an unspecified index. Consider adding '".indexOn": "lastUsageAt"' at userActivity to your security and Firebase Database rules for better performance
+[firebase-database-worker] WARN com.google.firebase.database.connection.PersistentConnection - [pc_0] Using an unspecified index. Consider adding '".indexOn": "lastUsageAt"' at userActivity to your security and Firebase Database rules for better performance
+[firebase-database-worker] WARN com.google.firebase.database.connection.PersistentConnection - [pc_0] Using an unspecified index. Consider adding '".indexOn": "lastUsageAt"' at userActivity to your security and Firebase Database rules for better performance
+июн 27, 2026 1:54:40 AM org.apache.http.impl.execchain.RetryExec execute
+INFO: I/O exception (java.net.SocketException) caught when processing request to {s}->https://api.telegram.org:443: Network is unreachable (connect failed)
+июн 27, 2026 1:54:40 AM org.apache.http.impl.execchain.RetryExec execute
+INFO: Retrying request to {s}->https://api.telegram.org:443
+[firebase-database-worker] WARN com.google.firebase.database.connection.PersistentConnection - [pc_0] Using an unspecified index. Consider adding '".indexOn": "lastUsageAt"' at userActivity to your security and Firebase Database rules for better performance
+
+> Task :run FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':run'.
+> Process 'command '/Users/ilya/Library/Java/JavaVirtualMachines/corretto-1.8.0_392/Contents/Home/bin/java'' finished with non-zero exit value 143
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.2/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 11h 17m 29s
+4 actionable tasks: 4 executed
